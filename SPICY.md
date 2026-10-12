@@ -28,7 +28,9 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 | `packages/app/src/context/command.tsx` | `EDITABLE_KEYBIND_IDS` also spreads `SPICY_EDITABLE_KEYBIND_IDS` from `workbench/keys.ts` | Fork keys (F5, F9, F10, …) fire while typing; new fork keys only edit `keys.ts` |
 | `packages/app/src/pages/session/session-side-panel.tsx` | Debug tab trigger and content in the side panel tabs | Debugger side panel (v2 layout) |
 | `packages/app/src/context/language.tsx` | Merge the fork's English `workbench/en` dictionary into the base dictionary | Workbench strings; other locales fall back to English |
-| `packages/app/src/pages/session.tsx` | Wrap the session children in `WorkbenchProviders` | Workbench and Agent HQ state for the bottom panel |
+| `packages/app/src/pages/session.tsx` | Wrap the session children in `WorkbenchProviders` and `ReviewProvider`; an `agent` review mode (new layout only) that renders `ReviewChangesPanel` | Workbench and Agent HQ state for the bottom panel; agent changes review |
+| `packages/app/src/context/layout.tsx` | `ReviewChangeMode` gains `agent` and persists it | Agent changes review mode |
+| `packages/app/src/pages/session/file-tabs.tsx` | `ReviewFileGate` wraps the loaded file render | Pending agent changes show inline with Accept / Reject |
 | `packages/app/src/pages/session/terminal-panel-v2.tsx` | Workbench tab triggers and content share the terminal tab bar; a selected Workbench tab replaces the terminal view | Agents, Problems, Output, Debug Console, Run tabs |
 | `packages/desktop/src/main/index.ts` | Keep a `--remote-debugging-port` given on the command line; skip `setAsDefaultProtocolClient` when `CFFIXED_USER_HOME` is set | Isolated launches (`scripts/spicy-launch.ts`) must not take over the system opencode:// handler |
 | `packages/desktop/src/main/windows.ts` | Log whether the Dock icon loaded | Smoke verifies the dev Dock icon |
@@ -37,5 +39,5 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 | `packages/desktop/icons/README.md` | Prepended the Spicy icon workflow | Documents the generator |
 
 New files owned by the fork (no upstream conflict): `packages/schema/src/{workbench,agent-hq,review}.ts`, `packages/opencode/src/workbench/**`, `packages/opencode/src/agenthq/**`,
-`packages/opencode/src/review/**`, `packages/opencode/src/cli/cmd/workbench.ts`, `packages/app/src/workbench/**`,
+`packages/opencode/src/review/**`, `packages/opencode/src/cli/cmd/workbench.ts`, `packages/app/src/workbench/**`, `packages/app/src/review/**`,
 `packages/app/src/agenthq/**`, `packages/desktop/scripts/spicy-*.ts`, `docs/SPICY_IDE_*.md`, `docs/spicy/**`, `SPICY.md`.

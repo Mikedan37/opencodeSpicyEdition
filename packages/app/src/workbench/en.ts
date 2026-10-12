@@ -91,7 +91,8 @@ export const dict = {
   "workbench.debug.stack.empty": "The call stack appears when the program pauses.",
   "workbench.debug.variables.empty": "Variables appear when the program pauses.",
   "workbench.debug.variables.topOnly":
-    "Variables are listed for the top frame. Watches and the Debug Console evaluate in the selected frame.",
+    "This server lists variables for the top frame only. Watches and the Debug Console evaluate in the selected frame.",
+  "workbench.debug.scope.expensive": "slow to read, open to load",
   "workbench.debug.variables.none": "No local variables",
   "workbench.debug.variables.more": "Load more",
   "workbench.debug.watch.add": "Add expression",

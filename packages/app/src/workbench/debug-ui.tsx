@@ -153,11 +153,12 @@ export function SessionPicker() {
 }
 
 // One variable; children load page by page while it is open. `path` keys its open state across stops.
-export function VariableNode(props: { variable: Variable; path: string[]; depth?: number }) {
+// `defaultOpen`: open until the user closes it (a scope that is cheap to read).
+export function VariableNode(props: { variable: Variable; path: string[]; depth?: number; defaultOpen?: boolean }) {
   const debug = useDebug()
   const language = useLanguage()
   const ref = () => props.variable.variablesReference
-  const open = () => ref() > 0 && debug.expanded(props.path)
+  const open = () => ref() > 0 && debug.expanded(props.path, props.defaultOpen)
   const page = () => debug.page(ref())
   const pad = (depth: number) => ({ "padding-left": `${8 + depth * 12}px` })
   // Loads when opened and again after each stop (its pages die with the stop); a failure waits for a retry click.
@@ -170,7 +171,7 @@ export function VariableNode(props: { variable: Variable; path: string[]; depth?
         type="button"
         class="flex h-[22px] w-full min-w-0 items-center gap-1 pr-3 text-left font-mono text-[12px] outline-none hover:bg-v2-overlay-simple-overlay-hover focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)]"
         style={pad(props.depth ?? 0)}
-        onClick={() => ref() > 0 && debug.toggle(props.path)}
+        onClick={() => ref() > 0 && debug.toggle(props.path, props.defaultOpen)}
       >
         <span class="flex size-4 shrink-0 items-center justify-center text-v2-icon-icon-muted">
           <Show when={ref() > 0}>

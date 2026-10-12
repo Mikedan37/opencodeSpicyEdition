@@ -1,8 +1,9 @@
-import { createMemo, For, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, For, Match, Show, Switch, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
+import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import { useLanguage } from "@/context/language"
@@ -176,26 +177,90 @@ function CallStack() {
   )
 }
 
+// The selected frame's scopes as groups (cheap ones open, expensive ones on click), children paged by the variables
+// route. Without a scopes route on the server, the top frame falls back to the stop's locals.
 function Variables() {
   const debug = useDebug()
   const language = useLanguage()
   const stop = () => debug.selected()?.stop
-  const top = () => debug.frameID() === stop()?.frames[0]?.id
+  const frame = () => debug.frameID()
+  const scopes = () => {
+    const id = frame()
+    return id === undefined ? undefined : debug.scopes(id)
+  }
+  // Each stop and frame change loads its scopes once; a failure waits for Retry.
+  createEffect(() => {
+    const id = frame()
+    if (stop() && id !== undefined && !scopes()) void debug.loadScopes(id)
+  })
+  const top = () => frame() === stop()?.frames[0]?.id
   return (
     <Show when={stop()} fallback={<div class={NOTE}>{language.t("workbench.debug.variables.empty")}</div>}>
       {(snapshot) => (
-        <Show when={top()} fallback={<div class={NOTE}>{language.t("workbench.debug.variables.topOnly")}</div>}>
-          <Show
-            when={snapshot().locals.length}
-            fallback={<div class={NOTE}>{language.t("workbench.debug.variables.none")}</div>}
-          >
-            <div role="tree" aria-label={language.t("workbench.debug.section.variables")}>
-              <For each={snapshot().locals}>
-                {(variable) => <VariableNode variable={variable} path={["locals", variable.name]} />}
-              </For>
+        <Switch
+          fallback={
+            <div class={`${NOTE} flex items-center gap-2`}>
+              <LoaderV2 width={12} height={12} />
+              {language.t("common.loading")}
             </div>
-          </Show>
-        </Show>
+          }
+        >
+          <Match when={scopes()?.status === "ready" && scopes()!.items}>
+            {(items) => (
+              <Show
+                when={items().length}
+                fallback={<div class={NOTE}>{language.t("workbench.debug.variables.none")}</div>}
+              >
+                <div
+                  role="tree"
+                  aria-label={language.t("workbench.debug.section.variables")}
+                  data-frame-scopes={frame()}
+                >
+                  <For each={items()}>
+                    {(scope) => (
+                      <VariableNode
+                        variable={{
+                          name: scope.name,
+                          value: "",
+                          variablesReference: scope.variablesReference,
+                          ...(scope.expensive ? { type: language.t("workbench.debug.scope.expensive") } : {}),
+                        }}
+                        path={["scope", scope.name]}
+                        defaultOpen={!scope.expensive}
+                      />
+                    )}
+                  </For>
+                </div>
+              </Show>
+            )}
+          </Match>
+          <Match when={scopes()?.status === "failed"}>
+            <div class={`${NOTE} flex items-center gap-2 text-v2-state-fg-danger`}>
+              <span class="min-w-0 select-text">{scopes()?.error}</span>
+              <ButtonV2
+                size="small"
+                variant="neutral"
+                onClick={() => frame() !== undefined && void debug.loadScopes(frame()!)}
+              >
+                {language.t("workbench.retry")}
+              </ButtonV2>
+            </div>
+          </Match>
+          <Match when={scopes()?.status === "unsupported"}>
+            <Show when={top()} fallback={<div class={NOTE}>{language.t("workbench.debug.variables.topOnly")}</div>}>
+              <Show
+                when={snapshot().locals.length}
+                fallback={<div class={NOTE}>{language.t("workbench.debug.variables.none")}</div>}
+              >
+                <div role="tree" aria-label={language.t("workbench.debug.section.variables")}>
+                  <For each={snapshot().locals}>
+                    {(variable) => <VariableNode variable={variable} path={["locals", variable.name]} />}
+                  </For>
+                </div>
+              </Show>
+            </Show>
+          </Match>
+        </Switch>
       )}
     </Show>
   )

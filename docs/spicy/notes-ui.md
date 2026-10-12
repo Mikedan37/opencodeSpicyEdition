@@ -291,15 +291,12 @@ events and its test were reverted on `spicy-ide` (`5c86aa388`): `workbench.debug
 - Variable references die with their stop; evaluate results expand only while `row.at >= stop.at`.
 - Route replies (control, owner, stop) are applied unless an event already moved the session (a newer `stop.at` or an
   end), so a slow reply never undoes a stop.
-- Every evaluate, watches included, is also a console row (`eval` + `result`), so watches show up in the console. A
-  watch flag on the evaluate route would let the console skip them.
 - Contract smell worth fixing upstream of the UI: `workbench.debug.output.sessionID` holds a debug session id; naming
-  it `debugSessionID` would keep generic `sessionID` handlers away.
+  it `debugSessionID` would keep generic `sessionID` handlers away. (Done on `spicy-ide`, `5c86aa388`.)
 
 ### Gaps
 
 - Legacy side panel (new layout designs off) has no Debug tab; the bottom tabs need the v2 terminal panel too.
-- Variables only for the top frame (the routes have no scopes for other frames); other frames get a note.
 - No gutter click to toggle a breakpoint: pierre's line-number click opens the file view's comment draft. F9 (on the
   selected or paused line) and the breakpoint list cover it; clicking a line to select it also opens that draft.
 - The Debug tab and the file viewer share the side panel, so opening a frame's file leaves the Debug tab.
@@ -428,3 +425,27 @@ bottom right.
   Owner controls on a real debugpy session: you → Release → idle → Hand to agent → agent → Take over → you, matching
   the server each time. No new crash reports in `~/Library/Logs/DiagnosticReports` (Python 11 before and after; the
   only additions were three macOS `SFA-*.diag` snapshots).
+
+## Wave 5: variables of any frame, watch evaluations
+
+- **Frame scopes**: the Debug tab's Variables section shows the selected frame's scopes
+  (`GET …/scopes?frameID=`, `Workbench.DebugScope[]`) as groups, for the top frame too: cheap scopes open by
+  themselves, expensive ones are labelled and open on click, children come lazily from `variables?ref=` with the same
+  50-per-page "Load more". Scopes load once per stop and frame (`state.scopes`, keyed `${session}:${stop.at}:${frame}`,
+  dropped with the stop). A 404 ("frame N is not in the current stop") takes the server's latest snapshot of the
+  session, which resets the frame to its top one; if the stop did not move, the message stays with a Retry. A server
+  without the route falls back to the stop's `locals` for the top frame. Expanded nodes are remembered by name path,
+  so the same names stay open across steps and frames.
+- **Watches** evaluate with `context: "watch"`: the server returns the result only (`seq: 0`), so watches add no
+  console rows; the Debug Console input stays `repl`. The gutter values row only reads the stop's locals, so it
+  evaluates nothing (no `hover` needed).
+- Tests: `debug.test.ts` 18 (new: scopes once per stop with retry, stale-frame refresh and the same-stop message,
+  unsupported fallback with cheap-scope default open, watches sent as `watch` with no console rows). Agent HQ +
+  Workbench unit tests 56/56; typecheck clean. `debug-panel.spec.ts` 4/4 (frame 1 scopes with Globals collapsed,
+  frame 2's own Locals `count = 6`, `label = 'orders'` and Globals on click, the watch sent as `watch`, the Debug
+  Console still empty); with the activity, tasks and Agent HQ specs 9/9 (`--workers=2`).
+- Real debugpy pass (isolated server from this branch, Playwright Chromium, no Electron): stopped in `helper` from a
+  breakpoint; frames `helper app.py:5 < main app.py:14 < <module> app.py:21`; the top frame's Locals (`value = 0`) and
+  Globals; selecting `main` showed its Locals (`item`, `items`, `name`, `total`) and Globals through
+  `GET scopes?frameID=3` and two `variables` pages; the watch `total + 100` = 100 was posted with
+  `"context":"watch"` and the Debug Console stayed at its 2 rows. No new crash reports.

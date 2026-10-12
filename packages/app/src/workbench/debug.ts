@@ -48,6 +48,13 @@ export type DebugConsole = {
   backlog: "idle" | "loading" | "ready" | "failed"
 }
 export type VariablePage = { items: Variable[]; done: boolean; loading: boolean; error?: string }
+// The scopes of one frame of the current stop. "unsupported": the server has no scopes route (the top frame still has
+// the stop's locals).
+export type ScopeState = {
+  status: "loading" | "ready" | "failed" | "unsupported"
+  items: Workbench.DebugScope[]
+  error?: string
+}
 export type WatchValue = { at: string; text: string; error: boolean; ref?: number }
 export type VerifiedBreakpoint = { line: number; verified: boolean; message?: string }
 
@@ -145,6 +152,7 @@ type Client = Pick<
   | "debugBreakpoints"
   | "debugVariables"
   | "debugEvaluate"
+  | "debugScopes"
   | "debugCompletions"
   | "debugOutput"
   | "debugOwner"
@@ -168,6 +176,8 @@ export function createDebugState(input: {
     frame: {} as Record<string, number | undefined>,
     // Child pages keyed `${session}:${stop.at}:${ref}`; references die with their stop.
     pages: {} as Record<string, VariablePage>,
+    // Scopes keyed `${session}:${stop.at}:${frame}`, also per stop.
+    scopes: {} as Record<string, ScopeState>,
     // Expanded tree nodes keyed by name path, so a step keeps the tree open.
     expanded: {} as Record<string, boolean>,
     consoles: {} as Record<string, DebugConsole>,
@@ -193,12 +203,13 @@ export function createDebugState(input: {
       else setState("sessions", at, reconcile(next))
       if (next.stop && next.stop.at !== before) {
         setState("frame", next.id, next.stop.frames[0]?.id)
-        setState(
-          "pages",
-          produce((pages) => {
-            for (const key of Object.keys(pages)) if (key.startsWith(`${next.id}:`)) delete pages[key]
-          }),
-        )
+        for (const store of ["pages", "scopes"] as const)
+          setState(
+            store,
+            produce((entries) => {
+              for (const key of Object.keys(entries)) if (key.startsWith(`${next.id}:`)) delete entries[key]
+            }),
+          )
       }
       const current = selected()
       if (adopt && at === -1 && (!current || !isLive(current))) setState("selected", next.id)
@@ -313,8 +324,56 @@ export function createDebugState(input: {
     )
   }
   const expandKey = (path: readonly string[]) => `${state.selected}\u0000${path.join("\u0000")}`
-  const expanded = (path: readonly string[]) => !!state.expanded[expandKey(path)]
-  const toggle = (path: readonly string[]) => setState("expanded", expandKey(path), (value) => !value)
+  // `fallback` is the state of a node the user has not toggled (a cheap scope starts open).
+  const expanded = (path: readonly string[], fallback = false) => state.expanded[expandKey(path)] ?? fallback
+  const toggle = (path: readonly string[], fallback = false) =>
+    setState("expanded", expandKey(path), !expanded(path, fallback))
+
+  // The server's current snapshot of one session, e.g. after it said a frame belongs to an older stop.
+  const refresh = (id: string) =>
+    client.debugSessions().then(
+      (list) => {
+        const latest = list.find((item) => item.id === id)
+        if (latest) update(latest)
+      },
+      () => undefined,
+    )
+
+  const scopeKey = (session: DebugSession, frame: number) => `${stopAt(session)}:${frame}`
+  const scopes = (frame: number) => {
+    const session = selected()
+    return session?.stop ? state.scopes[scopeKey(session, frame)] : undefined
+  }
+  // Loads a frame's scopes once per stop (again only after a failure); read untracked like the other loaders.
+  const loadScopes = (frame: number) =>
+    untrack(() => {
+      const session = selected()
+      if (!session?.stop || session.state !== "stopped") return Promise.resolve()
+      const key = scopeKey(session, frame)
+      const current = state.scopes[key]
+      if (current && current.status !== "failed") return Promise.resolve()
+      setState("scopes", key, { status: "loading", items: [], error: undefined })
+      return client.debugScopes(session.id, frame).then(
+        (items) => {
+          if (state.scopes[key]) setState("scopes", key, { status: "ready", items: [...items] })
+        },
+        (error: unknown) => {
+          if (!state.scopes[key]) return
+          const missing = error instanceof WorkbenchRequestError && error.kind === "unavailable"
+          // 404: the frame belongs to an older stop. The latest snapshot resets the frame to its top one and drops
+          // this entry; if the stop did not move after all, the message stays.
+          if (missing && error.status === 404)
+            return refresh(session.id).then(() => {
+              if (state.scopes[key]) setState("scopes", key, { status: "failed", items: [], error: errorText(error) })
+            })
+          setState(
+            "scopes",
+            key,
+            missing ? { status: "unsupported", items: [] } : { status: "failed", items: [], error: errorText(error) },
+          )
+        },
+      )
+    })
 
   function remember(expression: string) {
     setPrefs("history", (list) => [...list.filter((item) => item !== expression), expression].slice(-HISTORY))
@@ -346,7 +405,8 @@ export function createDebugState(input: {
     const at = `${stopAt(session)}:${frame ?? ""}`
     const run = ++pass
     for (const expression of [...prefs.watches]) {
-      const value = await client.debugEvaluate(session.id, expression, frame).then(
+      // `watch`: the result comes back without console rows, so watches do not fill the console.
+      const value = await client.debugEvaluate(session.id, expression, frame, "watch").then(
         (row): WatchValue => ({ at, text: row.text, error: row.kind === "exception", ref: row.variablesReference }),
         (error: unknown): WatchValue => ({ at, text: errorText(error), error: true }),
       )
@@ -460,6 +520,9 @@ export function createDebugState(input: {
     children,
     expanded,
     toggle,
+    scopes,
+    loadScopes,
+    refresh,
     evaluate,
     completions,
     evaluateWatches,

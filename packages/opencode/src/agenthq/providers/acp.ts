@@ -262,7 +262,10 @@ class ClientState {
     string,
     { readonly options: readonly PermissionOption[]; readonly resolve: (value: RequestPermissionResponse) => void }
   >()
-  private readonly text = new Map<string, { kind: "message" | "reasoning"; value: string }>()
+  private readonly text = new Map<string, { kind: "message" | "reasoning"; id: string; value: string }>()
+  // Text that resumes under an ACP messageId whose text was already completed gets a new segment id, so each
+  // completed message keeps its own text.
+  private readonly segments = new Map<string, number>()
   private readonly tools = new Map<string, { tool: string; title?: string; state?: string }>()
   private block: string | undefined
   private requests = 0
@@ -310,9 +313,11 @@ class ClientState {
       case "agent_thought_chunk": {
         if (update.content.type !== "text") return
         const kind = update.sessionUpdate === "agent_message_chunk" ? "message" : "reasoning"
-        const id = update.messageId ?? (this.block ??= crypto.randomUUID())
-        const key = `${kind}:${id}`
-        this.text.set(key, { kind, value: (this.text.get(key)?.value ?? "") + update.content.text })
+        const base = update.messageId ?? (this.block ??= crypto.randomUUID())
+        const segment = this.segments.get(`${kind}:${base}`) ?? 0
+        const id = segment === 0 ? base : `${base}-${segment}`
+        const key = `${kind}:${base}`
+        this.text.set(key, { kind, id, value: (this.text.get(key)?.value ?? "") + update.content.text })
         if (kind === "message") this.emit({ type: "message.delta", messageID: id, text: update.content.text })
         return
       }
@@ -340,6 +345,9 @@ class ClientState {
         })
         return
       }
+      case "session_info_update":
+        if (update.title) this.emit({ type: "title", title: update.title })
+        return
       case "plan":
         this.flush()
         this.emit({
@@ -378,9 +386,10 @@ class ClientState {
   // Text accumulated since the last non-text update becomes complete messages and reasoning.
   private flush() {
     this.text.forEach((item, key) => {
-      const id = key.slice(key.indexOf(":") + 1)
-      if (item.kind === "message") this.emit({ type: "message", messageID: id, role: "assistant", text: item.value })
-      if (item.kind === "reasoning") this.emit({ type: "reasoning", messageID: id, text: item.value })
+      this.segments.set(key, (this.segments.get(key) ?? 0) + 1)
+      if (item.kind === "message")
+        this.emit({ type: "message", messageID: item.id, role: "assistant", text: item.value })
+      if (item.kind === "reasoning") this.emit({ type: "reasoning", messageID: item.id, text: item.value })
     })
     this.text.clear()
     this.block = undefined

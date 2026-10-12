@@ -334,7 +334,7 @@ describe("workbench verification engine", () => {
         ]),
       ).toEqual([
         ["avg_test.go", 6, "TestAverage", "test"],
-        ["avg.go", 7, "TestEmpty", "test"],
+        ["avg_test.go", 12, "TestEmpty", "test"],
       ])
     }),
   )

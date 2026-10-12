@@ -186,8 +186,31 @@ describe("VER-01 parser golden files", () => {
   // VER-13: failing tests parse to the test name, file and line.
   const runner = (id: string) => WorkbenchCheckers.all.find((checker) => checker.id === id)!.parse
 
-  test("go test -json: assertion and panic", async () => {
+  test("go test -json: failing assertions", async () => {
     expect(await parse("go-test", runner("go-test"))).toEqual([
+      {
+        kind: "test",
+        file: "/ROOT/go-test/avg_test.go",
+        range: at(6, 0),
+        severity: "error",
+        message: "TestAverage: Average = 3, want 4",
+        code: "TestAverage",
+      },
+      {
+        kind: "test",
+        file: "/ROOT/go-test/avg_test.go",
+        range: at(12, 0),
+        severity: "error",
+        message: "TestEmpty: Average(nil) = -1, want 0",
+        code: "TestEmpty",
+      },
+    ])
+  })
+
+  // Captured from an earlier version of the fixture whose TestEmpty panicked (a Go runtime panic exits normally,
+  // without a crash report). It is parser input only: no test runs it any more.
+  test("go test -json: a panic points at the first frame in the package", async () => {
+    expect(await parse("go-test-panic", runner("go-test"))).toEqual([
       {
         kind: "test",
         file: "/ROOT/go-test/avg_test.go",
@@ -233,15 +256,15 @@ describe("VER-01 parser golden files", () => {
     ])
   })
 
-  test("cargo test: panic location of the failing test", async () => {
+  test("cargo test: location of the failing assertion", async () => {
     expect(await parse("cargo-test", runner("cargo-test"))).toEqual([
       {
         kind: "test",
         file: "/ROOT/cargo-test/src/lib.rs",
-        range: at(0, 36),
+        range: at(10, 8),
         severity: "error",
-        message: "tests::empty: attempt to divide by zero",
-        code: "tests::empty",
+        message: "tests::average_of_two: assertion `left == right` failed",
+        code: "tests::average_of_two",
       },
     ])
   })

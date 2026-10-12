@@ -25,6 +25,7 @@ import { AgentProvider } from "./provider"
 import { AgentRegistry } from "./registry"
 import { AgentDetect } from "./providers/detect"
 import { OpenCodeProvider } from "./providers/opencode"
+import { ReviewChanges } from "@/review/changes" // spicy: review hook
 
 const ACTIVE = new Set<AgentHQ.AgentSessionStatus>(["starting", "thinking", "working", "needs_approval", "blocked"])
 const HISTORY_LIMIT = 2_000
@@ -92,6 +93,7 @@ const layer = Layer.effect(
     const storage = yield* Storage.Service
     const events = yield* EventV2Bridge.Service
     const registry = yield* AgentRegistry.Service
+    const review = yield* ReviewChanges.Service // spicy: review hook
     const scope = yield* Scope.Scope
     const providers: Record<AgentHQ.ProviderID, AgentProvider.Interface> = {
       opencode: yield* OpenCodeProvider.make,
@@ -132,6 +134,7 @@ const layer = Layer.effect(
         discard: true,
       })
       if (session.info !== before) yield* events.publish(AgentHQ.Event.SessionUpdated, { session: session.info }, where)
+      yield* review.observeAgent(session.info, session.agent, published) // spicy: external agents' edits become review changesets
     })
 
     const save = (session: Live) =>
@@ -543,6 +546,7 @@ export const node = LayerNode.make({
     Permission.node,
     Agent.node,
     AppProcess.node,
+    ReviewChanges.node, // spicy: review hook
   ],
 })
 

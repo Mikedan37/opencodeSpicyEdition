@@ -111,6 +111,10 @@ import { workspaceHandlers } from "./handlers/workspace"
 import { agenthqHandlers } from "./handlers/agenthq" // spicy: Agent HQ routes
 import { workbenchHandlers } from "./handlers/workbench" // spicy: Workbench problems routes
 import { WorkbenchProblems } from "@/workbench/problems/store" // spicy: Workbench services
+import { workbenchDebugHandlers } from "./handlers/workbench-debug" // spicy: Workbench debug routes
+import { DebugToolNode } from "@/workbench/tool/debug" // spicy: Workbench debug and investigation routes
+import { reviewHandlers } from "./handlers/review" // spicy: review routes
+import { ReviewChanges } from "@/review/changes" // spicy: review service
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
 import { disposeMiddleware } from "./lifecycle"
@@ -175,6 +179,8 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     workspaceHandlers,
     agenthqHandlers, // spicy: Agent HQ routes
     workbenchHandlers, // spicy: Workbench problems routes
+    workbenchDebugHandlers, // spicy: Workbench debug routes
+    reviewHandlers, // spicy: review routes
   ]),
 )
 
@@ -276,6 +282,8 @@ const app = LayerNode.group([
   AgentRegistry.node, // spicy: Agent HQ services
   AgentSessions.node, // spicy: Agent HQ services
   WorkbenchProblems.node, // spicy: Workbench services
+  DebugToolNode, // spicy: Workbench debug and investigation routes
+  ReviewChanges.node, // spicy: review service
 ])
 
 export function createRoutes(

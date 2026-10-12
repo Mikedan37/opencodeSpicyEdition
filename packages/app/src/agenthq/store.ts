@@ -1,5 +1,5 @@
 import { batch } from "solid-js"
-import { createStore, produce, reconcile } from "solid-js/store"
+import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store"
 import type { AgentHQ } from "@opencode-ai/schema/agent-hq"
 
 type Envelope = AgentHQ.AgentEventEnvelope
@@ -7,7 +7,15 @@ type ToolState = Extract<AgentHQ.AgentEvent, { type: "tool" }>["state"]
 export type PermissionOption = Extract<AgentHQ.AgentEvent, { type: "permission.requested" }>["options"][number]
 
 export type FeedItem =
-  | { kind: "message"; key: string; role: "user" | "assistant" | "system"; text: string; reasoning: string }
+  | {
+      kind: "message"
+      key: string
+      role: "user" | "assistant" | "system"
+      text: string
+      reasoning: string
+      // false while deltas stream; the server sends the complete text once the block ends
+      final: boolean
+    }
   | { kind: "tool"; key: string; tool: string; state: ToolState; title?: string; output?: string }
   | {
       kind: "permission"
@@ -43,13 +51,17 @@ type Intake = { seq: number; mode: "live" | "loading" | "stale"; held: Envelope[
 
 export type AgentHQStore = ReturnType<typeof createAgentHQStore>
 
-export function createAgentHQStore() {
+// sessionID → the `updatedAt` the user has seen. Persisted by the caller, so a session that completes while the app is
+// closed still shows as finished-but-unviewed on the next start.
+export type SeenStore = [Record<string, number>, SetStoreFunction<Record<string, number>>]
+
+export function createAgentHQStore(seenStore: SeenStore = createStore<Record<string, number>>({})) {
+  const [seen, setSeen] = seenStore
   const [state, setState] = createStore({
     providers: [] as AgentHQ.ProviderStatus[],
     agents: [] as AgentHQ.AgentIdentity[],
     sessions: {} as Record<string, AgentHQ.AgentSessionInfo>,
     feeds: {} as Record<string, Feed>,
-    unseen: {} as Record<string, boolean>,
   })
   const watchers = new Map<string, number>()
   const intake = new Map<string, Intake>()
@@ -114,6 +126,7 @@ export function createAgentHQStore() {
     entry.held = []
     batch(() => {
       setState("sessions", info.id, reconcile(info))
+      setSeen(info.id, info.updatedAt)
       setState("feeds", info.id, { status: "ready", error: undefined })
       setState("feeds", info.id, "items", reconcile(items, { key: "key" }))
     })
@@ -132,7 +145,8 @@ export function createAgentHQStore() {
   function watch(sessionID: string) {
     const count = watchers.get(sessionID) ?? 0
     watchers.set(sessionID, count + 1)
-    setState("unseen", sessionID, false)
+    const info = state.sessions[sessionID]
+    if (info) setSeen(sessionID, info.updatedAt)
     if (count > 0) return false
     intake.set(sessionID, { seq: -1, mode: "loading", held: [] })
     setState("feeds", sessionID, { status: "loading", items: [] })
@@ -164,11 +178,12 @@ export function createAgentHQStore() {
   }
 
   function upsertSession(info: AgentHQ.AgentSessionInfo) {
-    const previous = state.sessions[info.id]
     batch(() => {
-      // A completion that happens while nobody looks at the session earns an attention badge.
-      if (info.status === "completed" && previous?.status !== "completed" && !watchers.has(info.id))
-        setState("unseen", info.id, true)
+      // Updates are seen while a view shows the session. A session met for the first time counts as seen unless
+      // it arrives completed, so a completion nobody watched earns an attention badge.
+      if (watchers.has(info.id)) setSeen(info.id, info.updatedAt)
+      if (!watchers.has(info.id) && seen[info.id] === undefined)
+        setSeen(info.id, info.status === "completed" ? 0 : info.updatedAt)
       setState("sessions", info.id, reconcile(info))
     })
   }
@@ -190,6 +205,7 @@ export function createAgentHQStore() {
 
   return {
     state,
+    seen,
     receive,
     flush,
     loadHistory,
@@ -213,9 +229,14 @@ export function createAgentHQStore() {
       setState("agents", index, reconcile(agent))
     },
     removeAgent: (id: string) => setState("agents", (list) => list.filter((item) => item.id !== id)),
-    // Initial load: completed sessions found here are not "unseen".
+    // Initial load: sessions met for the first time count as seen; marks of sessions that no longer exist are dropped.
     setSessions: (sessions: readonly AgentHQ.AgentSessionInfo[]) =>
-      setState("sessions", reconcile(Object.fromEntries(sessions.map((session) => [session.id, session])))),
+      batch(() => {
+        setState("sessions", reconcile(Object.fromEntries(sessions.map((session) => [session.id, session]))))
+        setSeen(
+          reconcile(Object.fromEntries(sessions.map((session) => [session.id, seen[session.id] ?? session.updatedAt]))),
+        )
+      }),
   }
 }
 
@@ -249,20 +270,22 @@ export function applyEvent(items: FeedItem[], envelope: Envelope) {
         role: event.type === "message" ? event.role : "assistant",
         text: event.type === "reasoning" ? "" : event.text,
         reasoning: event.type === "reasoning" ? event.text : "",
+        final: event.type !== "message.delta",
       })
       return
     }
     if (event.type === "message") {
       item.role = event.role
       item.text = event.text
+      item.final = true
       return
     }
     if (event.type === "message.delta") {
       item.text += event.text
       return
     }
-    // Assumption: reasoning events are chunks, like message.delta (there is no reasoning.delta).
-    item.reasoning += event.text
+    // The server sends a reasoning block's full text once (a rewrite repeats it): replace, never append.
+    item.reasoning = event.text
     return
   }
   if (event.type === "tool") {
@@ -316,13 +339,21 @@ export function agentSessions(sessions: Record<string, AgentHQ.AgentSessionInfo>
     .toSorted((a, b) => b.updatedAt - a.updatedAt)
 }
 
+// A session that stopped working (the server reports a finished turn as `idle`) after the user last looked at it.
+export function isUnseen(session: AgentHQ.AgentSessionInfo, seen: Record<string, number>) {
+  return (
+    (session.status === "completed" || session.status === "idle") &&
+    session.updatedAt > (seen[session.id] ?? session.updatedAt)
+  )
+}
+
 // `sessions` must be newest first; a failed session only counts while it is the latest one.
 export function agentAttention(
   sessions: readonly AgentHQ.AgentSessionInfo[],
-  unseen: Record<string, boolean>,
+  seen: Record<string, number>,
 ): "needs_approval" | "failed" | "completed" | undefined {
   if (sessions.some((session) => session.status === "needs_approval" || session.pendingPermissions > 0))
     return "needs_approval"
   if (sessions[0]?.status === "failed") return "failed"
-  if (sessions.some((session) => unseen[session.id])) return "completed"
+  if (sessions.some((session) => isUnseen(session, seen))) return "completed"
 }

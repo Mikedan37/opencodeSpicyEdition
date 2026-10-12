@@ -8,6 +8,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Permission } from "@/permission"
 import { MessageID, PartID, type SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
+import { WorkbenchInvestigation } from "../investigation/investigation" // spicy: supervisor stops repairs
 import { WorkbenchVerify } from "./verify"
 
 // Turn-end gate. When the loop is about to stop and files changed since the last user message, run the
@@ -45,6 +46,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const flags = yield* Flags
     const verify = yield* WorkbenchVerify.Service
+    const investigations = yield* WorkbenchInvestigation.Service // spicy: supervisor stops repairs
     const sessions = yield* Session.Service
     const agents = yield* Agent.Service
 
@@ -68,6 +70,8 @@ const layer = Layer.effect(
           Effect.succeed(units.filter((unit) => Permission.evaluate("verify.exec", unit, ruleset).action === "allow")),
       })
       if (flags.mode === "report-only") return "break" as const
+      // spicy: once the supervisor blocked the session's investigation or handed it to the user, stop repairing
+      if (yield* investigations.halted(input.sessionID)) return "break" as const
       const errors = result.problems.filter((item) => item.severity === "error" && item.new)
       const repairs = users.filter((index) => index > real && isRepair(input.messages[index])).length
       if (!errors.length || repairs >= MAX_REPAIRS) return "break" as const
@@ -153,7 +157,7 @@ export const flagsNode = LayerNode.make({ service: Flags, layer: Flags.layer.pip
 export const node = LayerNode.make({
   service: Service,
   layer,
-  deps: [flagsNode, WorkbenchVerify.node, Session.node, Agent.node],
+  deps: [flagsNode, WorkbenchVerify.node, Session.node, Agent.node, WorkbenchInvestigation.node], // spicy: investigations
 })
 
 export * as WorkbenchGate from "./gate"

@@ -33,6 +33,7 @@ import { WorktreeEvent } from "./worktree-event"
 // spicy: Workbench + Agent HQ events (see SPICY.md)
 import { Workbench } from "./workbench"
 import { AgentHQ } from "./agent-hq"
+import { Review } from "./review" // spicy: review changesets
 
 const sessionV1DurableDefinitions = SessionV1.Event.Definitions.filter((definition) => definition.durable !== undefined)
 const sessionV1LiveDefinitions = SessionV1.Event.Definitions.filter((definition) => definition.durable === undefined)
@@ -57,6 +58,7 @@ const featureDefinitions = Event.inventory(
   ...Question.Event.Definitions,
   ...Workbench.Event.Definitions,
   ...AgentHQ.Event.Definitions,
+  ...Review.Event.Definitions, // spicy: review changesets
 )
 
 export const ServerDefinitions = Event.inventory(

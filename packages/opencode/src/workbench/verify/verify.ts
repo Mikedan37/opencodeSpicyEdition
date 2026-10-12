@@ -11,6 +11,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { containsPath } from "@/project/instance-context"
 import { Filesystem } from "@/util/filesystem"
 import { WorkbenchProblems } from "../problems/store"
+import { WorkbenchInvestigation } from "../investigation/investigation" // spicy: runs feed investigations
 import { WorkbenchCheckers } from "./checkers"
 import { WorkbenchParse } from "./parse"
 
@@ -55,6 +56,7 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
     Service,
     Effect.gen(function* () {
       const store = yield* WorkbenchProblems.Service
+      const investigations = yield* WorkbenchInvestigation.Service // spicy: runs feed investigations
       const events = yield* EventV2Bridge.Service
       const spawner = yield* ChildProcessSpawner
       const state = yield* InstanceState.make(() => Effect.succeed({ reports: [] as Workbench.VerificationReport[] }))
@@ -278,7 +280,10 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
         }
         const s = yield* InstanceState.get(state)
         s.reports = [...s.reports, report].slice(-REPORTS)
-        return { report, problems: checks.flatMap((check) => check.problems) }
+        const problems = checks.flatMap((check) => check.problems)
+        // spicy: a run for a session with an open investigation is recorded as its check (and test) evidence
+        if (input.sessionID) yield* investigations.verified(input.sessionID, report, problems)
+        return { report, problems }
       })
 
       const reports = Effect.fn("WorkbenchVerify.reports")(function* () {
@@ -346,7 +351,7 @@ export const nodeFor = (checkers: WorkbenchCheckers.Info[]) =>
   LayerNode.make({
     service: Service,
     layer: layerFor(checkers),
-    deps: [WorkbenchProblems.node, EventV2Bridge.node, CrossSpawnSpawner.node],
+    deps: [WorkbenchProblems.node, EventV2Bridge.node, CrossSpawnSpawner.node, WorkbenchInvestigation.node], // spicy: investigations
   })
 
 export const node = nodeFor(WorkbenchCheckers.all)

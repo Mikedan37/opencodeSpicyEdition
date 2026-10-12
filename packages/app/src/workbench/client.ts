@@ -36,6 +36,16 @@ const SessionDetail = Schema.Struct({
   history: Schema.Array(AgentHQ.AgentEventEnvelope),
 })
 
+// GET /workbench/runs/:runID (`RunRecord` in groups/workbench.ts on spicy-problems): output capped at 256 KB.
+const RunDetail = Schema.Struct({
+  run: Workbench.RunInfo,
+  output: Schema.String,
+  truncated: Schema.optional(Schema.Boolean),
+})
+
+// POST /workbench/check (`CheckPayload`): files, or a folder/file as `unit` (its source files, at most 200).
+export type CheckInput = { files?: string[]; unit?: string; tests?: boolean }
+
 const decoders = {
   providers: Schema.decodeUnknownOption(Schema.Array(AgentHQ.ProviderStatus)),
   agents: Schema.decodeUnknownOption(Schema.Array(AgentHQ.AgentIdentity)),
@@ -44,6 +54,9 @@ const decoders = {
   session: Schema.decodeUnknownOption(AgentHQ.AgentSessionInfo),
   detail: Schema.decodeUnknownOption(SessionDetail),
   problems: Schema.decodeUnknownOption(Workbench.ProblemsSnapshot),
+  runs: Schema.decodeUnknownOption(Schema.Array(Workbench.RunInfo)),
+  run: Schema.decodeUnknownOption(RunDetail),
+  report: Schema.decodeUnknownOption(Workbench.VerificationReport),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -105,6 +118,9 @@ export function createWorkbenchClient(input: {
     respond: (id: string, requestID: string, optionID: string) =>
       call("POST", `${session(id)}/permissions/${encodeURIComponent(requestID)}`, { optionID }),
     problems: () => decoded(decoders.problems, "GET", "/workbench/problems"),
+    runs: () => decoded(decoders.runs, "GET", "/workbench/runs"),
+    run: (id: string) => decoded(decoders.run, "GET", `/workbench/runs/${encodeURIComponent(id)}`),
+    check: (body: CheckInput = {}) => decoded(decoders.report, "POST", "/workbench/check", body),
   }
 }
 

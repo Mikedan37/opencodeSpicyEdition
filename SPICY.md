@@ -24,6 +24,9 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 | `packages/opencode/test/cli/help/__snapshots__/help-snapshots.test.ts.snap` | `opencode debug workbench` line in the `debug --help` snapshot | Doctor subcommand |
 | `packages/opencode/test/lsp/{client,index}.test.ts`, `test/fixture/lsp/fake-lsp-server.js` | `refreshSupport` now true; fake server variants for the sourcekit pattern and dying servers | REG tests |
 | `packages/opencode/test/session/{prompt,snapshot-tool-race}.test.ts`, `test/tool/lsp.test.ts` | LSP stubs gain `diagnosticEvents: () => Stream.empty` | Interface grew a method |
+| `packages/app/src/app.tsx` | `FileComponentProvider` gets the fork's `DebugFile` (session-ui `File` plus debugger gutter marks) | Breakpoints, paused line and values in the file viewer |
+| `packages/app/src/context/command.tsx` | `EDITABLE_KEYBIND_IDS` also spreads `SPICY_EDITABLE_KEYBIND_IDS` from `workbench/keys.ts` | Fork keys (F5, F9, F10, …) fire while typing; new fork keys only edit `keys.ts` |
+| `packages/app/src/pages/session/session-side-panel.tsx` | Debug tab trigger and content in the side panel tabs | Debugger side panel (v2 layout) |
 | `packages/app/src/context/language.tsx` | Merge the fork's English `workbench/en` dictionary into the base dictionary | Workbench strings; other locales fall back to English |
 | `packages/app/src/pages/session.tsx` | Wrap the session children in `WorkbenchProviders` | Workbench and Agent HQ state for the bottom panel |
 | `packages/app/src/pages/session/terminal-panel-v2.tsx` | Workbench tab triggers and content share the terminal tab bar; a selected Workbench tab replaces the terminal view | Agents, Problems, Output, Debug Console, Run tabs |

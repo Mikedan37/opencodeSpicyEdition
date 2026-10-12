@@ -26,6 +26,7 @@ import { terminalTabLabel } from "@/pages/session/terminal-label"
 import { createSizing, focusTerminalById } from "@/pages/session/helpers"
 import { getTerminalHandoff, setTerminalHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
+import { useWorkbench, WorkbenchTabContent, WorkbenchTabTriggers } from "@/workbench/panel" // spicy: Workbench tabs
 
 export function TerminalPanelV2(props: { stacked?: boolean } = {}) {
   const layout = useLayout()
@@ -35,6 +36,7 @@ export function TerminalPanelV2(props: { stacked?: boolean } = {}) {
   const command = useCommand()
   const settings = useSettings()
   const { workspaceKey, view } = useSessionLayout()
+  const workbench = useWorkbench() // spicy: Workbench tabs share this tab bar
 
   const isDesktop = createMediaQuery("(min-width: 768px)")
   const newLayout = createMemo(() => settings.general.newLayoutDesigns())
@@ -258,8 +260,8 @@ export function TerminalPanelV2(props: { stacked?: boolean } = {}) {
             <div class="flex flex-col h-full">
               <Tabs
                 variant={newLayout() ? "normal" : "alt"}
-                value={terminal.active()}
-                onChange={(id) => terminal.open(id)}
+                value={workbench.value() ?? terminal.active()} // spicy: a selected Workbench tab wins
+                onChange={(id) => workbench.select(id) || terminal.open(id)} // spicy: Workbench ids are prefixed
                 class={newLayout() ? "!h-[52px] !flex-none" : "!h-auto !flex-none"}
               >
                 <Tabs.List
@@ -317,10 +319,14 @@ export function TerminalPanelV2(props: { stacked?: boolean } = {}) {
                       </TooltipV2>
                     </Show>
                   </div>
+                  {/* spicy: Agents, Problems, Output, Debug Console, Run */}
+                  <WorkbenchTabTriggers />
                 </Tabs.List>
               </Tabs>
               <div class="flex-1 min-h-0 relative">
-                <Show when={opened() && terminal.active()} keyed>
+                {/* spicy: Workbench tab content replaces the terminal view while selected */}
+                <Show when={opened() && workbench.tab()}>{(tab) => <WorkbenchTabContent tab={tab()} />}</Show>
+                <Show when={opened() && !workbench.tab() && terminal.active()} keyed>
                   {(id) => {
                     const ops = terminal.bind()
                     return (

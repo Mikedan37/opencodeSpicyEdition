@@ -228,9 +228,11 @@ export function createWorkbenchClient(input: {
     removeTask: (id: string) => call("DELETE", task(id)),
     startTask: (id: string) => decoded(decoders.task, "POST", `${task(id)}/start`),
     cancelTask: (id: string) => decoded(decoders.task, "POST", `${task(id)}/cancel`),
-    // Dry run of approving: what merging the task's branch would bring in. Touches nothing.
+    // Dry run of approving: what merging the task's branch would bring in, as of the branch commit `head`. Touches
+    // nothing outside the task's own branch.
     taskReview: (id: string) => decoded(decoders.taskReview, "GET", `${task(id)}/review`),
-    approveTask: (id: string) => decoded(decoders.task, "POST", `${task(id)}/approve`),
+    // Merges exactly the reviewed `head`; the server refuses when the task changed since that review.
+    approveTask: (id: string, head?: string) => decoded(decoders.task, "POST", `${task(id)}/approve`, { head }),
     messages: (filter: { taskID?: string; agentID?: string }) =>
       decoded(
         decoders.messages,

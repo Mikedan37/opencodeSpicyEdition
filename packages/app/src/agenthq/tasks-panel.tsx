@@ -451,7 +451,7 @@ function ReviewGate(props: { task: Task }) {
   }
   const approve = () => {
     setRefusal(undefined)
-    tasks.approve(props.task.id).catch((error: unknown) => setRefusal(errorText(error)))
+    tasks.approve(props.task.id, state()?.review?.head).catch((error: unknown) => setRefusal(errorText(error)))
   }
   return (
     <section

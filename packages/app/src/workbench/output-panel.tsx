@@ -110,7 +110,10 @@ export default function OutputPanel() {
               <RunSection
                 entry={entry}
                 now={now()}
-                open={ui.open[entry.info.id] ?? (index() === 0 || entry.info.status === "running")}
+                open={
+                  ui.open[entry.info.id] ??
+                  (index() === 0 || entry.info.status === "running" || entry.info.id === runs.state.focus)
+                }
                 onToggle={(open) => setUi("open", entry.info.id, open)}
               />
             )}
@@ -139,6 +142,11 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
     return seconds((info().finishedAt ?? props.now) - start)
   }
   const unit = () => (info().unit.startsWith(`${directory}/`) ? info().unit.slice(directory.length + 1) : info().unit)
+  let section!: HTMLElement
+  // A run another view pointed at (an investigation's evidence) scrolls into view.
+  createEffect(() => {
+    if (workbench.runs.state.focus === info().id) section.scrollIntoView({ block: "nearest" })
+  })
 
   // Output the stream could not provide is fetched once the section is open.
   createEffect(() => {
@@ -146,7 +154,13 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
   })
 
   return (
-    <section data-run={info().id} data-status={info().status} class="border-b border-v2-border-border-muted">
+    <section
+      ref={section}
+      data-run={info().id}
+      data-status={info().status}
+      class="border-b border-v2-border-border-muted"
+      classList={{ "bg-v2-background-bg-layer-01": workbench.runs.state.focus === info().id }}
+    >
       <button
         type="button"
         aria-expanded={props.open}

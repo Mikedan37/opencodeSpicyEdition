@@ -60,7 +60,8 @@ function createDebug() {
   const fail = (title: string) => (error: unknown) =>
     showToast({ variant: "error", title, description: errorText(error) })
   const run = (action: DebugAction) => debug.control(action).catch(fail(language.t("workbench.debug.failed.control")))
-  const takeOver = () => debug.takeOver().catch(fail(language.t("workbench.debug.failed.owner")))
+  const setOwner = (owner: "idle" | "agent" | "human", id?: string) =>
+    debug.setOwner(owner, id).catch(fail(language.t("workbench.debug.failed.owner")))
   const end = () => debug.stop().catch(fail(language.t("workbench.debug.failed.stop")))
 
   // A stop the human is driving shows its line in the viewer, unless the Debug tab is in front (it shows the stack).
@@ -182,7 +183,7 @@ function createDebug() {
   return {
     ...debug,
     run,
-    takeOver,
+    setOwner,
     end,
     openStart,
     consoleFilter: { state: consoleFilter, set: setConsoleFilter },

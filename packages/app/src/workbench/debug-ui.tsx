@@ -81,6 +81,12 @@ export function DebugToolbar() {
 
 const OWNER_TONE = { human: "success", agent: "warning", idle: "neutral", terminating: "neutral" } as const
 
+// What the human can do with each owner: take over, hand the session to the agent, or release it.
+const TAKE_OVER = { id: "take-over", key: "takeOver", to: "human" } as const
+const HAND_TO_AGENT = { id: "hand-to-agent", key: "handToAgent", to: "agent" } as const
+const RELEASE = { id: "release", key: "release", to: "idle" } as const
+const OWNER_ACTIONS = { agent: [TAKE_OVER], idle: [TAKE_OVER, HAND_TO_AGENT], human: [HAND_TO_AGENT, RELEASE] }
+
 // Who drives the session; the human can always take over (the agent cannot take it back).
 export function OwnerChip(props: { session: DebugSession }) {
   const debug = useDebug()
@@ -94,10 +100,20 @@ export function OwnerChip(props: { session: DebugSession }) {
       >
         {language.t(`workbench.debug.owner.${owner()}`)}
       </span>
-      <Show when={isLive(props.session) && (owner() === "agent" || owner() === "idle")}>
-        <ButtonV2 size="small" variant="neutral" data-action="debug-take-over" onClick={() => void debug.takeOver()}>
-          {language.t("workbench.debug.takeOver")}
-        </ButtonV2>
+      <Show when={isLive(props.session) && owner() !== "terminating"}>
+        <For each={OWNER_ACTIONS[owner() as Exclude<DebugSession["owner"], "terminating">]}>
+          {(action) => (
+            <ButtonV2
+              size="small"
+              variant={action.to === "human" ? "neutral" : "ghost"}
+              data-action={`debug-${action.id}`}
+              title={language.t(`workbench.debug.${action.key}.description`)}
+              onClick={() => void debug.setOwner(action.to, props.session.id)}
+            >
+              {language.t(`workbench.debug.${action.key}`)}
+            </ButtonV2>
+          )}
+        </For>
       </Show>
     </span>
   )

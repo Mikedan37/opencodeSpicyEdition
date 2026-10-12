@@ -31,6 +31,8 @@ export function createRunsState(client: Pick<WorkbenchClient, "runs" | "run" | "
     history: "idle" as "idle" | "loading" | "ready" | "unavailable" | "failed",
     checking: false,
     report: undefined as Workbench.VerificationReport | undefined,
+    // A run another view asked to show (an investigation's evidence); the Output tab opens and scrolls to it.
+    focus: undefined as string | undefined,
   })
   const find = (id: string) => state.runs.findIndex((entry) => entry.info.id === id)
 
@@ -125,7 +127,7 @@ export function createRunsState(client: Pick<WorkbenchClient, "runs" | "run" | "
       .finally(() => setState("checking", false))
   }
 
-  return { state, update, output, load, detail, check }
+  return { state, update, output, load, detail, check, focus: (id: string) => setState("focus", id) }
 }
 
 function unavailable(error: unknown) {

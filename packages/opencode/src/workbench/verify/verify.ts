@@ -311,15 +311,24 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
           approval: input.approval ?? NEEDS_APPROVAL,
           passed: new Set<string>(),
         }
-        // Units that share a root run in order (go vet waits for go build); others run CONCURRENCY at a time.
-        const groups = Object.values(Object.groupBy(units, (unit) => unit.root)).flatMap((group) =>
-          group ? [group] : [],
-        )
-        const checks = (yield* Effect.forEach(
-          groups,
-          (group) => Effect.forEach(group, (unit) => runUnit(unit, context)),
-          { concurrency: CONCURRENCY },
-        )).flat()
+        // Checkers that share a root run in order (go vet waits for go build); other roots run CONCURRENCY at a
+        // time. Test runners come after all checkers, one at a time: suites share ports, databases and tool state
+        // (two pytest processes starting together tripped over a plugin's data folder on this machine).
+        const groups = Object.values(
+          Object.groupBy(
+            units.filter((unit) => !unit.checker.test),
+            (unit) => unit.root,
+          ),
+        ).flatMap((group) => (group ? [group] : []))
+        const checks = [
+          ...(yield* Effect.forEach(groups, (group) => Effect.forEach(group, (unit) => runUnit(unit, context)), {
+            concurrency: CONCURRENCY,
+          })).flat(),
+          ...(yield* Effect.forEach(
+            units.filter((unit) => unit.checker.test),
+            (unit) => runUnit(unit, context),
+          )),
+        ]
 
         const covering = (file: string) =>
           checks.filter((check) =>

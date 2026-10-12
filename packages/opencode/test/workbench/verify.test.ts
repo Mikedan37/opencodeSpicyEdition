@@ -344,27 +344,32 @@ describe("workbench verification engine", () => {
       const dir = (yield* TestInstance).directory
       yield* Effect.promise(() => write(path.join(dir, "app"), zoo.pytest))
       yield* Effect.promise(() => write(path.join(dir, "lib"), { "pyproject.toml": "", "lib.py": "VALUE = 1\n" }))
-      const all = (units: ReadonlyArray<string>) => Effect.succeed([...units])
       const verify = yield* WorkbenchVerify.Service
-      const result = yield* verify.run({
-        files: [path.join(dir, "app/avg.py"), path.join(dir, "lib/lib.py")],
-        trigger: "agent",
-        tests: true,
-        approve: all,
-      })
-      const pytest = result.report.checks.filter((check) => check.run.checker === "pytest")
-      expect(pytest.map((check) => [path.relative(dir, check.run.unit), check.run.status, check.run.reason])).toEqual([
-        ["app", "failed", undefined],
-        ["lib", "skipped", "no tests collected"],
-      ])
+      // One project per run: two pytest processes starting together can race inside plugins installed on this
+      // machine (xonsh's creates its data folder without exist_ok and exits 3), which is not what this tests.
+      const run = (file: string) =>
+        verify.run({
+          files: [path.join(dir, file)],
+          trigger: "agent",
+          tests: true,
+          approve: (units) => Effect.succeed([...units]),
+        })
+      const pytest = (result: WorkbenchVerify.Result) =>
+        result.report.checks
+          .filter((check) => check.run.checker === "pytest")
+          .map((check) => [path.relative(dir, check.run.unit), check.run.status, check.run.reason])
+
+      const app = yield* run("app/avg.py")
+      expect(pytest(app)).toEqual([["app", "failed", undefined]])
       expect(
-        result.problems
+        app.problems
           .filter((item) => item.tool === "pytest")
           .map((item) => [path.relative(dir, item.file ?? ""), item.range?.start.line, item.code]),
       ).toEqual([
         ["app/test_avg.py", 4, "test_avg::test_average"],
         ["app/avg.py", 1, "test_avg::test_empty"],
       ])
+      expect(pytest(yield* run("lib/lib.py"))).toEqual([["lib", "skipped", "no tests collected"]])
     }),
   )
 

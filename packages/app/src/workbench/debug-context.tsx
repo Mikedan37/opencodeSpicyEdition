@@ -64,16 +64,20 @@ function createDebug() {
     debug.setOwner(owner, id).catch(fail(language.t("workbench.debug.failed.owner")))
   const end = () => debug.stop().catch(fail(language.t("workbench.debug.failed.stop")))
 
-  // A stop the human is driving shows its line in the viewer, unless the Debug tab is in front (it shows the stack).
+  // A stop the human is driving brings its file forward in the side panel, whatever tab is in front, unless the user
+  // is typing in that panel (a watch, a breakpoint condition, a comment).
   createEffect(
     on(
+      // Keyed by the stop alone: taking over an agent's paused session is not a new stop.
       () => {
         const session = debug.selected()
-        return session?.stop && session.owner === "human" ? `${session.id}:${session.stop.at}` : undefined
+        return session?.stop ? `${session.id}:${session.stop.at}` : undefined
       },
       (key) => {
-        const frame = debug.selected()?.stop?.frames[0]
-        if (!key || workbench.side() || !frame?.file || !frame.line || !debug.relative(frame.file)) return
+        const session = debug.selected()
+        const frame = session?.stop?.frames[0]
+        if (!key || session?.owner !== "human" || typingInSidePanel()) return
+        if (!frame?.file || !frame.line || !debug.relative(frame.file)) return
         openAt(frame.file, frame.line, false)
       },
       { defer: true },
@@ -192,6 +196,12 @@ function createDebug() {
     // The line each mounted file viewer shows selected, by project-relative path (debug-file.tsx registers them).
     viewers,
   }
+}
+
+function typingInSidePanel() {
+  const element = document.activeElement
+  if (!(element instanceof HTMLElement) || !element.closest("#review-panel")) return false
+  return element.isContentEditable || element.matches("input, textarea, select")
 }
 
 export type DebugContextValue = ReturnType<typeof createDebug>

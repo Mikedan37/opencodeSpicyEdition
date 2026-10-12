@@ -103,10 +103,12 @@ test("debug side panel: start errors verbatim, stack, lazy variables, watches, o
   await expect(page.locator('[data-component="workbench-debug-console"]')).toBeVisible()
   await expect(page.locator('[data-component="workbench-debug-console"] [data-console-row]')).toHaveCount(0)
 
-  // Stepping posts the command; the next stop resets the frame to the top one
+  // Stepping posts the command; the next stop brings its file forward and resets the frame to the top one
   await debug.locator('[data-debug-action="next"]').click()
   await expect.poll(() => mock.controls).toEqual(["next"])
   mock.emit(updated({ state: "stopped", stop: stopAt(2) }))
+  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
+  await panel.locator('[data-workbench-side-tab="debug"]').click()
   await expect(debug.locator('[data-frame="1"] [data-slot="frame"]')).toHaveAttribute("aria-current", "true")
 
   // The agent drives: controls are disabled with a reason; Take over posts owner = human
@@ -329,6 +331,47 @@ test("editor gutter: paused line with values, breakpoint dots, F9, frame selecti
   await expect(viewer.locator("[data-spicy-exec]")).toHaveCount(0)
 })
 
+test("a stop brings its file forward even when the Review tab is in front", async ({ page }) => {
+  const mock = await setup(page, {
+    vcsDiff: [
+      {
+        file: "src/other.ts",
+        additions: 1,
+        deletions: 1,
+        status: "modified",
+        patch:
+          "diff --git a/src/other.ts b/src/other.ts\n--- a/src/other.ts\n+++ b/src/other.ts\n@@ -1,2 +1,2 @@\n-export const a = 1\n+export const a = 2\n export const b = 3\n",
+      },
+    ],
+  })
+  mock.sessions = [session()]
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  const panel = page.locator("#review-panel")
+  await page.getByRole("button", { name: "Toggle review" }).click()
+  await expect(panel.getByRole("tab", { name: /Files Changed/ })).toHaveAttribute("data-selected", "")
+
+  mock.emit(updated({ state: "stopped", stop: stopAt(1) }))
+  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
+  await expect(panel.getByRole("tab", { name: /Files Changed/ })).not.toHaveAttribute("data-selected", "")
+
+  // Also over the Debug tab, except while the user types in the panel
+  await panel.locator('[data-workbench-side-tab="debug"]').click()
+  const debug = panel.locator('[data-component="workbench-debug"]')
+  await debug.getByPlaceholder("Add expression").click()
+  await expect.poll(() => mock.scopes.length).toBeGreaterThan(0)
+  const loaded = mock.scopes.length
+  mock.emit(updated({ state: "stopped", stop: stopAt(2) }))
+  // The new stop reloads the frame's scopes, so it has been applied while the Debug tab stays in front
+  await expect.poll(() => mock.scopes.length).toBeGreaterThan(loaded)
+  await expect(debug).toBeVisible()
+  await expect(debug.getByPlaceholder("Add expression")).toBeFocused()
+  await page.getByText(title).first().click()
+  mock.emit(updated({ state: "stopped", stop: stopAt(3) }))
+  await expect(debug).toBeHidden()
+  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
+})
+
 function row(seq: number, kind: string, by: string, text: string) {
   return { seq, at: seq, kind, by, text }
 }
@@ -370,7 +413,7 @@ function stopAt(at: number) {
   }
 }
 
-async function setup(page: Page) {
+async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
   const pending: { directory: string; payload: unknown }[] = []
   const mock = {
     // What GET /workbench/debug/sessions and GET .../output return; tests set them before navigating.
@@ -427,6 +470,7 @@ async function setup(page: Page) {
     ],
     pageMessages: () => ({ items: [] }),
     fileList: () => [],
+    ...(options.vcsDiff ? { vcsDiff: options.vcsDiff } : {}),
     fileContent: (path) => {
       if (path === ".vscode/launch.json")
         return {

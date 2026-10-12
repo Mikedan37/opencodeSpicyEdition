@@ -334,9 +334,70 @@ describe("workbench verification engine", () => {
         ]),
       ).toEqual([
         ["avg_test.go", 6, "TestAverage", "test"],
-        ["avg.go", 7, "TestEmpty", "test"],
+        ["avg_test.go", 12, "TestEmpty", "test"],
       ])
     }),
+  )
+
+  needs("pytest")("VER-14 [pytest] tests run through the JUnit report; no tests is not a pass", () =>
+    Effect.gen(function* () {
+      const dir = (yield* TestInstance).directory
+      yield* Effect.promise(() => write(path.join(dir, "app"), zoo.pytest))
+      yield* Effect.promise(() => write(path.join(dir, "lib"), { "pyproject.toml": "", "lib.py": "VALUE = 1\n" }))
+      const verify = yield* WorkbenchVerify.Service
+      // One project per run: two pytest processes starting together can race inside plugins installed on this
+      // machine (xonsh's creates its data folder without exist_ok and exits 3), which is not what this tests.
+      const run = (file: string) =>
+        verify.run({
+          files: [path.join(dir, file)],
+          trigger: "agent",
+          tests: true,
+          approve: (units) => Effect.succeed([...units]),
+        })
+      const pytest = (result: WorkbenchVerify.Result) =>
+        result.report.checks
+          .filter((check) => check.run.checker === "pytest")
+          .map((check) => [path.relative(dir, check.run.unit), check.run.status, check.run.reason])
+
+      const app = yield* run("app/avg.py")
+      expect(pytest(app)).toEqual([["app", "failed", undefined]])
+      expect(
+        app.problems
+          .filter((item) => item.tool === "pytest")
+          .map((item) => [path.relative(dir, item.file ?? ""), item.range?.start.line, item.code]),
+      ).toEqual([
+        ["app/test_avg.py", 4, "test_avg::test_average"],
+        ["app/avg.py", 1, "test_avg::test_empty"],
+      ])
+      expect(pytest(yield* run("lib/lib.py"))).toEqual([["lib", "skipped", "no tests collected"]])
+    }),
+  )
+
+  needs("swift")(
+    "VER-14 [swift] swift test runs through its xUnit reports after a clean build",
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        yield* Effect.promise(() => write(dir, zoo["swift-test"]))
+        const verify = yield* WorkbenchVerify.Service
+        const result = yield* verify.run({
+          files: [path.join(dir, "Sources/Avg/Avg.swift")],
+          trigger: "agent",
+          tests: true,
+          approve: (units) => Effect.succeed([...units]),
+        })
+        expect(result.report.checks.map((check) => [check.run.checker, check.run.status])).toEqual([
+          ["swift", "passed"],
+          ["swift-test", "failed"],
+        ])
+        expect(
+          result.problems.map((item) => [path.relative(dir, item.file ?? ""), item.range?.start.line, item.code]),
+        ).toEqual([
+          ["Tests/AvgTests/AvgSwiftTesting.swift", 4, "emptyList()"],
+          ["Tests/AvgTests/AvgTests.swift", 5, "testAverage"],
+        ])
+      }),
+    180_000,
   )
 
   needs("swift")("VER-06 [swift] a package with a plugin is exec-class", () =>

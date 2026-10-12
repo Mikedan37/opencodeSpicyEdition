@@ -69,6 +69,34 @@ describe("workbench problem store", () => {
     { config: { lsp: { fake: { command: [process.execPath, fakeServer], extensions: [".repro"] } } } },
   )
 
+  it.instance(
+    "DIAG-07 a language server that crashes takes its problems with it",
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        const lsp = yield* LSP.Service
+        const problems = yield* WorkbenchProblems.Service
+        const file = path.join(dir, "sample.repro")
+        yield* Effect.promise(() => Bun.write(file, "const thing = 1\n"))
+        yield* lsp.touchFile(file, "document")
+        yield* pollWithTimeout(
+          problems.snapshot({ file }).pipe(Effect.map((result) => (result.problems.length ? true : undefined))),
+          "LSP problem never reached the store",
+        )
+
+        // the server exits on this change; the client clears its diagnostics, which reaches the store
+        yield* Effect.promise(() => Bun.write(file, "CRASH\n"))
+        yield* lsp.touchFile(file, "document")
+        yield* pollWithTimeout(
+          problems.snapshot({ file }).pipe(Effect.map((result) => (result.problems.length ? undefined : true))),
+          "the crashed server's problems were not cleared",
+        )
+        const status = yield* lsp.status()
+        expect(status).toContainEqual(expect.objectContaining({ id: "fake", status: "error" }))
+      }),
+    { config: { lsp: { fake: { command: [process.execPath, fakeServer], extensions: [".repro"] } } } },
+  )
+
   it.instance("DIAG-02 editing a file marks its problems stale until a new result arrives", () =>
     Effect.gen(function* () {
       const dir = (yield* TestInstance).directory

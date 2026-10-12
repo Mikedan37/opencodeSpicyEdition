@@ -159,19 +159,141 @@ Commands (from `packages/opencode`):
   must default to exec-class.
 - VER-09's "investigation blocked" belongs to the investigation work (P5); the gate stops and the report says
   failed.
-- VER-14 (pytest JUnit, swift test xUnit) is blocked: pytest is not installed; `swift test` parsing is not written.
-- Routes `POST /workbench/check` and `GET /workbench/runs/:runID` from the plan's route table are not implemented
-  (only `GET /workbench/problems` was in scope). Run records and output stream as events today.
+- VER-14 (pytest JUnit, swift test xUnit): done in wave 2.
+- Routes `POST /workbench/check`, `GET /workbench/runs`, `GET /workbench/runs/:runID`, `GET /workbench/doctor`: done
+  in wave 2.
 - The gate cannot see "always" approvals the user granted earlier in the session (they live in the Permission
   service state); it only honours `verify.exec: allow` in the agent or session rules.
 - The problem store starts with its first use (route, check tool or gate); LSP diagnostics produced earlier are
   replayed on subscription.
 - Merge notes for `spicy-lsp`: keep the `onDiagnostics` property in the `LSPClient.create({...})` call inside
   `getClients` and the three `emitDiagnostics` calls in `client.ts`. Any new `LSP.Service.of({...})` stub needs
-  `diagnosticEvents: () => Stream.empty`. DIAG-07 ("old problems marked stale" after a crash) would need LSP to
-  report the crash; the store has no producer-state hook for LSP yet.
+  `diagnosticEvents: () => Stream.empty`. DIAG-07: since spicy-lsp, a dead server's files are cleared through the
+  client's update functions, so its problems leave the store (tested in wave 2).
 - `compile_commands.json` `command` strings are split on whitespace (quoted arguments need `arguments`). mypy needs
   1.11+ for `-O json`. go `-o /dev/null`, bun `--reporter-outfile=/dev/stdout` and the clang link output are
   Unix-only paths.
 - The full regression run once hit a timing flake in `test/server/httpapi-v2-pty.test.ts` (PTY exit not seen in 20 s)
   while other heavy processes were running; it passes alone and in a quiet full run.
+
+## Wave 2: routes, VER-14 runners, MCP bridge
+
+Branch fast-forwarded to `spicy-ide` 6c2f6f274, then five commits (see the report).
+
+### Routes (`WorkbenchApi`, `groups/workbench.ts` + `handlers/workbench.ts`)
+
+| Method | Path | Body / query | Returns |
+|---|---|---|---|
+| GET | `/workbench/problems` | `severity`, `source`, `file` | `ProblemsSnapshot` |
+| POST | `/workbench/check` | `{ files?, unit?, tests?, trigger? }` | `VerificationReport` |
+| GET | `/workbench/runs` | | `RunInfo[]`, newest first, last 100 runs of the instance |
+| GET | `/workbench/runs/:runID` | | `{ run: RunInfo, output: string, truncated: boolean }` (first 256 KB of stdout+stderr as they arrived), 404 `NotFoundError` |
+| GET | `/workbench/doctor` | | the workbench doctor report (`WorkbenchDoctorReport`) |
+
+- `trigger` defaults to `user`: a person started the check in the IDE, so exec-class units run (the report still
+  shows `execClass: "exec"` for them). `trigger: "agent"` (the MCP bridge) runs exec-class units only when
+  `verify.exec` evaluates to `allow` for the default agent's ruleset (built-in defaults plus the user's
+  `permission` config); otherwise they are `skipped` with reason `needs approval in the IDE`. Nobody is asked.
+- `unit` is a folder (its source files, gitignore-aware via ripgrep, at most 200) or a file; the engine expands it,
+  so the `check` tool and the route share the logic. `tests: true` gets a 180 s budget instead of 60 s.
+- The engine keeps run records per instance (capped at 100 runs, 256 KB output each) for the Output tab; runs from
+  the agent's `check` tool and the turn-end gate appear there too (one engine instance per app).
+- Upstream-owned lines touched in wave 2: `server.ts` (+2: import and `WorkbenchVerify.node` in the app graph),
+  `src/index.ts` (+2: import and `.command(WorkbenchCommand)`), the httpapi exercise `index.ts` (scenarios moved to
+  `httpapi-exercise/workbench.ts`, +2 -1). The doctor handler gets `AppProcess` from a layer provided on the
+  workbench handler group (stateless, so no app-graph line).
+- `test:httpapi`: 224/224 in coverage, auth and effect modes (the four new endpoints included).
+
+### Test runners (VER-14) and what this toolchain emits
+
+- Checker plans may use `$REPORT_DIR` (`WorkbenchCheckers.REPORT_DIR`): the runner creates a scoped temp folder,
+  substitutes it, reads every file in it after the run (name order) into the parser's `report`, and removes it.
+- pytest: the first runnable of every `pytest` on PATH, then `python3 -m pytest` for every `python3` on PATH, each
+  probed with `--version` (5 s); the dead x86 `/usr/local/bin/python3` fails to spawn and is skipped. Resolved once
+  per process. Here: `/usr/local/bin/pytest` (8.3.4, CommandLineTools Python 3.9). Command:
+  `pytest --junitxml=$REPORT_DIR/junit.xml -q -p no:cacheprovider [changed test files]`. Exit 5 (no tests collected)
+  is `skipped`, never `passed`. pytest's JUnit has no file/line attributes; the parser takes the innermost
+  in-project `file.py:line:` traceback line.
+- swift test: `swift test --parallel --xunit-output $REPORT_DIR/xunit.xml`, after `swift build` passed. On Swift 6.4
+  (Xcode): without `--parallel` the XCTest results never reach xUnit (only `xunit-swift-testing.xml` appears); with
+  it, `xunit.xml` has `<failure message="failure">` without location; swift-testing's file has the expectation text
+  but no location either. The parser takes the failing test names from both files and the locations from the
+  console: XCTest prints `File.swift:line: error: -[Module.Class test] : message`, swift-testing prints
+  `✘ Test name() recorded an issue at File.swift:line:col: message` with a bare file name, looked up under the
+  package's `Sources` and `Tests`. If no test ran (a test target failed to build) it reports the compiler output.
+- Test runners run after all checkers, one at a time (`03d866f83`): two pytest processes starting together hit a
+  race in a plugin installed here (xonsh creates its data folder without `exist_ok`, pytest exits 3).
+- Goldens: `golden/pytest.json`, `golden/swift-test.json` (real captures, home paths written as `/HOME`).
+
+### Fixture rule (no crashing processes)
+
+Every fixture that a test executes fails through ordinary assertions: go test (`t.Errorf`/`t.Fatalf`), cargo test
+(`assert_eq!`), swift test (`XCTAssertEqual`, `#expect`), bun/node (`expect`/`assert`), pytest (`assert`, plus one
+test whose code raises `ZeroDivisionError`, a Python exception that pytest reports; the interpreter does not
+crash). Before this rule the go test fixture divided by zero (a Go runtime panic, exit 2) and the cargo test fixture
+divided by zero (a Rust panic caught by the harness); neither is an OS crash, but both now use assertions
+(`f30ad43a3`). The old go capture is kept as `golden/go-test-panic.json`, parser input only. Compile-only fixtures
+(type errors, the link error) are never executed. Abrupt exits in fake servers use `process.exit(1)`. None of
+today's crash reports in `~/Library/Logs/DiagnosticReports` match these runs: the Python ones are Xcode's
+Python.app calling `abort()` from Python code with no pytest modules loaded, and none appeared while the VER-14
+pytest runs were repeated.
+
+### Workbench MCP bridge
+
+`opencode workbench mcp` (`src/cli/cmd/workbench.ts`, `src/workbench/mcp/bridge.ts`): a stdio MCP server that
+proxies to an already running opencode server. It keeps no state and runs nothing itself.
+
+- Connection: `--url` or `OPENCODE_SERVER_URL` (required); `--directory` or `OPENCODE_DIRECTORY` (default: the
+  current directory); basic auth from `OPENCODE_SERVER_USERNAME` (default `opencode`) and
+  `OPENCODE_SERVER_PASSWORD`, the same variables the server reads. Requests carry `x-opencode-directory`.
+- Tools: `workbench_problems`, `workbench_check` (always sends `trigger: "agent"`), `workbench_doctor`. Inputs are
+  Effect Schemas served as JSON Schema and decoded with `onExcessProperty: "error"`, so `trigger` or any other
+  extra argument is rejected. Results: a text summary plus `structuredContent` (snapshot, `{ report, problems }`
+  with the problems of this check's runs, doctor report). Route JSON is decoded with each schema's canonical JSON
+  codec (absent optionals arrive as `null`). Server errors and an unreachable server come back as `isError`
+  results with the reason.
+- Extension point for `spicy-dap`: `WorkbenchBridge.define({ name: "debug_…", title, description, input, run })`
+  and pass the tools as `extra` to `WorkbenchBridge.create(connection, extra)` / `serve(connection, extra)` (and to
+  the `serve` call in `src/cli/cmd/workbench.ts`). `run(args, api, connection)` gets a small HTTP client
+  (`api.get`, `api.post`) bound to the server, directory and credentials.
+
+Claude Code example (`claude --mcp-config workbench.json`; tools then appear as
+`mcp__opencode-workbench__workbench_check` etc.):
+
+```json
+{
+  "mcpServers": {
+    "opencode-workbench": {
+      "command": "opencode",
+      "args": ["workbench", "mcp", "--directory", "/path/to/project"],
+      "env": {
+        "OPENCODE_SERVER_URL": "http://127.0.0.1:4096",
+        "OPENCODE_SERVER_PASSWORD": "the server password, if the server has one"
+      }
+    }
+  }
+}
+```
+
+Codex (`~/.codex/config.toml`, `[mcp_servers.opencode-workbench]` with `command`, `args`, `env`) and Cursor
+(`.cursor/mcp.json`, same shape as above) take the same command and environment.
+
+### Wave 2 tests
+
+| ID | Test | File |
+|---|---|---|
+| routes | check → runs → run output (real clang); 404; doctor; user vs agent trigger and `verify.exec: allow` (real cargo) | `test/workbench/routes.test.ts` |
+| DIAG-07 | the fake server exits on a change; its problems leave the store; LSP status shows `error` | `test/workbench/problems.test.ts` |
+| VER-14 | pytest and swift test goldens; real pytest run (failed + `no tests collected` skipped); real swift test run after a clean build | `test/workbench/parse.test.ts`, `test/workbench/verify.test.ts` |
+| MCP | tools/list with exact schemas; check (clang) and problems; exec skipped for agents (cargo); unknown `trigger` rejected; doctor; unreachable server; directory and basic-auth headers; stdio run of `opencode workbench mcp` | `test/workbench/mcp.test.ts` |
+
+### Wave 2 results (from `packages/opencode`)
+
+- `bun test --timeout 60000 test/lsp test/workbench test/agenthq test/tool test/session test/server test/agent`:
+  1262 pass, 9 skip, 1 todo, 0 fail (110 files, 163.6 s). Two earlier full runs, while the machine's load average
+  was 20 to 32 from other sessions' builds, hit the upstream `test/server/httpapi-v2-pty.test.ts` timing flake (the
+  PTY's `exit 4` not observed within 20 s); it passes alone (5 of 5), with `test/workbench` in front of it, and in
+  the full run above.
+- `bun test --timeout 60000 test/workbench`: 66 pass, 0 fail (8 files, including spicy-lsp's doctor tests).
+- `bun run typecheck`: clean. `bun run test:httpapi`: 224/224 in coverage, auth and effect modes.
+- `bun run generate` in `packages/client`: no tracked changes.

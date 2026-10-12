@@ -173,7 +173,8 @@ let package = Package(
     "Sources/app/main.swift": `print("hi")
 `,
   },
-  // Z-TEST-*: the same averaging bug, one failing test per runner
+  // Z-TEST-*: the same averaging bug, failing tests per runner. Executed fixtures fail through ordinary
+  // assertions only: nothing aborts, traps or panics on a signal (crash reports, "quit unexpectedly" dialogs).
   "go-test": {
     "go.mod": `module example.com/avg
 
@@ -182,6 +183,9 @@ go 1.22
     "avg.go": `package avg
 
 func Average(xs []int) int {
+	if len(xs) == 0 {
+		return -1
+	}
 	total := 0
 	for _, x := range xs {
 		total += x
@@ -200,7 +204,9 @@ func TestAverage(t *testing.T) {
 }
 
 func TestEmpty(t *testing.T) {
-	Average(nil)
+	if got := Average(nil); got != 0 {
+		t.Fatalf("Average(nil) = %d, want 0", got)
+	}
 }
 `,
   },
@@ -236,16 +242,71 @@ name = "avg"
 version = "0.1.0"
 edition = "2021"
 `,
-    "src/lib.rs": `pub fn average(xs: &[i32]) -> i32 { xs.iter().sum::<i32>() / xs.len() as i32 }
+    "src/lib.rs": `pub fn average(xs: &[i32]) -> i32 {
+    xs.iter().sum::<i32>() / xs.len().max(1) as i32
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn empty() {
-        assert_eq!(average(&[]), 0);
+    fn average_of_two() {
+        assert_eq!(average(&[2, 4]), 4);
     }
+}
+`,
+  },
+  // VER-14: pytest (JUnit) and swift test (xUnit, one XCTest and one swift-testing failure)
+  pytest: {
+    "pyproject.toml": `[project]
+name = "avg"
+version = "0.1.0"
+`,
+    "avg.py": `def average(xs):
+    return sum(xs) / len(xs)
+`,
+    "test_avg.py": `from avg import average
+
+
+def test_average():
+    assert average([2, 4]) == 4
+
+
+def test_empty():
+    assert average([]) == 0
+`,
+  },
+  "swift-test": {
+    "Package.swift": `// swift-tools-version:5.9
+import PackageDescription
+
+let package = Package(
+  name: "Avg",
+  targets: [
+    .target(name: "Avg"),
+    .testTarget(name: "AvgTests", dependencies: ["Avg"]),
+  ]
+)
+`,
+    "Sources/Avg/Avg.swift": `public func average(_ xs: [Int]) -> Int {
+  xs.reduce(0, +) / max(xs.count, 1)
+}
+`,
+    "Tests/AvgTests/AvgTests.swift": `import XCTest
+@testable import Avg
+
+final class AvgTests: XCTestCase {
+  func testAverage() {
+    XCTAssertEqual(average([2, 4]), 4)
+  }
+}
+`,
+    "Tests/AvgTests/AvgSwiftTesting.swift": `import Testing
+@testable import Avg
+
+@Test func emptyList() {
+  #expect(average([]) == 1)
 }
 `,
   },

@@ -116,6 +116,7 @@ import { workbenchDebugHandlers } from "./handlers/workbench-debug" // spicy: Wo
 import { DebugToolNode } from "@/workbench/tool/debug" // spicy: Workbench debug and investigation routes
 import { reviewHandlers } from "./handlers/review" // spicy: review routes
 import { ReviewChanges } from "@/review/changes" // spicy: review service
+import { WorkbenchVerify } from "@/workbench/verify/verify" // spicy: Workbench services
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
 import { disposeMiddleware } from "./lifecycle"
@@ -286,6 +287,7 @@ const app = LayerNode.group([
   WorkbenchProblems.node, // spicy: Workbench services
   DebugToolNode, // spicy: Workbench debug and investigation routes
   ReviewChanges.node, // spicy: review service
+  WorkbenchVerify.node, // spicy: Workbench services
 ])
 
 export function createRoutes(

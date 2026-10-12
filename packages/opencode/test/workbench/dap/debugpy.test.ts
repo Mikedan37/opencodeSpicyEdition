@@ -158,7 +158,7 @@ print(outer(5))
         yield* write("hang.py", "n = 0\nwhile True:\n    n += 1\n")
         const debug = yield* WorkbenchDebug.Service
         const spec = yield* debug.prepare({ program: "hang.py", stopOnEntry: true })
-        const { session, result } = yield* debug.start(spec, agent, { stepWaitMs: 2_000 })
+        const { session, result } = yield* debug.start(spec, agent, { limits: { stepWaitMs: 2_000 } })
         expect(result.info.stop?.reason).toBe("entry")
         const step = yield* session.control("continue", agent)
         expect(step.outcome).toBe("stopped")

@@ -4,6 +4,7 @@ import { Workbench } from "@opencode-ai/schema/workbench"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { DebugLaunch } from "@/workbench/dap/launch"
+import { WorkbenchInvestigation } from "@/workbench/investigation/investigation"
 import {
   ApiNotFoundError,
   ConflictError,
@@ -33,6 +34,10 @@ export const WorkbenchDebugPaths = {
   output: `${root}/:debugSessionID/output`,
   owner: `${root}/:debugSessionID/owner`,
   stop: `${root}/:debugSessionID`,
+  investigations: "/workbench/investigations",
+  investigation: "/workbench/investigations/:investigationID",
+  resume: "/workbench/investigations/:investigationID/resume",
+  cancel: "/workbench/investigations/:investigationID/cancel",
 } as const
 
 const params = { debugSessionID: Workbench.DebugSessionID }
@@ -168,6 +173,34 @@ export const WorkbenchDebugApi = HttpApi.make("workbench-debug")
           success: described(Workbench.DebugSessionInfo, "Ended session"),
           error: errors,
         }).annotateMerge(op("workbench.debug.stop", "Stop", "End the session and kill the program's process tree.")),
+        HttpApiEndpoint.get("investigations", WorkbenchDebugPaths.investigations, {
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Array(Workbench.InvestigationSummary), "Investigations of this project"),
+        }).annotateMerge(
+          op("workbench.investigation.list", "List investigations", "Persisted investigations, newest first."),
+        ),
+        HttpApiEndpoint.get("investigation", WorkbenchDebugPaths.investigation, {
+          params: { investigationID: Workbench.InvestigationID },
+          query: WorkspaceRoutingQuery,
+          success: described(WorkbenchInvestigation.Full, "Record, evidence and report"),
+          error: errors,
+        }).annotateMerge(
+          op("workbench.investigation.get", "Get investigation", "The full record with its evidence and report."),
+        ),
+        HttpApiEndpoint.post("resume", WorkbenchDebugPaths.resume, {
+          params: { investigationID: Workbench.InvestigationID },
+          query: WorkspaceRoutingQuery,
+          success: described(Workbench.InvestigationSummary, "Resumed investigation"),
+          error: errors,
+        }).annotateMerge(
+          op("workbench.investigation.resume", "Resume", "Relaunch the stored target of an interrupted investigation."),
+        ),
+        HttpApiEndpoint.post("cancel", WorkbenchDebugPaths.cancel, {
+          params: { investigationID: Workbench.InvestigationID },
+          query: WorkspaceRoutingQuery,
+          success: described(Workbench.InvestigationSummary, "Cancelled investigation"),
+          error: errors,
+        }).annotateMerge(op("workbench.investigation.cancel", "Cancel", "Cancel and stop its debug sessions.")),
       )
       .annotateMerge(OpenApi.annotations({ title: "workbench-debug", description: "Workbench debug routes." }))
       .middleware(InstanceContextMiddleware)

@@ -550,6 +550,28 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
     }))
     .json(404, object, "status"),
+  http.protected.get("/workbench/investigations", "workbench.investigation.list").json(200, array),
+  http.protected
+    .get("/workbench/investigations/{investigationID}", "workbench.investigation.get")
+    .at((ctx) => ({
+      path: route("/workbench/investigations/{investigationID}", { investigationID: "inv_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/workbench/investigations/{investigationID}/resume", "workbench.investigation.resume")
+    .at((ctx) => ({
+      path: route("/workbench/investigations/{investigationID}/resume", { investigationID: "inv_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/workbench/investigations/{investigationID}/cancel", "workbench.investigation.cancel")
+    .at((ctx) => ({
+      path: route("/workbench/investigations/{investigationID}/cancel", { investigationID: "inv_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
   http.protected.get("/experimental/console", "experimental.console.get").json(),
   http.protected.get("/experimental/console/orgs", "experimental.console.listOrgs").json(),
   http.protected

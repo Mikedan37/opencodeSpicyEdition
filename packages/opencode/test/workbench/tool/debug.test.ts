@@ -4,7 +4,7 @@ import { afterEach, describe, expect } from "bun:test"
 import path from "path"
 import { Effect, Fiber } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "../../../src/agent/agent"
 import { SessionRunState } from "../../../src/session/run-state"
 import { MessageID, SessionID } from "../../../src/session/schema"
@@ -13,14 +13,15 @@ import { Truncate } from "../../../src/tool/truncate"
 import { Debugpy } from "../../../src/workbench/dap/adapters/debugpy"
 import { WorkbenchDebug } from "../../../src/workbench/dap/service"
 import { DebugSession } from "../../../src/workbench/dap/session"
-import { DebugTool } from "../../../src/workbench/tool/debug"
-import { disposeAllInstances, TestInstance } from "../../fixture/fixture"
+import { WorkbenchInvestigation } from "../../../src/workbench/investigation/investigation"
+import { DebugTool, DebugToolNode } from "../../../src/workbench/tool/debug"
+import { disposeAllInstances, disposeAllInstancesEffect, TestInstance } from "../../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../../lib/effect"
 import type { Script } from "../fixture/fake-dap"
 
 const FAKE = path.join(import.meta.dir, "../fixture/fake-dap.ts")
 const it = testEffect(
-  LayerNode.compile(LayerNode.group([Agent.node, Truncate.node, WorkbenchDebug.node, SessionRunState.node])),
+  LayerNode.compile(LayerNode.group([Agent.node, Truncate.node, DebugToolNode, SessionRunState.node])),
 )
 const found = await Debugpy.resolve({ directory: process.cwd() })
 const reason = "error" in found ? found.error : undefined
@@ -220,5 +221,146 @@ describe("tool.debug", () => {
         expect(session.info().state).toBe("terminated")
       }),
     60_000,
+  )
+})
+
+const logged = (file: string) =>
+  Effect.promise(() =>
+    Bun.file(file)
+      .text()
+      .catch(() => ""),
+  ).pipe(
+    Effect.map((text) =>
+      text
+        .split("\n")
+        .filter(Boolean)
+        .map(
+          (line) =>
+            JSON.parse(line) as { command?: string; arguments?: { source?: { path?: string }; lines?: number[] } },
+        ),
+    ),
+  )
+
+describe("tool.debug investigations", () => {
+  it.instance(
+    "INV-05 resume asks debug.launch, then relaunches the stored target with its breakpoints",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* fake({ profile: "debugpy", stops: [stop(3)] })
+        const first = context("ses_resume")
+        const started = yield* run(
+          {
+            action: "start",
+            configuration: "fake",
+            breakpoints: [{ file: "app.py", line: 3 }],
+            title: "average crashes",
+          },
+          first.ctx,
+        )
+        const investigations = yield* WorkbenchInvestigation.Service
+        const id = started.output.match(/investigation (inv_\w+)/)?.[1]
+        expect(id).toBeDefined()
+        // Restart: the instance (and its debug sessions) goes away; the record stays.
+        yield* disposeAllInstancesEffect
+        expect((yield* investigations.get(id!)).status).toBe("interrupted")
+        const log = path.join(directory, "resume.jsonl")
+        yield* fake({ profile: "debugpy", stops: [stop(3)], log })
+        const second = context("ses_resume")
+        const resumed = yield* run({ action: "resume", investigation: id! }, second.ctx)
+        expect(second.asks).toEqual([
+          expect.objectContaining({
+            permission: "debug.launch",
+            patterns: ["app.py"],
+            metadata: expect.objectContaining({ resume: true }),
+          }),
+        ])
+        expect(resumed.metadata.investigation?.status).not.toBe("interrupted")
+        const sent = yield* logged(log)
+        expect(sent.find((entry) => entry.command === "setBreakpoints")?.arguments).toMatchObject({
+          source: { path: path.join(directory, "app.py") },
+          lines: [3],
+        })
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "INV-09 S5: after the step budget the agent is stopped and the program stays paused",
+    () =>
+      Effect.gen(function* () {
+        yield* fake({ profile: "debugpy", stops: [stop(3), stop(4), stop(5), stop(6)] })
+        const investigations = yield* WorkbenchInvestigation.Service
+        const record = yield* investigations.open({
+          sessionID: "ses_budget",
+          title: "budget",
+          policy: { ...WorkbenchInvestigation.DEFAULT_POLICY, maxDebugSteps: 2 },
+        })
+        const { ctx } = context("ses_budget")
+        yield* run({ action: "start", configuration: "fake" }, ctx)
+        yield* run({ action: "control", command: "next" }, ctx)
+        yield* run({ action: "control", command: "next" }, ctx)
+        const halted = yield* pollWithTimeout(
+          investigations.get(record.id).pipe(Effect.map((item) => (item.status === "needs_human" ? item : undefined))),
+          "the step budget never handed the investigation to the user",
+        )
+        expect(halted.checkpoints.at(-1)?.reason).toBe("S5: debug step budget of 2 used; the program stays paused")
+        const refused = yield* run({ action: "control", command: "next" }, ctx).pipe(Effect.exit)
+        expect(JSON.stringify(refused)).toContain("needs_human")
+        const debug = yield* WorkbenchDebug.Service
+        const session = yield* debug.current("ses_budget")
+        expect(session?.info().state).toBe("stopped")
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "INV-11 S7: a denied permission hands the investigation to the user",
+    () =>
+      Effect.gen(function* () {
+        yield* fake({ profile: "debugpy", stops: [stop(3)] })
+        const { ctx } = context("ses_denied")
+        const denied = { ...ctx, ask: () => Effect.die(new PermissionV1.RejectedError()) }
+        const exit = yield* run({ action: "start", configuration: "fake" }, denied).pipe(Effect.exit)
+        expect(exit._tag).toBe("Failure")
+        const investigations = yield* WorkbenchInvestigation.Service
+        const record = yield* investigations.current("ses_denied")
+        expect(record?.status).toBe("needs_human")
+        expect(record?.checkpoints.at(-1)?.reason).toBe("S7: permission denied: debug.launch")
+        const debug = yield* WorkbenchDebug.Service
+        expect(yield* debug.list()).toEqual([])
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "INV-12 the model can add notes and escalate, but never evidence or a resolution",
+    () =>
+      Effect.gen(function* () {
+        yield* fake({ profile: "debugpy", stops: [stop(3)] })
+        const { ctx } = context("ses_notes")
+        yield* run({ action: "start", configuration: "fake" }, ctx)
+        const investigations = yield* WorkbenchInvestigation.Service
+        const before = (yield* investigations.current("ses_notes"))!
+        // Extra fields such as class or status are not part of the tool's parameters.
+        const noted = yield* run(
+          {
+            action: "note",
+            kind: "hypothesis",
+            text: "len(xs) is 0 for bob",
+            class: "verified",
+            status: "resolved",
+          } as never,
+          ctx,
+        )
+        expect(noted.output).toContain("notes (inferred, not evidence)")
+        const after = yield* investigations.get(before.id)
+        expect(after.notes.map((item) => item.text)).toEqual(["len(xs) is 0 for bob"])
+        expect(after.evidence).toEqual(before.evidence)
+        expect(after.status).toBe(before.status)
+        const escalated = yield* run({ action: "escalate", text: "needs a product decision" }, ctx)
+        expect(escalated.metadata.investigation?.status).toBe("needs_human")
+        expect(escalated.metadata.investigation?.reason).toBe("escalated: needs a product decision")
+      }),
+    { git: true },
   )
 })

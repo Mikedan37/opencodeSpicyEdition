@@ -1,5 +1,9 @@
 // The agent's debugger. Launch, attach and evaluate ask permission; reads never run program code.
+// Every launch belongs to an investigation; the agent can add notes or hand it to the user, but
+// only the server records evidence and moves its status.
 import path from "path"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Effect, Schema } from "effect"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { EffectBridge } from "@/effect/bridge"
@@ -10,6 +14,7 @@ import { DebugLaunch } from "../dap/launch"
 import { WorkbenchDebug } from "../dap/service"
 import type { DebugSession } from "../dap/session"
 import { DebugSnapshot } from "../dap/snapshot"
+import { WorkbenchInvestigation } from "../investigation/investigation"
 import DESCRIPTION from "./debug.txt"
 
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
@@ -25,10 +30,14 @@ export const Parameters = Schema.Struct({
     "output",
     "status",
     "stop",
+    "note",
+    "escalate",
+    "resume",
   ]),
   session: Schema.optional(Schema.String).annotate({
     description: "Debug session id (dbg_…); defaults to your latest",
   }),
+  title: Schema.optional(Schema.String).annotate({ description: "start: what is being investigated" }),
   ...DebugLaunch.StartInput.fields,
   pid: DebugLaunch.AttachInput.fields.pid,
   port: DebugLaunch.AttachInput.fields.port,
@@ -41,6 +50,9 @@ export const Parameters = Schema.Struct({
   start: Schema.optional(NonNegativeInt).annotate({ description: "First child to show when paging inspect" }),
   expression: Schema.optional(Schema.String),
   since: Schema.optional(NonNegativeInt).annotate({ description: "Output row number to continue after" }),
+  kind: Schema.optional(Schema.Literals(["hypothesis", "question"])).annotate({ description: "note: kind of note" }),
+  text: Schema.optional(Schema.String).annotate({ description: "note: the note; escalate: why the user is needed" }),
+  investigation: Schema.optional(Schema.String).annotate({ description: "resume: investigation id (inv_…)" }),
 })
 type Parameters = typeof Parameters.Type
 
@@ -48,16 +60,24 @@ type Metadata = {
   session?: Workbench.DebugSessionInfo
   snapshot?: Workbench.StopSnapshot
   sessions?: Workbench.DebugSessionInfo[]
+  investigation?: Workbench.InvestigationSummary
 }
 
 const OUTPUT_CHARS = 4_000
 // Last console row already shown to the agent, per session.
 const seen = new WeakMap<DebugSession.Session, number>()
+// The agent stops driving while its investigation waits for the user or has ended badly.
+const HALTED: readonly Workbench.InvestigationStatus[] = ["needs_human", "blocked", "failed", "cancelled"]
 
-export const DebugTool = Tool.define<typeof Parameters, Metadata, WorkbenchDebug.Service>(
+export const DebugTool = Tool.define<
+  typeof Parameters,
+  Metadata,
+  WorkbenchDebug.Service | WorkbenchInvestigation.Service
+>(
   "debug",
   Effect.gen(function* () {
     const debug = yield* WorkbenchDebug.Service
+    const investigations = yield* WorkbenchInvestigation.Service
 
     const tool = {
       description: DESCRIPTION,
@@ -84,6 +104,19 @@ export const DebugTool = Tool.define<typeof Parameters, Metadata, WorkbenchDebug
         const directory = (yield* InstanceState.context).directory
         const actor = { by: "agent" as const, sessionID: ctx.sessionID }
 
+        // A denied permission is recorded (supervisor S7) before the denial reaches the model.
+        const ask = (request: Ask, investigation?: Workbench.InvestigationID) =>
+          ctx
+            .ask(request)
+            .pipe(
+              Effect.catchDefect((defect) =>
+                investigation && denied(defect)
+                  ? investigations
+                      .record(investigation, { type: "permission.denied", permission: request.permission })
+                      .pipe(Effect.ignore, Effect.andThen(Effect.die(defect)))
+                  : Effect.die(defect),
+              ),
+            )
         const pick = Effect.gen(function* () {
           if (args.session) return yield* debug.get(args.session)
           const found = yield* debug.current(ctx.sessionID)
@@ -91,6 +124,26 @@ export const DebugTool = Tool.define<typeof Parameters, Metadata, WorkbenchDebug
             return yield* new DebugError({ kind: "not_found", message: "no live debug session; start one first" })
           return found
         })
+        const mine = Effect.gen(function* () {
+          const found = yield* investigations.current(ctx.sessionID)
+          if (!found)
+            return yield* new DebugError({ kind: "not_found", message: "no open investigation; start debugging first" })
+          return found
+        })
+        // Control commands stop while the investigation needs the user; reading stays allowed.
+        const driving = (session: DebugSession.Session) =>
+          Effect.gen(function* () {
+            const id = session.info().investigationID
+            if (!id) return
+            const record = yield* investigations.get(id)
+            if (HALTED.includes(record.status))
+              return yield* new DebugError({
+                kind: "not_owner",
+                message: `investigation ${id} is ${record.status}${
+                  record.checkpoints.at(-1)?.reason ? ` (${record.checkpoints.at(-1)?.reason})` : ""
+                }; stop and tell the user`,
+              })
+          })
         const reply = (session: DebugSession.Session, title: string, body: string, result?: DebugSession.Result) => {
           const info = result?.info ?? session.info()
           const fresh = session.output(seen.get(session) ?? 0)
@@ -110,55 +163,135 @@ export const DebugTool = Tool.define<typeof Parameters, Metadata, WorkbenchDebug
                 ? ["the program is running"]
                 : []),
           ].join("\n")
-
-        if (args.action === "start") {
-          const spec = yield* debug.prepare(args)
-          const label = spec.program ? relative(directory, spec.program) : spec.name
-          yield* ctx.ask({
-            // A launch.json configuration may attach instead of launching.
-            permission: spec.request === "attach" ? "debug.attach" : "debug.launch",
-            patterns: [label],
-            always: [label],
-            metadata: {
-              adapter: spec.adapter,
-              program: label,
-              ...(args.configuration ? { configuration: args.configuration } : {}),
-            },
+        const launch = (record: WorkbenchInvestigation.Info, spec: DebugLaunch.Spec, title: string) =>
+          Effect.gen(function* () {
+            const started = yield* investigations.launch(record.id, spec, actor)
+            const shown = reply(started.session, title, stopText(started.result), started.result)
+            return { ...shown, output: `${shown.output}\ninvestigation ${record.id} (${record.title})` }
           })
-          const started = yield* debug.start(spec, actor)
-          return reply(started.session, `debug start ${label}`, stopText(started.result), started.result)
+
+        if (args.action === "start" || args.action === "attach") {
+          const spec =
+            args.action === "start"
+              ? yield* debug.prepare(args)
+              : yield* debug.prepareAttach(
+                  args.adapter
+                    ? { ...args, adapter: args.adapter }
+                    : yield* new DebugError({ kind: "invalid", message: "attach needs adapter" }),
+                )
+          const label = spec.program ? relative(directory, spec.program) : spec.name
+          const record = yield* investigations.open({
+            sessionID: ctx.sessionID,
+            title: args.title ?? `debug ${label}`,
+            ...(args.action === "start" ? { target: target(args) } : {}),
+          })
+          if (HALTED.includes(record.status))
+            return yield* new DebugError({
+              kind: "not_owner",
+              message: `investigation ${record.id} is ${record.status}; the user has to resume it first`,
+            })
+          yield* ask(
+            {
+              // A launch.json configuration may attach instead of launching.
+              permission: spec.request === "attach" ? "debug.attach" : "debug.launch",
+              patterns: [label],
+              always: [label],
+              metadata: {
+                adapter: spec.adapter,
+                program: label,
+                investigation: record.id,
+                ...(args.configuration ? { configuration: args.configuration } : {}),
+              },
+            },
+            record.id,
+          )
+          return yield* launch(record, spec, `debug ${args.action} ${label}`)
         }
 
-        if (args.action === "attach") {
-          if (!args.adapter) return yield* new DebugError({ kind: "invalid", message: "attach needs adapter" })
-          const spec = yield* debug.prepareAttach({ ...args, adapter: args.adapter })
-          yield* ctx.ask({
-            permission: "debug.attach",
-            patterns: [spec.name],
-            always: [spec.name],
-            metadata: { adapter: spec.adapter, target: spec.name },
-          })
-          const started = yield* debug.start(spec, actor)
-          return reply(started.session, `debug attach ${spec.name}`, stopText(started.result), started.result)
+        if (args.action === "resume") {
+          if (!args.investigation)
+            return yield* new DebugError({ kind: "invalid", message: "resume needs investigation" })
+          const record = yield* investigations.get(args.investigation)
+          if (!record.target)
+            return yield* new DebugError({
+              kind: "invalid",
+              message: `investigation ${record.id} has no stored target`,
+            })
+          const spec = yield* debug.prepare(record.target)
+          const label = spec.program ? relative(directory, spec.program) : spec.name
+          yield* ask(
+            {
+              permission: "debug.launch",
+              patterns: [label],
+              always: [label],
+              metadata: { adapter: spec.adapter, program: label, investigation: record.id, resume: true },
+            },
+            record.id,
+          )
+          const resumed = yield* investigations.resume(record.id, actor)
+          const session = yield* debug.current(ctx.sessionID)
+          const summary = WorkbenchInvestigation.summary(resumed)
+          return {
+            title: `debug resume ${record.id}`,
+            output: [
+              `investigation ${record.id} ${resumed.status}`,
+              ...(session
+                ? [
+                    header(session.info()),
+                    session.info().stop ? DebugSnapshot.text({ snapshot: session.info().stop!, directory }) : "",
+                  ]
+                : []),
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            metadata: { investigation: summary, ...(session ? { session: session.info() } : {}) },
+          }
+        }
+
+        if (args.action === "note" || args.action === "escalate") {
+          if (!args.text) return yield* new DebugError({ kind: "invalid", message: `${args.action} needs text` })
+          const record = yield* mine
+          const updated =
+            args.action === "note"
+              ? yield* investigations.note(record.id, { kind: args.kind ?? "hypothesis", text: args.text })
+              : yield* investigations.escalate(record.id, args.text)
+          const summary = WorkbenchInvestigation.summary(updated)
+          return {
+            title: `debug ${args.action}`,
+            output: `investigation ${updated.id} ${updated.status}${
+              args.action === "note" ? ` · ${updated.notes.length} notes (inferred, not evidence)` : ""
+            }`,
+            metadata: { investigation: summary },
+          }
         }
 
         if (args.action === "status") {
           const sessions = yield* debug.list()
+          const record = yield* investigations.current(ctx.sessionID)
           return {
             title: "debug status",
-            output: sessions.length ? sessions.map((info) => header(info)).join("\n") : "no debug sessions",
-            metadata: { sessions },
+            output: [
+              ...(sessions.length ? sessions.map((info) => header(info)) : ["no debug sessions"]),
+              ...(record
+                ? [
+                    `investigation ${record.id} ${record.status}: ${record.title} · ${record.evidence.length} evidence · ${record.notes.length} notes`,
+                  ]
+                : []),
+            ].join("\n"),
+            metadata: { sessions, ...(record ? { investigation: WorkbenchInvestigation.summary(record) } : {}) },
           }
         }
 
         const session = yield* pick
 
         if (args.action === "control") {
+          yield* driving(session)
           const result = yield* session.control(args.command ?? "continue", actor)
           return reply(session, `debug ${args.command ?? "continue"}`, stopText(result), result)
         }
 
         if (args.action === "breakpoints") {
+          yield* driving(session)
           const files = Map.groupBy(args.breakpoints ?? [], (item) => path.resolve(directory, item.file))
           for (const file of args.clear ?? []) files.set(path.resolve(directory, file), [])
           const results = yield* Effect.forEach([...files], ([file, items]) =>
@@ -206,16 +339,30 @@ export const DebugTool = Tool.define<typeof Parameters, Metadata, WorkbenchDebug
 
         if (args.action === "evaluate") {
           if (!args.expression) return yield* new DebugError({ kind: "invalid", message: "evaluate needs expression" })
-          yield* ctx.ask({
-            permission: "debug.evaluate",
-            patterns: [args.expression],
-            always: ["*"],
-            metadata: { expression: args.expression, session: session.id },
-          })
+          yield* driving(session)
+          const investigation = session.info().investigationID
+          yield* ask(
+            {
+              permission: "debug.evaluate",
+              patterns: [args.expression],
+              always: ["*"],
+              metadata: { expression: args.expression, session: session.id },
+            },
+            investigation,
+          )
           const row = yield* session.evaluate(
             { expression: args.expression, ...(args.frame !== undefined ? { frameID: args.frame } : {}) },
             actor,
           )
+          if (investigation)
+            yield* investigations
+              .record(investigation, {
+                type: "console.eval",
+                debugSessionID: session.id,
+                expression: args.expression,
+                result: row.text,
+              })
+              .pipe(Effect.ignore)
           return reply(
             session,
             `debug evaluate ${args.expression}`,
@@ -244,6 +391,25 @@ export const DebugTool = Tool.define<typeof Parameters, Metadata, WorkbenchDebug
   }),
 )
 
+type Ask = Omit<PermissionV1.Request, "id" | "sessionID" | "tool">
+
+function denied(defect: unknown) {
+  return (
+    defect instanceof PermissionV1.RejectedError ||
+    defect instanceof PermissionV1.DeniedError ||
+    defect instanceof PermissionV1.CorrectedError
+  )
+}
+
+/** What resume relaunches: the launch fields of the start call. */
+function target(args: Parameters): DebugLaunch.StartInput {
+  return Object.fromEntries(
+    Object.keys(DebugLaunch.StartInput.fields)
+      .map((name) => [name, args[name as keyof DebugLaunch.StartInput]] as const)
+      .filter((entry) => entry[1] !== undefined),
+  ) as DebugLaunch.StartInput
+}
+
 function header(info: Workbench.DebugSessionInfo, result?: DebugSession.Result) {
   return `${info.id} · ${info.adapter}${info.program ? ` ${path.basename(info.program)}` : ""} · ${info.state}${
     result?.exitCode !== undefined ? ` (exit code ${result.exitCode})` : ""
@@ -266,5 +432,5 @@ function relative(directory: string, file: string) {
   return result && !result.startsWith("..") && !path.isAbsolute(result) ? result : file
 }
 
-// The service the tool needs, so the registry adds one dependency line.
-export const DebugToolNode = WorkbenchDebug.node
+// The services the tool and the workbench routes need, so the registry adds one dependency line.
+export const DebugToolNode = LayerNode.group([WorkbenchDebug.node, WorkbenchInvestigation.node])

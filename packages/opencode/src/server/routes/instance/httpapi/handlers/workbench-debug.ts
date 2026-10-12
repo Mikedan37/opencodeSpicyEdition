@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type { DebugError } from "@/workbench/dap/client"
 import { WorkbenchDebug } from "@/workbench/dap/service"
+import { WorkbenchInvestigation } from "@/workbench/investigation/investigation"
 import { InstanceHttpApi } from "../api"
 import {
   ConflictError,
@@ -29,6 +30,7 @@ function toApi(error: DebugError) {
 export const workbenchDebugHandlers = HttpApiBuilder.group(InstanceHttpApi, "workbench-debug", (handlers) =>
   Effect.gen(function* () {
     const debug = yield* WorkbenchDebug.Service
+    const investigations = yield* WorkbenchInvestigation.Service
     const session = (id: string) => debug.get(id)
 
     return handlers
@@ -97,6 +99,18 @@ export const workbenchDebugHandlers = HttpApiBuilder.group(InstanceHttpApi, "wor
           Effect.flatMap((item) => item.stop(human)),
           Effect.mapError(toApi),
         ),
+      )
+      .handle("investigations", () => investigations.list())
+      .handle("investigation", (ctx) => investigations.full(ctx.params.investigationID).pipe(Effect.mapError(toApi)))
+      .handle("resume", (ctx) =>
+        investigations
+          .resume(ctx.params.investigationID, human)
+          .pipe(Effect.map(WorkbenchInvestigation.summary), Effect.mapError(toApi)),
+      )
+      .handle("cancel", (ctx) =>
+        investigations
+          .cancel(ctx.params.investigationID, "cancelled by the user")
+          .pipe(Effect.map(WorkbenchInvestigation.summary), Effect.mapError(toApi)),
       )
   }),
 )

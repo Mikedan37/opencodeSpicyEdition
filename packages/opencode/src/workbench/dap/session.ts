@@ -65,6 +65,7 @@ export type Options = {
   readonly functions?: readonly string[]
   readonly exceptions?: readonly string[]
   readonly actor: Actor
+  readonly investigationID?: Workbench.InvestigationID
   readonly limits?: Partial<Limits>
   readonly onUpdate: (info: Workbench.DebugSessionInfo) => void
   readonly onOutput: (rows: Workbench.ConsoleRow[]) => void
@@ -126,7 +127,6 @@ export function make(options: Options) {
     stopSeq: 0,
     steps: 0,
     stderr: "",
-    investigationID: undefined as Workbench.InvestigationID | undefined,
     processes: [] as Process[],
   }
   const holder: { client?: DapClient.Client; shutdown?: Promise<void> } = {}
@@ -144,7 +144,7 @@ export function make(options: Options) {
     capabilities: Object.entries(s.capabilities)
       .filter((entry) => entry[1] === true)
       .map((entry) => entry[0]),
-    ...(s.investigationID ? { investigationID: s.investigationID } : {}),
+    ...(options.investigationID ? { investigationID: options.investigationID } : {}),
     ...(s.error ? { error: s.error } : {}),
     startedAt,
   })
@@ -262,8 +262,9 @@ export function make(options: Options) {
     if (event === "process" && options.request === "launch")
       return record(Number(body.systemProcessId), String(body.name ?? "debuggee"))
     if (event === "exited") {
-      s.exitCode = Number(body.exitCode)
-      con.system(`program exited with code ${s.exitCode}`)
+      con.system(`program exited with code ${Number(body.exitCode)}`)
+      // Only a program that ended on its own has a meaningful exit code; one we killed does not.
+      if (!holder.shutdown) s.exitCode = Number(body.exitCode)
       return
     }
     if (event === "terminated") return void Effect.runFork(terminate("the program ended"))
@@ -616,15 +617,14 @@ export function make(options: Options) {
     get steps() {
       return s.steps
     },
+    get exitCode() {
+      return s.exitCode
+    },
     get processes() {
       return s.processes as readonly Process[]
     },
     get frameID() {
       return s.frameID
-    },
-    link: (investigationID: Workbench.InvestigationID | undefined) => {
-      s.investigationID = investigationID
-      update()
     },
     control: control_,
     breakpoints: (input: BreakpointsInput, actor: Actor) =>

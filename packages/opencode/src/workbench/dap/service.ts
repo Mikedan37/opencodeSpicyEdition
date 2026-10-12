@@ -23,6 +23,12 @@ const KEEP_ENDED = 10
 
 export type Actor = DebugSession.Actor
 export type Started = { readonly session: DebugSession.Session; readonly result: DebugSession.Result }
+export type StartOptions = {
+  readonly limits?: Partial<DebugSession.Limits>
+  readonly investigationID?: Workbench.InvestigationID
+  // Runs after every session update with the instance context (investigations record evidence here).
+  readonly observe?: (session: DebugSession.Session) => Effect.Effect<void>
+}
 
 export interface Interface {
   readonly list: () => Effect.Effect<Workbench.DebugSessionInfo[]>
@@ -31,11 +37,7 @@ export interface Interface {
   readonly current: (agentSessionID: string) => Effect.Effect<DebugSession.Session | undefined>
   readonly prepare: (input: DebugLaunch.StartInput) => Effect.Effect<DebugLaunch.Spec, DebugError>
   readonly prepareAttach: (input: DebugLaunch.AttachInput) => Effect.Effect<DebugLaunch.Spec, DebugError>
-  readonly start: (
-    spec: DebugLaunch.Spec,
-    actor: Actor,
-    limits?: Partial<DebugSession.Limits>,
-  ) => Effect.Effect<Started, DebugError>
+  readonly start: (spec: DebugLaunch.Spec, actor: Actor, options?: StartOptions) => Effect.Effect<Started, DebugError>
   /** Ends every live session an agent session started, unless a human has taken it over. */
   readonly abort: (agentSessionID: string, reason: string) => Effect.Effect<void>
 }
@@ -54,13 +56,18 @@ const layer = Layer.effect(
     const state = yield* InstanceState.make(
       Effect.fn("WorkbenchDebug.state")(function* (ctx) {
         const sessions = new Map<string, Entry>()
+        const data = { sessions, ctx, closing: false }
         yield* Effect.addFinalizer(() =>
-          Effect.forEach(sessions.values(), (entry) => entry.session.terminate("the project was closed"), {
-            concurrency: "unbounded",
-            discard: true,
+          Effect.suspend(() => {
+            // Observers must not re-enter instance state while the instance is being disposed.
+            data.closing = true
+            return Effect.forEach(sessions.values(), (entry) => entry.session.terminate("the project was closed"), {
+              concurrency: "unbounded",
+              discard: true,
+            })
           }),
         )
-        return { sessions, ctx }
+        return data
       }),
     )
 
@@ -137,7 +144,7 @@ const layer = Layer.effect(
     const start = Effect.fn("WorkbenchDebug.start")(function* (
       spec: DebugLaunch.Spec,
       actor: Actor,
-      limits?: Partial<DebugSession.Limits>,
+      options: StartOptions = {},
     ) {
       const data = yield* InstanceState.get(state)
       const running = [...data.sessions.values()].filter(live)
@@ -167,8 +174,12 @@ const layer = Layer.effect(
         breakpoints: spec.breakpoints,
         exceptions: spec.exceptions,
         actor,
-        limits,
-        onUpdate: (info) => publish(events.publish(Workbench.Event.DebugUpdated, { session: info })),
+        ...(options.limits ? { limits: options.limits } : {}),
+        ...(options.investigationID ? { investigationID: options.investigationID } : {}),
+        onUpdate: (info) => {
+          publish(events.publish(Workbench.Event.DebugUpdated, { session: info }))
+          if (options.observe && !data.closing) publish(options.observe(session))
+        },
         onOutput: (rows) => publish(events.publish(Workbench.Event.DebugOutput, { sessionID: id, rows })),
         runInTerminal: terminal(data.ctx.directory),
       })

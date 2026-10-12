@@ -262,10 +262,53 @@ Providers using it:
   runs it, or a `ProviderID` entry pointing `AcpProvider.make` at its binary). See the final report for a non-ACP
   bridge.
 
+## Claude Code adapter (`src/agenthq/providers/claude-code.ts`)
+
+`@anthropic-ai/claude-agent-sdk` **0.3.293** (exact pin, its own commit). One SDK `query()` in streaming-input
+mode per Agent HQ session, so one Claude Code process serves every turn; `providerSessionID` is a UUID passed as
+`sessionId` (resume passes it as `resume`).
+
+- Runs the detected `claude` binary (`pathToClaudeCodeExecutable`), so the owner's existing login is used; the
+  adapter never reads, copies or logs credentials and passes no `env`.
+- Isolation: `settingSources: []` (no `~/.claude` settings, hooks or CLAUDE.md), `strictMcpConfig: true` with
+  `mcpServers: {}` (the hook for the Workbench MCP bridge), `cwd` = the identity's working directory.
+- Permissions: `permissionMode: "default"` is set explicitly (when omitted, Claude Code may start in `auto`, where
+  a classifier approves calls). Every `canUseTool` call becomes `permission.requested` (`requestID` =
+  `cc_<toolUseID>`, options `allow` → allow_once, `always` → allow_always, `deny` → reject_once) and waits for
+  `POST .../permissions/:requestID`. "Always" applies only Claude Code's own allow-rule suggestions, re-scoped to
+  the in-memory session (never written to settings files); mode switches such as `acceptEdits` are never applied.
+- Mapping: stream events → `message.delta` (`messageID` = `<api message id>-<block index>`), a finished text block
+  → `message`, a finished thinking block → `reasoning`, `tool_use` → `tool started` (title = command / file path /
+  pattern), `tool_result` → `tool completed|error` (+ `file.changed` for Edit/MultiEdit/Write/NotebookEdit), result
+  → `turn.completed { stopReason, usage: { inputTokens, outputTokens, costUSD } }`, failed result → `error` +
+  `failed`, assistant `error` field → `error`. Subagent traffic is not mapped.
+- Cancel: `query.interrupt()`; parked prompts are denied; the interrupted turn's result is swallowed (matched by
+  the `uuid` sent with each user message). Close: `query.close()`. Process end → `error` + `disconnected`.
+- Capabilities: streaming, tool events, permission requests, cancel, resume, models (`identity.model`, e.g.
+  `haiku`); `mcpTools: false` until the bridge is wired.
+
+Contract change (additive): `turn.completed` gains optional `usage { inputTokens, outputTokens, costUSD? }`. The
+OpenCode adapter fills it from the assistant message's tokens and cost.
+
+### The one real Claude Code session (2026-10-12)
+
+`SPICY_REAL_CLAUDE=1 bun test --timeout 240000 test/agenthq/claude-code.test.ts -t "REAL:"`, run once. Temp project
+dir, model `haiku`, `maxTurns: 1`, `persistSession: false`, the test answers any permission request with `deny`.
+
+```
+SPICY_REAL_CLAUDE evidence {"durationMs":3069,"deltas":2,"answer":"pong","end":{"type":"turn.completed",
+"stopReason":"end_turn","usage":{"inputTokens":2,"outputTokens":4,"costUSD":0.0032092}},"permissionRequests":0,"tools":0}
+```
+
+Session start to turn end 3.07 s; two streamed deltas; final text `pong`; reported cost $0.0032092 (2 input
+tokens outside the cache, 4 output). Without the variable the test is skipped and says why in its name.
+
 ## Tests (wave 2)
 
-| Test                                     | What it proves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| AHQ-08 (`test/agenthq/acp.test.ts`)      | Real `opencode acp` from this tree (isolated HOME/XDG via a launcher script, fake model server), driven only through HTTP: create `acp` identity → start session → message → streamed reply with a `bash` tool → `permission.requested` (allow_once/allow_always/reject_once) → answered via `POST /agenthq/sessions/:id/permissions/:requestID` → tool completed with output → `message` + `turn.completed end_turn`; second turn hangs → `POST .../cancel` → `cancelled`, no extra `turn.completed`; `DELETE` the identity → the agent's process is gone (`pgrep`) |
-| AHQ-08b (`test/agenthq/agenthq.test.ts`) | Scripted ACP agent (`test/fixture/agenthq/fake-acp-agent.ts`): `plan`, thought → `reasoning`, text completed before the tool, diff → `file.changed`, `reject_always` option and invalid option (400-class error), crash → `error` with exit code and stderr + `disconnected`, next message reattaches with `session/load` and the replay is not recorded                                                                                                                                                                                                             |
-| AHQ-07 (updated)                         | Cursor with an ACP-capable `cursor-agent` reports available with ACP capabilities; the manager lists five providers                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Test                                                      | What it proves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AHQ-08 (`test/agenthq/acp.test.ts`)                       | Real `opencode acp` from this tree (isolated HOME/XDG via a launcher script, fake model server), driven only through HTTP: create `acp` identity → start session → message → streamed reply with a `bash` tool → `permission.requested` (allow_once/allow_always/reject_once) → answered via `POST /agenthq/sessions/:id/permissions/:requestID` → tool completed with output → `message` + `turn.completed end_turn`; second turn hangs → `POST .../cancel` → `cancelled`, no extra `turn.completed`; `DELETE` the identity → the agent's process is gone (`pgrep`) |
+| AHQ-08b (`test/agenthq/agenthq.test.ts`)                  | Scripted ACP agent (`test/fixture/agenthq/fake-acp-agent.ts`): `plan`, thought → `reasoning`, text completed before the tool, diff → `file.changed`, `reject_always` option and invalid option (400-class error), crash → `error` with exit code and stderr + `disconnected`, next message reattaches with `session/load` and the replay is not recorded                                                                                                                                                                                                             |
+| AHQ-07 (updated)                                          | Cursor with an ACP-capable `cursor-agent` reports available with ACP capabilities; the manager lists five providers                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| AHQ-09 (`test/agenthq/claude-code.test.ts`, scripted SDK) | Isolation options (binary, `settingSources: []`, `strictMcpConfig`, `mcpServers: {}`, `permissionMode: "default"`, own `sessionId`, no bypass flag); streamed text/thinking emitted once with usage on `turn.completed`; a prompt parks until answered, `always` re-scoped to the session and mode switches dropped; deny path; cancel interrupts quietly and the session keeps working; crash → `disconnected` and later sends fail; close; resume passes `resume`; unavailable → typed error                                                                       |
+| AHQ-09 real (opt-in)                                      | One real session through the installed `claude`, evidence above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |

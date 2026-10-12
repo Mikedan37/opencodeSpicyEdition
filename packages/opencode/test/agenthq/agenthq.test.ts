@@ -285,7 +285,9 @@ describe("agenthq", () => {
       expect(tools.at(-1)).toMatchObject({ state: "completed" })
       expect(typeof tools.at(-1)?.output).toBe("string")
       expect(ofType(published, "reasoning").map((event) => event.text)).toEqual(["planning"])
-      expect(ofType(published, "turn.completed")).toEqual([{ type: "turn.completed", stopReason: "stop" }])
+      expect(ofType(published, "turn.completed")).toEqual([
+        { type: "turn.completed", stopReason: "stop", usage: { inputTokens: 0, outputTokens: 0, costUSD: 0 } },
+      ])
 
       // The persisted history is the compacted view: no deltas for a finished message, one entry per tool.
       const stored = Schema.decodeUnknownSync(Schema.Array(AgentHQ.AgentEventEnvelope))(

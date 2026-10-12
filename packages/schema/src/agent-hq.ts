@@ -152,7 +152,14 @@ export const AgentEvent = Schema.Union([
       }),
     ),
   }),
-  Schema.Struct({ type: Schema.Literal("turn.completed"), stopReason: optional(Schema.String) }),
+  Schema.Struct({
+    type: Schema.Literal("turn.completed"),
+    stopReason: optional(Schema.String),
+    // What the turn cost, when the provider reports it.
+    usage: optional(
+      Schema.Struct({ inputTokens: Schema.Finite, outputTokens: Schema.Finite, costUSD: optional(Schema.Finite) }),
+    ),
+  }),
   Schema.Struct({ type: Schema.Literal("error"), message: Schema.String }),
 ]).annotate({ identifier: "AgentHQEvent" })
 export type AgentEvent = typeof AgentEvent.Type

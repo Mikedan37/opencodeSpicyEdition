@@ -24,6 +24,7 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { AgentProvider } from "./provider"
 import { AgentRegistry } from "./registry"
 import { AcpProvider } from "./providers/acp"
+import { ClaudeCodeProvider } from "./providers/claude-code"
 import { AgentDetect } from "./providers/detect"
 import { OpenCodeProvider } from "./providers/opencode"
 
@@ -107,7 +108,10 @@ const layer = Layer.effect(
     const scope = yield* Scope.Scope
     const providers: Record<AgentHQ.ProviderID, AgentProvider.Interface> = {
       opencode: yield* OpenCodeProvider.make,
-      "claude-code": yield* AgentDetect.make("claude-code"),
+      "claude-code": yield* ClaudeCodeProvider.make({
+        status: yield* AgentDetect.prober("claude-code", ClaudeCodeProvider.capabilities),
+        binary: () => AgentDetect.binary("claude-code"),
+      }),
       cursor: yield* AgentDetect.cursor(),
       codex: yield* AgentDetect.make("codex"),
       acp: yield* AcpProvider.make({

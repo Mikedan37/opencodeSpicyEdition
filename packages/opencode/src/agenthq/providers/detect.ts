@@ -63,6 +63,19 @@ export const status = Effect.fn("AgentHQ.detect.status")(function* (
   return { ...base, version, available: true }
 })
 
+/** A status probe bound to this process's spawner, for providers built elsewhere. */
+export const prober = Effect.fn("AgentHQ.detect.prober")(function* (
+  id: CliID,
+  capabilities: AgentHQ.ProviderCapabilities,
+  env?: Env,
+) {
+  const proc = yield* AppProcess.Service
+  const probe: Effect.Effect<AgentHQ.ProviderStatus> = status(id, { env, capabilities }).pipe(
+    Effect.provideService(AppProcess.Service, proc),
+  )
+  return probe
+})
+
 /** A provider that only reports status (Codex until it is installed and evaluated). */
 export const make = Effect.fn("AgentHQ.detect.make")(function* (id: CliID, env?: Env) {
   const proc = yield* AppProcess.Service

@@ -104,12 +104,13 @@ import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
 import { createSessionOwnership } from "./session/session-ownership"
 import { createSessionLineage } from "./session/session-lineage"
 import { WorkbenchProviders } from "@/workbench/panel" // spicy: Workbench + Agent HQ (see SPICY.md)
+import { ReviewChangesPanel, ReviewProvider, useReview } from "@/review/context" // spicy: agent changes review
 
 type FollowupItem = FollowupDraft & { id: string }
 type FollowupEdit = Pick<FollowupItem, "id" | "prompt" | "context">
 const emptyFollowups: FollowupItem[] = []
 
-type ChangeMode = "git" | "branch" | "turn"
+type ChangeMode = "git" | "branch" | "turn" | "agent" // spicy: + agent changes review
 type VcsMode = "git" | "branch"
 
 const sessionViewState = () => ({
@@ -322,7 +323,10 @@ function SessionProviders(props: ParentProps) {
         <PromptProvider>
           <CommentsProvider>
             {/* spicy: Workbench + Agent HQ state for the bottom panel tabs */}
-            <WorkbenchProviders>{props.children}</WorkbenchProviders>
+            <WorkbenchProviders>
+              {/* spicy: agent changes review state (src/review) */}
+              <ReviewProvider>{props.children}</ReviewProvider>
+            </WorkbenchProviders>
           </CommentsProvider>
         </PromptProvider>
       </FileProvider>
@@ -376,6 +380,7 @@ export default function Page() {
   const navigate = useNavigate()
   const { params, sessionKey, workspaceKey, tabs, view } = useSessionLayout()
   const reviewMode = () => view().review.mode() ?? "git"
+  const review = useReview() // spicy: agent changes review
   const reviewFile = () => view().review.file()
   const sessionOwnership = createSessionOwnership(sessionKey)
   const newSessionDesign = createMemo(() => settings.general.newLayoutDesigns())
@@ -667,6 +672,7 @@ export default function Page() {
       list.push("branch")
     }
     list.push("turn")
+    if (newSessionDesign()) list.push("agent") // spicy: agent changes review (new layout only)
     return list
   })
   const mobileChanges = createMemo(() => !isDesktop() && store.mobileTab === "changes")
@@ -705,6 +711,7 @@ export default function Page() {
   })
   const refreshVcs = debounce(() => void queryClient.invalidateQueries({ queryKey: vcsKey() }), 100)
   const reviewDiffs = () => {
+    if (reviewMode() === "agent") return review.diffs() // spicy: agent changes review
     if (reviewMode() === "git" || reviewMode() === "branch")
       // avoids suspense
       return vcsQuery.isFetched ? (vcsQuery.data ?? []) : []
@@ -1166,6 +1173,7 @@ export default function Page() {
   })
 
   const changesLabel = (option: ChangeMode) => {
+    if (option === "agent") return language.t("review.mode") // spicy: agent changes review
     if (option === "git") return language.t("ui.sessionReview.title.git")
     if (option === "branch") return language.t("ui.sessionReview.title.branch")
     return language.t("ui.sessionReview.title.lastTurn")
@@ -1355,7 +1363,10 @@ export default function Page() {
   const reviewPanelV2 = () => (
     <div class="flex flex-col h-full overflow-hidden bg-v2-background-bg-base contain-strict">
       <Show when={reviewPanelV2Rendered()}>
-        <ReviewPanelV2 {...reviewPanelV2Props()} />
+        {/* spicy: the "Agent changes" mode renders the agent changes review (src/review) */}
+        <Show when={reviewMode() === "agent"} fallback={<ReviewPanelV2 {...reviewPanelV2Props()} />}>
+          <ReviewChangesPanel {...reviewPanelV2Props()} />
+        </Show>
       </Show>
     </div>
   )

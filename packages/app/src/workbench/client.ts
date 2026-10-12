@@ -3,6 +3,7 @@
 // shared contracts; a reply that does not decode is an error, never data.
 import { Option, Schema } from "effect"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
+import { Review } from "@opencode-ai/schema/review"
 import { Workbench } from "@opencode-ai/schema/workbench"
 import type { ServerConnection } from "@/context/server"
 import { authTokenFromCredentials } from "@/utils/server"
@@ -10,9 +11,11 @@ import { authTokenFromCredentials } from "@/utils/server"
 export class WorkbenchRequestError extends Error {
   // "unavailable": 404 or a non-JSON reply, i.e. this server has no fork routes yet.
   readonly kind: "unavailable" | "failed"
-  constructor(kind: "unavailable" | "failed", message: string) {
+  readonly status?: number // HTTP status of a JSON error reply (409 = the server refused on purpose)
+  constructor(kind: "unavailable" | "failed", message: string, status?: number) {
     super(message)
     this.kind = kind
+    this.status = status
   }
 }
 
@@ -57,6 +60,9 @@ const decoders = {
   runs: Schema.decodeUnknownOption(Schema.Array(Workbench.RunInfo)),
   run: Schema.decodeUnknownOption(RunDetail),
   report: Schema.decodeUnknownOption(Workbench.VerificationReport),
+  changeset: Schema.decodeUnknownOption(Review.ChangeSet),
+  changesets: Schema.decodeUnknownOption(Schema.Array(Review.ChangeSet)),
+  content: Schema.decodeUnknownOption(Review.Content),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -90,7 +96,11 @@ export function createWorkbenchClient(input: {
     const value: unknown = await response.json()
     if (response.status === 404) throw new WorkbenchRequestError("unavailable", serverMessage(value) ?? `${path}: 404`)
     if (!response.ok)
-      throw new WorkbenchRequestError("failed", serverMessage(value) ?? `${method} ${path}: ${response.status}`)
+      throw new WorkbenchRequestError(
+        "failed",
+        serverMessage(value) ?? `${method} ${path}: ${response.status}`,
+        response.status,
+      )
     return value
   }
   const decoded = <T>(decode: (value: unknown) => Option.Option<T>, method: string, path: string, body?: unknown) =>
@@ -101,6 +111,7 @@ export function createWorkbenchClient(input: {
     })
   const agent = (id: string) => `/agenthq/agents/${encodeURIComponent(id)}`
   const session = (id: string) => `/agenthq/sessions/${encodeURIComponent(id)}`
+  const changeset = (id: string) => `/review/changesets/${encodeURIComponent(id)}`
 
   return {
     providers: () => decoded(decoders.providers, "GET", "/agenthq/providers"),
@@ -121,6 +132,17 @@ export function createWorkbenchClient(input: {
     runs: () => decoded(decoders.runs, "GET", "/workbench/runs"),
     run: (id: string) => decoded(decoders.run, "GET", `/workbench/runs/${encodeURIComponent(id)}`),
     check: (body: CheckInput = {}) => decoded(decoders.report, "POST", "/workbench/check", body),
+    // Review (spicy-review, docs/spicy/notes-review.md). Every decision returns the updated changeset.
+    changesets: () => decoded(decoders.changesets, "GET", "/review/changesets"),
+    content: (id: string, path: string) =>
+      decoded(decoders.content, "GET", `${changeset(id)}/content?path=${encodeURIComponent(path)}`),
+    decideHunk: (id: string, hunkID: string, action: Review.Action) =>
+      decoded(decoders.changeset, "POST", `${changeset(id)}/hunks/${encodeURIComponent(hunkID)}`, { action }),
+    decideFile: (id: string, path: string, action: Review.Action) =>
+      decoded(decoders.changeset, "POST", `${changeset(id)}/files`, { path, action }),
+    decideAll: (id: string, action: Review.Action) =>
+      decoded(decoders.changeset, "POST", `${changeset(id)}/all`, { action }),
+    undo: (id: string, path: string) => decoded(decoders.changeset, "POST", `${changeset(id)}/undo`, { path }),
   }
 }
 

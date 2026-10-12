@@ -14,6 +14,8 @@ import {
   type ParentProps,
 } from "solid-js"
 import { createStore } from "solid-js/store"
+import { Option, Schema } from "effect"
+import { Workbench } from "@opencode-ai/schema/workbench"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
@@ -30,10 +32,17 @@ import { useSessionKey } from "@/pages/session/session-layout"
 import { Persist, persisted } from "@/utils/persist"
 import { createWorkbenchClient } from "./client"
 import { createProblemsState, type ProblemFilter } from "./problems"
-import { PanelState, TONE_CLASS } from "./ui"
+import { createRunsState, isFinished } from "./runs"
+import { BUG_GLYPH, Glyph, PanelState, PLAY_GLYPH, TONE_CLASS } from "./ui"
 
 const AgentsPanel = lazy(() => import("@/agenthq/agents-panel"))
 const ProblemsPanel = lazy(() => import("./problems-panel"))
+const OutputPanel = lazy(() => import("./output-panel"))
+
+const runEvents = {
+  updated: Schema.decodeUnknownOption(Workbench.Event.RunUpdated.data),
+  output: Schema.decodeUnknownOption(Workbench.Event.RunOutput.data),
+}
 
 export const WORKBENCH_TABS = ["agents", "problems", "output", "debug", "run"] as const
 export type WorkbenchTab = (typeof WORKBENCH_TABS)[number]
@@ -65,8 +74,14 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
     const problems = createProblemsState(client.problems)
     onCleanup(problems.dispose)
     void problems.refresh()
+    const runs = createRunsState(client)
     const stop = sdk().event.listen((event) => {
-      if ((event.details as { type?: string }).type === "workbench.problems.updated") problems.invalidate()
+      const details = event.details as { type?: string; properties?: unknown }
+      if (details.type === "workbench.problems.updated") return problems.invalidate()
+      if (details.type === "workbench.run.updated")
+        return Option.map(runEvents.updated(details.properties), (data) => runs.update(data.run))
+      if (details.type === "workbench.run.output")
+        return Option.map(runEvents.output(details.properties), (data) => runs.output(data))
     })
     onCleanup(stop)
     const [problemFilter, setProblemFilter] = createStore({
@@ -127,7 +142,9 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       },
       open: (next: WorkbenchTab) => setPanel("tab", next),
       show,
+      directory,
       problems,
+      runs,
       problemFilter: { state: problemFilter, set: setProblemFilter },
     }
   },
@@ -153,8 +170,10 @@ export function WorkbenchTabTriggers() {
         agentAttention(agentSessions(agenthq.state.sessions, agent.id), agenthq.state.unseen),
       ).length,
   )
+  const running = createMemo(() => workbench.runs.state.runs.filter((entry) => !isFinished(entry.info.status)).length)
   const badge = (tab: WorkbenchTab) => {
     if (tab === "agents") return attention() ? { count: attention(), tone: TONE_CLASS.warning } : undefined
+    if (tab === "output") return running() ? { count: running(), tone: TONE_CLASS.info } : undefined
     if (tab !== "problems") return
     const counts = problemCounts()
     if (!counts || counts.error + counts.warning === 0) return
@@ -206,11 +225,7 @@ export function WorkbenchTabContent(props: { tab: WorkbenchTab }) {
             <ProblemsPanel />
           </Match>
           <Match when={props.tab === "output"}>
-            <PanelState
-              icon={<Glyph path={OUTPUT_GLYPH} />}
-              title={language.t("workbench.output.title")}
-              description={language.t("workbench.output.description")}
-            />
+            <OutputPanel />
           </Match>
           <Match when={props.tab === "debug"}>
             <PanelState
@@ -229,28 +244,5 @@ export function WorkbenchTabContent(props: { tab: WorkbenchTab }) {
         </Switch>
       </Suspense>
     </div>
-  )
-}
-
-// Fork icons the shared icon sets lack (static markup).
-const OUTPUT_GLYPH = '<path d="M4 6h16M4 10h11M4 14h16M4 18h8"/>'
-const BUG_GLYPH =
-  '<path d="M9 7.5a3 3 0 0 1 6 0"/><rect x="7" y="7.5" width="10" height="12" rx="5"/><path d="M12 11v8.5M3 13.5h4M17 13.5h4M4 8.5l3 2M20 8.5l-3 2M4 19l3-2M20 19l-3-2"/>'
-const PLAY_GLYPH = '<path d="M8 5.5v13l10.5-6.5z"/>'
-
-function Glyph(props: { path: string }) {
-  return (
-    <svg
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      aria-hidden="true"
-      innerHTML={props.path}
-    />
   )
 }

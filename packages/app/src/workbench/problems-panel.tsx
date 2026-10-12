@@ -6,13 +6,12 @@ import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import type { Workbench } from "@opencode-ai/schema/workbench"
-import { createCommandPaletteFileOpener } from "@/components/command-palette"
-import { useFile } from "@/context/file"
 import { useLanguage } from "@/context/language"
 import { useWorkbench } from "./panel"
 import { filterProblems, groupProblems, problemRows, SEVERITIES, SOURCE_KINDS, type ProblemRow } from "./problems"
 import { PanelState, RequestErrorState } from "./ui"
 import { VirtualList } from "./virtual-list"
+import { useFileLineOpener } from "./open-file"
 
 const SEVERITY_DOT = {
   error: "bg-v2-state-fg-danger",
@@ -24,8 +23,7 @@ const SEVERITY_DOT = {
 export default function ProblemsPanel() {
   const workbench = useWorkbench()
   const language = useLanguage()
-  const file = useFile()
-  const openFile = createCommandPaletteFileOpener()
+  const openAt = useFileLineOpener()
   const problems = workbench.problems
   const filter = workbench.problemFilter
 
@@ -35,15 +33,8 @@ export default function ProblemsPanel() {
     () => problems.state.snapshot?.producers.filter((producer) => producer.state !== "idle") ?? [],
   )
 
-  // Line navigation: select the line (the viewer highlights it), open the tab, then scroll the rendered line into view
-  // once the viewer has drawn it. The viewer exposes 1-based [data-line] rows inside its shadow root.
   const open = (problem: Workbench.Problem) => {
-    const path = problem.file
-    if (!path) return
-    const line = (problem.range?.start.line ?? 0) + 1
-    file.setSelectedLines(path, { start: line, end: line })
-    openFile(path)
-    revealLine(line)
+    if (problem.file) openAt(problem.file, (problem.range?.start.line ?? 0) + 1)
   }
 
   return (
@@ -218,15 +209,4 @@ function Row(props: {
       </Match>
     </Switch>
   )
-}
-
-function revealLine(line: number, attempt = 0) {
-  requestAnimationFrame(() => {
-    const target = [...document.querySelectorAll("diffs-container")]
-      .map((host) => host.shadowRoot?.querySelector(`[data-file] [data-line="${line}"]`))
-      .find((node): node is HTMLElement => node instanceof HTMLElement && node.getClientRects().length > 0)
-    if (target) return target.scrollIntoView({ block: "center" })
-    // ponytail: polls up to ~1s for the viewer to render; a viewer "scroll to line" API would replace this.
-    if (attempt < 60) revealLine(line, attempt + 1)
-  })
 }

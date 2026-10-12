@@ -130,6 +130,77 @@ test("agent hq streams, asks for permission, resyncs on a seq gap; problems open
   await expect(page.locator('[data-component="workbench-panel"]')).toHaveCount(0)
 })
 
+test("output tab streams check runs with colors and file links, and loads earlier runs", async ({ page }) => {
+  const mock = await setup(page, {
+    runs: {
+      list: [runInfo("run_old", "passed", { exitCode: 0, finishedAt: 1_700_000_001_200 })],
+      detail: {
+        run_old: {
+          run: runInfo("run_old", "passed", { exitCode: 0, finishedAt: 1_700_000_001_200 }),
+          output: "earlier run output\n",
+        },
+      },
+    },
+  })
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await expect(page.locator('[data-component="terminal"]')).toBeVisible()
+  await page.locator('[data-workbench-tab="output"]').click()
+  const output = page.locator('[data-component="workbench-output"]')
+
+  // History from GET /workbench/runs; output only when the section opens
+  const old = output.locator('section[data-run="run_old"]')
+  await expect(old).toHaveAttribute("data-status", "passed")
+  await expect(old).toContainText("earlier run output")
+  expect(mock.runRequests()).toEqual(["/workbench/runs", "/workbench/runs/run_old"])
+
+  // A run streamed live: status, colors, file links, then the final status with exit code
+  mock.emit({ type: "workbench.run.updated", properties: { run: runInfo("run_live", "running") } })
+  const live = output.locator('section[data-run="run_live"]')
+  await expect(live).toHaveAttribute("data-status", "running")
+  await expect(page.locator('[data-workbench-tab="output"]')).toHaveText("Output1")
+  mock.emit(
+    {
+      type: "workbench.run.output",
+      properties: { runID: "run_live", seq: 0, chunk: "\u001b[31msrc/broken.ts(1,14)\u001b[0m: error TS2322: nope\n" },
+    },
+    { type: "workbench.run.output", properties: { runID: "run_live", seq: 1, chunk: "Found 1 error.\n" } },
+  )
+  const link = live.locator('[role="region"] button', { hasText: "src/broken.ts(1,14)" })
+  await expect(link).toBeVisible()
+  await expect(live.locator('span[style*="--ansi-red"]')).toContainText("src/broken.ts(1,14)")
+  await expect(live).toContainText("Found 1 error.")
+  mock.emit({
+    type: "workbench.run.updated",
+    properties: {
+      run: runInfo("run_live", "failed", { exitCode: 2, finishedAt: 1_700_000_000_900, counts: counts(1, 0) }),
+    },
+  })
+  await expect(live).toHaveAttribute("data-status", "failed")
+  await expect(live.locator("button[aria-expanded]")).toContainText("exit 2")
+  await expect(page.locator('[data-workbench-tab="output"]')).toHaveText("Output")
+
+  // Starting checks needs POST /workbench/check; without it the user is told, nothing breaks
+  await output.getByRole("button", { name: "Run checks" }).click()
+  await expect(page.getByText("This server can't start checks from the app yet.")).toBeVisible()
+  expect(mock.checkRequests()).toBe(1)
+})
+
+function runInfo(id: string, status: string, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    kind: "check",
+    unit: `${directory}/tsconfig.json`,
+    checker: "tsc",
+    command: ["tsc", "--noEmit", "-p", `${directory}/tsconfig.json`],
+    execClass: "inert",
+    status,
+    startedAt: 1_700_000_000_000,
+    ...extra,
+  }
+}
+
 const sessionInfo = {
   id: agentSession,
   agentID: "agt_ada",
@@ -163,13 +234,15 @@ function problem(id: string, severity: "error" | "warning", line: number, stale 
   }
 }
 
-async function setup(page: Page) {
-  const pending: unknown[] = []
+type RunsRoutes = { list: unknown[]; detail: Record<string, unknown> }
+
+async function setup(page: Page, options: { runs?: RunsRoutes } = {}) {
+  const pending: { directory: string; payload: unknown }[] = []
   const history: Record<string, unknown>[] = [
     envelope(0, { type: "message", messageID: "u1", role: "user", text: "Fix the parser bug" }),
   ]
   const answers: { requestID: string; body: unknown }[] = []
-  const calls = { history: 0, problems: 0 }
+  const calls = { history: 0, problems: 0, runs: [] as string[], checks: 0 }
 
   await mockOpenCodeServer(page, {
     protocol: "v2",
@@ -206,7 +279,7 @@ async function setup(page: Page) {
     ],
     pageMessages: () => ({ items: [] }),
     // Each SSE connection drains what the test queued; the client reconnects every 250 ms.
-    events: () => pending.splice(0).map((payload) => ({ directory, payload })),
+    events: () => pending.splice(0),
   })
 
   const json = (route: Route, body: unknown) =>
@@ -275,6 +348,20 @@ async function setup(page: Page) {
     })
   })
 
+  // The runs routes are optional on the server: without them the Output tab works from events alone.
+  await page.route(`${server}/workbench/runs**`, (route) => {
+    const path = new URL(route.request().url()).pathname
+    calls.runs.push(path)
+    const detail = options.runs?.detail[path.split("/").at(-1) ?? ""]
+    if (path === "/workbench/runs" && options.runs) return json(route, options.runs.list)
+    if (detail) return json(route, detail)
+    return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ message: path }) })
+  })
+  await page.route(`${server}/workbench/check*`, (route) => {
+    calls.checks++
+    return route.fulfill({ status: 404, contentType: "application/json", body: "{}" })
+  })
+
   await page.route("**/api/pty*", (route) => json(route, { location: ptyLocation(), data: ptyInfo() }))
   await page.route(`**/api/pty/${ptyID}*`, (route) => json(route, { location: ptyLocation(), data: ptyInfo() }))
   await page.routeWebSocket(new RegExp(`/api/pty/${ptyID}/connect`), () => undefined)
@@ -302,13 +389,21 @@ async function setup(page: Page) {
     answers,
     historyRequests: () => calls.history,
     problemRequests: () => calls.problems,
+    runRequests: () => calls.runs,
+    checkRequests: () => calls.checks,
     emit(...items: Record<string, unknown>[]) {
+      this.emitIn(directory, ...items)
+    },
+    // Events published by another project's instance carry that project's directory.
+    emitIn(target: string, ...items: Record<string, unknown>[]) {
       pending.push(
-        ...items.map((item) =>
-          "seq" in item
-            ? { id: `evt_${Math.random()}`, type: "agenthq.session.event", properties: { envelope: item } }
-            : { id: `evt_${Math.random()}`, ...item },
-        ),
+        ...items.map((item) => ({
+          directory: target,
+          payload:
+            "seq" in item
+              ? { id: `evt_${Math.random()}`, type: "agenthq.session.event", properties: { envelope: item } }
+              : { id: `evt_${Math.random()}`, ...item },
+        })),
       )
       for (const item of items)
         if ("seq" in item && !history.some((entry) => entry.seq === item.seq)) history.push(item)

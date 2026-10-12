@@ -111,7 +111,7 @@ Upstream-owned files touched (each edit marked `spicy:`; please add to `SPICY.md
 - Not wired to a real backend; payload shapes above are assumptions until `spicy-agenthq` / `spicy-problems` land.
 - Old layout (`terminal-panel.tsx`, new layout designs off) has no Workbench tabs.
 - Events published by another project's instance are not seen until a reload (directory-scoped listener).
-- Output / Debug Console / Run are empty states only (wave 2).
+- Debug Console and Run are empty states only (they need the `spicy-dap` contracts).
 - Relative times do not tick.
 - Line navigation depends on the viewer's `[data-line]` markup inside its shadow root (polls up to ~1 s); files outside
   the workspace root cannot be opened by the app's file tabs.
@@ -138,3 +138,31 @@ the final render: 1 code block with 29 highlighted spans, bold, a 3-item list, t
 `target=_blank rel="noopener noreferrer"`, the `javascript:` link without `href`, status back to `idle`. The e2e spec
 asserts the same rendering with mocked events. In a fresh Vite dev server the first Markdown render can fail once
 while Vite re-optimizes `marked`/`shiki` (it reloads the page); the timeline has the same behaviour.
+
+### Output tab
+
+`src/workbench/runs.ts` (state), `ansi.ts` (SGR → styled segments, `file:line` references, path resolution),
+`output-panel.tsx` (lazy), shared `open-file.ts` (also used by Problems).
+
+- Runs come from `workbench.run.updated` and `workbench.run.output` (decoded with the contract), newest first, at most 100. A run seen starting in this view is "live": chunks append in `seq` order, duplicates are dropped, a missing
+  `seq` marks a gap. Its output is kept up to 1 MB (the newest part), like the server's stream cap.
+- History: when the tab first opens, `GET /workbench/runs` (assumed `RunInfo[]`) adds earlier runs. Output the stream
+  cannot provide (runs not seen starting, or a live run with a gap once it finishes) is fetched with
+  `GET /workbench/runs/:runID` (assumed `{ run: RunInfo, output: string }`) when its section is open. A 404 or a
+  non-JSON reply marks history unavailable: the tab then shows "Showing runs from this window only" and works from
+  events alone. Both shapes live in `client.ts`.
+- Each run: status chip (`RunStatus`), checker, unit relative to the project, error/warning counts, duration (locale
+  number formatting, ticking while running), exit code, the command, the reason when skipped/unavailable/timed out,
+  and the output: ANSI colors (16 colors mapped to theme tokens, 256-color and truecolor, bold/dim/italic/underline;
+  other escapes dropped), virtualized lines, `path:line[:col]` and `path(line,col)` linkified (resolved against the
+  unit's folder, never inside URLs). A link opens the file tab at that line, like a problem row.
+- "Run checks" calls `POST /workbench/check` with `{}` (the server decides what to check) and shows the report summary;
+  without the route it shows "This server can't start checks from the app yet." and nothing else changes.
+- The Output tab badge counts runs that are queued or running.
+
+Verified against the real server (same setup as above, the stub model asked for the `check` tool on
+`src/broken.ts`): the run appeared as Running, streamed tsc's text output, finished as Failed with 2 errors, `0.4 s`,
+`exit 2`; both `src/broken.ts(1,14)` / `(3,19)` links were clickable and opened `broken.ts` with line 1 selected.
+`GET /workbench/runs` and `POST /workbench/check` do not exist on this branch's server: it answered them with HTML, so the
+tab showed the window-only hint and the toast, as designed. Runs started by the server have `NO_COLOR`/`TERM=dumb`, so
+real output is usually uncolored; colors are covered by unit tests and the e2e spec.

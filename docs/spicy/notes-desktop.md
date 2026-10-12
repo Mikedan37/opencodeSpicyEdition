@@ -310,8 +310,15 @@ does not exit.**
   - the discard answer let the window close;
   - the discarded edit never reached disk.
 - For a user this means Cmd+Q leaves the app running with no window and no sidecar.
-- Proposed fix (not applied, waiting for the go-ahead): call `app.exit(0)` instead of `app.quit()` after the sidecar
-  stop in `will-quit`. All windows are closed by then and every `will-quit` listener has run.
+- Fixed (approved): after the sidecar stop, `will-quit` now calls `app.exit(0)`. A second `app.quit()` after a
+  prevented `will-quit` never finishes on macOS, and by then every window has closed and every `will-quit` listener
+  has run.
+- Rerun: **64/64**.
+  - Both menu-style quits exit, in about 0.5 s including the process checks, with no process left.
+  - The record says `interrupted` right after the quit, and the history is recovered.
+  - Answered Cancel, the unsaved-edit check keeps the window; answered discard, the quit goes through and the edit
+    never reaches disk.
+  - Screenshots: `docs/spicy/desktop-smoke/20261012T235353/`.
 
-Keychain unchanged, crash reports 92 → 92, no process left, no dialog. Screenshots:
+In both runs: keychain unchanged, crash reports 92 → 92, no process left, no dialog. Screenshots of the failing run:
 `docs/spicy/desktop-smoke/20261012T234857/`.

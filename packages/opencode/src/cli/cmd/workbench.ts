@@ -6,7 +6,7 @@ import { cmd } from "./cmd"
 const McpCommand = cmd({
   command: "mcp",
   describe:
-    "serve the workbench tools (problems, check, doctor) over MCP on stdio, backed by a running opencode server",
+    "serve the workbench tools (problems, check, doctor, debug_*) over MCP on stdio, backed by a running opencode server",
   builder: (yargs) =>
     yargs
       .option("url", {
@@ -26,11 +26,15 @@ const McpCommand = cmd({
       return
     }
     const { WorkbenchBridge } = await import("@/workbench/mcp/bridge")
+    const { WorkbenchDebugBridge } = await import("@/workbench/mcp/debug") // spicy: debug_* tools (dap)
     // Credentials come from OPENCODE_SERVER_USERNAME / OPENCODE_SERVER_PASSWORD, never from arguments.
-    await WorkbenchBridge.serve({
-      url,
-      directory: path.resolve(args.directory ?? process.env.OPENCODE_DIRECTORY ?? process.cwd()),
-    })
+    await WorkbenchBridge.serve(
+      {
+        url,
+        directory: path.resolve(args.directory ?? process.env.OPENCODE_DIRECTORY ?? process.cwd()),
+      },
+      WorkbenchDebugBridge.tools(), // spicy: debug_* tools (dap)
+    )
   },
 })
 

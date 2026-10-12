@@ -444,23 +444,32 @@ const layer = Layer.effect(
       return { investigation, evidence: items, report: report(investigation, items) }
     })
 
-    /** On load: active records of a process that is gone become interrupted; their recorded processes die. */
-    const recover = Effect.fnUntraced(function* (ctx: InstanceContext) {
-      const stale = (yield* load(ctx.project.id)).filter(
-        (item) => item.directory === ctx.directory && ACTIVE.includes(item.status),
-      )
+    /**
+     * Active records whose owner is gone become interrupted, and their recorded processes are killed when pid and
+     * start time still match (a reused pid is left alone). Nothing is relaunched.
+     */
+    const recoverRecords = Effect.fnUntraced(function* (records: readonly Info[], boot: boolean) {
       const self = yield* host
-      for (const item of stale) {
-        // Still owned by a live service instance: another one in this process, or another process.
-        const owned =
-          item.host.pid === self.pid
-            ? item.host.token !== self.token && item.host.token !== undefined && LIVE.has(item.host.token)
-            : (yield* Effect.promise(() => DebugSession.startTime(item.host.pid))) === item.host.startedAt &&
-              item.host.startedAt !== undefined
-        if (owned) continue
+      for (const item of records.filter((record) => ACTIVE.includes(record.status))) {
+        // At boot, anything this service instance already owns was created after the scan started: it is live.
+        // On an instance load, our own records are from before a reload, whose debug sessions died with it.
+        if (
+          item.host.pid === self.pid && item.host.token === self.token
+            ? boot
+            : yield* Effect.promise(() => owned(item.host, self))
+        )
+          continue
         const killed = yield* Effect.promise(() => cleanup(item.processes))
         const updated = yield* storage
-          .update<Draft>(key(ctx.project.id, item.id), (draft) => {
+          .update<Draft>(key(item.projectID, item.id), (draft) => {
+            // Boot recovery and an instance load can race (the first one wins), and the record may have changed
+            // owner since it was read (a resume): only the snapshot's owner is replaced.
+            if (
+              !ACTIVE.includes(draft.status) ||
+              draft.host.pid !== item.host.pid ||
+              draft.host.token !== item.host.token
+            )
+              return
             transition(
               draft,
               "interrupted",
@@ -473,6 +482,29 @@ const layer = Layer.effect(
         if (Option.isSome(updated)) yield* publish(updated.value as Info)
       }
     })
+
+    // On instance load (also after an instance reload in this process): this directory's records.
+    const recover = Effect.fnUntraced(function* (ctx: InstanceContext) {
+      yield* recoverRecords(
+        (yield* load(ctx.project.id)).filter((item) => item.directory === ctx.directory),
+        false,
+      )
+    })
+
+    // Once per server start: every project's records, before any project is opened.
+    yield* Effect.gen(function* () {
+      const keys = yield* storage.list(["workbench", "investigation"]).pipe(Effect.orElseSucceed(() => []))
+      const items = yield* Effect.forEach(keys, (item) => storage.read<unknown>(item).pipe(Effect.option), {
+        concurrency: 8,
+      })
+      yield* recoverRecords(
+        items.flatMap((item) => (Option.isSome(item) ? Option.toArray(validate(item.value)) : [])),
+        true,
+      )
+    }).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("investigation boot recovery failed", { cause })),
+      Effect.forkScoped,
+    )
 
     // Runs inside the edit tool's publish, so the patch is recorded before the turn-end check runs.
     const edited = Effect.fnUntraced(function* (ctx: InstanceContext, file: string) {
@@ -845,6 +877,17 @@ export function report(record: Info, evidence: readonly Workbench.Evidence[]) {
       unverified.map((file) => `  ${file}: not covered by a passing check`),
     ),
   ].join("\n")
+}
+
+/**
+ * Whether a record's owner still runs: another service instance in this process (its token is live), or another
+ * process whose pid has the recorded start time. A live pid with an unknown start time counts as running.
+ */
+async function owned(owner: Info["host"], self: { pid: number; token: string }) {
+  if (owner.pid === self.pid) return owner.token !== undefined && owner.token !== self.token && LIVE.has(owner.token)
+  const started = await DebugSession.startTime(owner.pid)
+  if (started === undefined) return false
+  return owner.startedAt === undefined || started === owner.startedAt
 }
 
 /** Kills recorded processes whose start time still matches; a reused pid is left alone. */

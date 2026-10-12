@@ -575,6 +575,14 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
     }))
     .json(404, object, "status"),
+  http.protected
+    .post("/workbench/debug/agent", "workbench.debug.agent")
+    .at((ctx) => ({
+      path: "/workbench/debug/agent",
+      headers: ctx.headers(),
+      body: { sessionID: "ses_httpapi_missing", action: "status" },
+    }))
+    .json(404, object, "status"),
   http.protected.get("/experimental/console", "experimental.console.get").json(),
   http.protected.get("/experimental/console/orgs", "experimental.console.listOrgs").json(),
   http.protected

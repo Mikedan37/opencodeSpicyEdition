@@ -1,12 +1,22 @@
-// spicy: Workbench debug route handlers. Requests here come from the user, so they act as "human".
+// spicy: Workbench debug route handlers. Requests here come from the user, so they act as "human" — except
+// `agent`, which runs the agent's debug tool for an agent outside opencode, with its permission asks.
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import type { DebugError } from "@/workbench/dap/client"
+import { Agent } from "@/agent/agent"
+import { Permission } from "@/permission"
+import { MessageID } from "@/session/schema"
+import { Session } from "@/session/session"
+import { Tool } from "@/tool/tool"
+import { DebugError } from "@/workbench/dap/client"
 import { WorkbenchDebug } from "@/workbench/dap/service"
 import { WorkbenchInvestigation } from "@/workbench/investigation/investigation"
+import { DebugTool } from "@/workbench/tool/debug"
 import { InstanceHttpApi } from "../api"
+import type { AgentPayload } from "../groups/workbench-debug"
 import {
   ConflictError,
+  ForbiddenError,
   InvalidRequestError,
   notFound,
   ServiceUnavailableError,
@@ -27,11 +37,61 @@ function toApi(error: DebugError) {
   return new InvalidRequestError({ message: error.message, kind: error.kind })
 }
 
+// The debug tool reports failures as defects; the agent route turns the expected ones into API errors.
+function fromDefect(
+  defect: unknown,
+): Effect.Effect<never, ReturnType<typeof toApi> | ForbiddenError | InvalidRequestError> {
+  if (defect instanceof DebugError) return Effect.fail(toApi(defect))
+  if (
+    defect instanceof PermissionV1.RejectedError ||
+    defect instanceof PermissionV1.DeniedError ||
+    defect instanceof PermissionV1.CorrectedError
+  )
+    return Effect.fail(
+      new ForbiddenError({ message: `permission denied in the IDE: ${defect.message || defect._tag}` }),
+    )
+  if (defect instanceof Tool.InvalidArgumentsError)
+    return Effect.fail(new InvalidRequestError({ message: defect.message }))
+  return Effect.die(defect)
+}
+
 export const workbenchDebugHandlers = HttpApiBuilder.group(InstanceHttpApi, "workbench-debug", (handlers) =>
   Effect.gen(function* () {
     const debug = yield* WorkbenchDebug.Service
     const investigations = yield* WorkbenchInvestigation.Service
+    const permission = yield* Permission.Service
+    const sessions = yield* Session.Service
+    const agents = yield* Agent.Service
+    const tool = yield* Tool.init(yield* DebugTool)
     const session = (id: string) => debug.get(id)
+
+    // Exactly the in-process tool, acting as the agent of `sessionID`: its asks go through the permission service
+    // with the default agent's rules plus the session's, so "ask" waits for the human in the IDE.
+    const agent = Effect.fn("WorkbenchDebugHttpApi.agent")(function* (ctx: { payload: typeof AgentPayload.Type }) {
+      const owner = yield* sessions
+        .get(ctx.payload.sessionID)
+        .pipe(Effect.catch(() => Effect.fail(notFound(`no session ${ctx.payload.sessionID}`))))
+      const info = yield* agents.defaultInfo()
+      const ruleset = Permission.merge(info.permission, owner.permission ?? [])
+      const controller = new AbortController()
+      const { sessionID: _, ...args } = ctx.payload
+      const result = yield* tool
+        .execute(args, {
+          sessionID: owner.id,
+          messageID: MessageID.ascending(),
+          agent: info.name,
+          abort: controller.signal,
+          messages: [],
+          metadata: () => Effect.void,
+          ask: (request) => permission.ask({ ...request, sessionID: owner.id, ruleset }).pipe(Effect.orDie),
+        })
+        // A cancelled request ends the agent's debug sessions, like aborting the in-process tool.
+        .pipe(
+          Effect.onInterrupt(() => Effect.sync(() => controller.abort())),
+          Effect.catchDefect(fromDefect),
+        )
+      return { title: result.title, output: result.output, metadata: result.metadata }
+    })
 
     return handlers
       .handle("list", () => debug.list())
@@ -100,6 +160,7 @@ export const workbenchDebugHandlers = HttpApiBuilder.group(InstanceHttpApi, "wor
           Effect.mapError(toApi),
         ),
       )
+      .handle("agent", agent)
       .handle("investigations", () => investigations.list())
       .handle("investigation", (ctx) => investigations.full(ctx.params.investigationID).pipe(Effect.mapError(toApi)))
       .handle("resume", (ctx) =>

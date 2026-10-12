@@ -207,32 +207,38 @@ export type DebugAdapter = typeof DebugAdapter.Type
 export const DebugBreakpoint = Schema.Struct({
   file: Schema.String.annotate({ description: "Source file, absolute or relative to the project" }),
   line: PositiveInt.annotate({ description: "1-based line" }),
-  condition: optional(Schema.String).annotate({ description: "Stop only when this expression is true" }),
-  hitCondition: optional(Schema.String).annotate({ description: "Stop on this hit count, e.g. >= 3" }),
-  logMessage: optional(Schema.String).annotate({ description: "Log this message instead of stopping" }),
+  condition: optional(Schema.String.annotate({ description: "Stop only when this expression is true" })),
+  hitCondition: optional(Schema.String.annotate({ description: "Stop on this hit count, e.g. >= 3" })),
+  logMessage: optional(Schema.String.annotate({ description: "Log this message instead of stopping" })),
 })
 export interface DebugBreakpoint extends Schema.Schema.Type<typeof DebugBreakpoint> {}
 
 // What to debug. POST /workbench/debug/sessions takes it as the body; the agent's debug tool takes the same fields.
 export const DebugStartInput = Schema.Struct({
-  configuration: optional(Schema.String).annotate({ description: "Name of a configuration in .vscode/launch.json" }),
-  program: optional(Schema.String).annotate({
-    description:
-      "Program to debug (a .py file, a native binary), the test file for python-test, or the crate folder for rust-test",
-  }),
+  configuration: optional(Schema.String.annotate({ description: "Name of a configuration in .vscode/launch.json" })),
+  program: optional(
+    Schema.String.annotate({
+      description:
+        "Program to debug (a .py file, a native binary), the test file for python-test, or the crate folder for rust-test",
+    }),
+  ),
   args: optional(Schema.Array(Schema.String)),
   cwd: optional(Schema.String),
   adapter: optional(DebugAdapter),
-  preset: optional(Schema.Literals(["python-test", "rust-test"])).annotate({
-    description:
-      "python-test runs the program file under pytest (unittest when pytest is missing). rust-test builds the crate (default: the project) with cargo test --no-run and debugs its unit-test binary; args go to the test binary, a test name filter first",
-  }),
+  preset: optional(
+    Schema.Literals(["python-test", "rust-test"]).annotate({
+      description:
+        "python-test runs the program file under pytest (unittest when pytest is missing). rust-test builds the crate (default: the project) with cargo test --no-run and debugs its unit-test binary; args go to the test binary, a test name filter first",
+    }),
+  ),
   stopOnEntry: optional(Schema.Boolean),
   breakpoints: optional(Schema.Array(DebugBreakpoint)),
-  exceptions: optional(Schema.Array(Schema.String)).annotate({
-    description: "Exception filters, e.g. uncaught, raised, userUnhandled (debugpy) or cpp_throw (lldb-dap)",
-  }),
-  file: optional(Schema.String).annotate({ description: "Value of ${file} in launch.json" }),
+  exceptions: optional(
+    Schema.Array(Schema.String).annotate({
+      description: "Exception filters, e.g. uncaught, raised, userUnhandled (debugpy) or cpp_throw (lldb-dap)",
+    }),
+  ),
+  file: optional(Schema.String.annotate({ description: "Value of ${file} in launch.json" })),
 }).annotate({ identifier: "WorkbenchDebugStartInput" })
 export interface DebugStartInput extends Schema.Schema.Type<typeof DebugStartInput> {}
 

@@ -157,7 +157,7 @@ Runs (P5 commit): `test/workbench` + debug HTTP test 66 pass, 1 skip (DAP-18, De
 
 ### Blockers and limits (P5)
 
-- Recovery is lazy per project directory (first investigation access), not at server boot.
+- Recovery is lazy per project directory (first investigation access), not at server boot. (Wave 3 adds a boot pass.)
 - Patch attribution is by directory: an edit counts for every active investigation in that directory, whichever agent session made it.
 - `current()`/edit handling list the project's records from the JSON store on each call (fine for tens of records).
 
@@ -311,3 +311,81 @@ resolved`, plus `blocked`, `needs_human`, `interrupted`, `failed`, `cancelled`. 
   `opencode/nimble-orchid` branches deleted, `git worktree prune` run); typecheck clean in `packages/opencode`,
   `packages/schema` and `packages/app`; `bun run generate` in `packages/client`: no diff.
 - No new `~/Library/Logs/DiagnosticReports/Python-*.ips` after any of these runs (11 before the fix, 11 now).
+
+## Wave 3
+
+### 1. Debug tools in the Workbench MCP bridge
+
+- `opencode workbench mcp` also serves `debug_start`, `debug_attach`, `debug_control`, `debug_breakpoints`,
+  `debug_inspect`, `debug_evaluate`, `debug_output`, `debug_status`, `debug_stop`, `debug_note`, `debug_escalate` and
+  `debug_resume`: one tool per action of the in-process `debug` tool, each taking that action's fields with the
+  in-process field schemas (`Parameters.fields`), so outside agents use the same vocabulary. `debug_inspect`,
+  `debug_output` and `debug_status` carry `readOnlyHint`, `debug_stop` `destructiveHint`. Module:
+  `src/workbench/mcp/debug.ts` (`WorkbenchDebugBridge.tools()`).
+- Each call is `POST /workbench/debug/agent` with `{ sessionID, action, ...fields }` and returns
+  `{ title, output, metadata }` (`WorkbenchDebugAgentResult`). The handler runs the in-process tool itself
+  (`Tool.init(DebugTool)`) as the agent of `sessionID`, so everything it records is the same: actor `agent`, an
+  investigation opened for that session (its `sessionID`), the debug session owned by `agent`, control refused while
+  the human owns the session or the investigation is halted, inspection allowed whoever owns it, S7 on a denied ask.
+- Permissions: asks go through the permission service with the default agent's rules merged with the session's (as
+  `session/tools.ts` does), so `debug.launch`, `debug.attach` and `debug.evaluate` ask by default and `debug.memory`
+  stays denied. Neither the route nor the bridge approves anything. The bridge creates one opencode session per
+  bridge process on its first debug call, titled "Workbench MCP: debugging"; its asks appear there in the IDE and its
+  investigations list it. A rejected or denied ask fails the call with 403 "permission denied in the IDE: ..." and
+  moves the investigation to `needs_human` (S7).
+- The model cannot pick the session or the action: the bridge sets both after the arguments, rejects unknown
+  arguments, and forwards only the tool's own fields (an empty input schema, like `debug_status`'s, lets unknown keys
+  through decoding).
+- Errors as the other debug routes (404 unknown session, 400 invalid arguments, 409 not the owner, halted or a limit,
+  502/503/504), plus 403 for a denied ask. Cancelling the request aborts like aborting the in-process tool: the
+  agent's debug sessions end.
+
+### 2. Boot-time recovery
+
+- When the investigation service starts (once per server), a background pass reads every project's records and
+  recovers the active ones whose owner is gone: status `interrupted`, checkpoint "the app restarted; killed <pids>",
+  recorded processes killed only when pid and start time still match (a reused pid is left alone). Nothing is
+  relaunched. Failures are logged.
+- Owner check: same process, its service token must still be live; another process, the pid must run with the
+  recorded start time (an unknown recorded start time counts as running, so a live owner's debuggees are never
+  killed). Records of the starting instance itself are skipped (created after the pass began).
+- The per-directory recovery on instance load stays (it covers reloads within one process). Both re-check the record
+  inside the storage update (still active, same owner), so they never both transition it or undo a resume.
+
+### 3. Fix: start input field descriptions
+
+The schema package's `optional()` drops an `.annotate({ description })` placed outside it from JSON Schema. Since
+wave 2 moved `DebugStartInput`/`DebugBreakpoint` there, the in-process tool's schema (what the model sees) and the
+OpenAPI had lost the descriptions of `configuration`, `program`, `preset`, `exceptions`, `file`, `condition`,
+`hitCondition` and `logMessage`. They now sit inside `optional(...)`; types are unchanged.
+
+### Files touched (wave 3)
+
+| File                                                                               | Change                                                                                             |
+| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `packages/opencode/src/workbench/mcp/debug.ts` (new)                               | The `debug_*` bridge tools                                                                         |
+| `packages/opencode/src/server/routes/instance/httpapi/groups/workbench-debug.ts`   | `POST /workbench/debug/agent` (`AgentPayload`, `AgentResult`, op `workbench.debug.agent`)          |
+| `packages/opencode/src/server/routes/instance/httpapi/handlers/workbench-debug.ts` | `agent` handler: runs the debug tool with the session's asks; maps tool defects to 400/403/404/409 |
+| `packages/opencode/src/workbench/tool/debug.ts`                                    | `import { Tool }` instead of a star import                                                         |
+| `packages/opencode/src/workbench/investigation/investigation.ts`                   | Boot recovery; the owner check moved to `owned()`                                                  |
+| `packages/schema/src/workbench.ts`                                                 | Descriptions inside `optional()`                                                                   |
+| `packages/opencode/src/cli/cmd/workbench.ts` (problems branch, `spicy:`)           | Passes `WorkbenchDebugBridge.tools()` to `WorkbenchBridge.serve` as `extra`; describe text         |
+| `packages/opencode/test/workbench/mcp.test.ts` (problems branch, `spicy:`)         | The stdio test expects the three workbench tools plus `debug_*`                                    |
+| `packages/opencode/test/server/httpapi-exercise/index.ts` (upstream)               | +1 scenario: `POST /workbench/debug/agent` with an unknown session, 404                            |
+
+### Wave 3 runs
+
+- New tests: `test/workbench/mcp-debug.test.ts` (3: tool list, annotations and field schemas equal to the in-process
+  tool's, forged session/action ignored; real debugpy through the bridge: `debug.launch` asked in the bridge session
+  and answered through the permission routes, conditional breakpoint snapshot, inspect without an ask,
+  `debug.evaluate` asked, control refused while the human owns the session while inspect works, exception, output,
+  status naming the investigation, stop; a rejected launch: 403, no debug session, investigation `needs_human` with
+  "S7: permission denied: debug.launch") and `test/workbench/investigation/boot.test.ts` (1: fake orphans are
+  `sleep` processes; the matching one is killed, the reused pid survives, a live owner's record stays `debugging`).
+- `test/workbench` + debug HTTP test: 146 pass / 2 skip (Rust and C launches, "Developer Mode off") / 0 fail.
+- `test/tool test/server test/session`: 1062 pass / 9 skip / 1 todo / 1 fail: `httpapi-v2-pty` "retains exited
+  sessions", the known load-flaky PTY test, 4/4 when rerun alone.
+- `bun run test:httpapi`: 256 pass in all three modes (its `opencode/happy-circuit` and `opencode/neon-harbor`
+  branches, at our HEAD, deleted after `git worktree prune`; stray `packages/opencode/config.json` removed).
+- Typecheck clean in `packages/opencode` and `packages/schema`; `bun run generate` in `packages/client`: no diff.
+- No lldb launch or attach; `~/Library/Logs/DiagnosticReports` (without intelligencetasksd) 52 files before and after.

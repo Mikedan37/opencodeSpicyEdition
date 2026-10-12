@@ -6,6 +6,7 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 | File | Change | Why |
 |---|---|---|
 | `packages/schema/src/event-manifest.ts` | Import `Workbench`, `AgentHQ` and `Review`; add their `Event.Definitions` to `featureDefinitions` | Workbench, Agent HQ and review events reach the server and client manifests |
+| `packages/core/src/v1/config/config.ts` | Optional `workbench` key (`ConfigWorkbenchV1`, new file `config/workbench.ts`) | Repository-defined check commands (VER-07); always exec-class, never run on load |
 | `packages/opencode/src/agent/agent.ts` | Default permissions `verify.exec` ask, `debug.*` ask, `debug.memory` deny | The built-in `"*": "allow"` would otherwise allow these silently |
 | `packages/opencode/src/lsp/client.ts` | Honor `workspace/diagnostic/refresh`, bounded warm-up for runtime-registered pull servers, process-exit detection, `processId` = opencode pid, diagnostics hook (`emitDiagnostics`) | REG-01/02/09/10; Workbench problem store |
 | `packages/opencode/src/lsp/lsp.ts` | `broken` keeps reason + retry backoff, crash watcher, `status()` reports `"error"`, `diagnosticEvents()` subscription | REG-02/09; problem store |

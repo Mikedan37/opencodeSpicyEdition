@@ -491,3 +491,111 @@ bottom right.
   selected `app.py` with the paused-line marks; "App in terminal" run to the end with the Problems tab in front, then
   the Run tab showed `Exited with code 0` and `hello terminal, total=6` / `to stderr` with no terminal socket; after a
   reload the terminal found the PTY gone (v1 404) and the tab replayed the server's copy. No new crash reports.
+
+## Wave 7: the IDE editor (CodeMirror 6)
+
+### What exists
+
+- **Editor.** Text files in the side panel's file tabs open in CodeMirror 6 (`workbench/editor-view.tsx`, a lazy
+  chunk): editable, line numbers, search (the file view's Cmd+F opens CodeMirror's panel, styled with v2 tokens),
+  undo/redo, bracket matching, the active line, and highlighting with the app's `--syntax-*` tokens in light and
+  dark (the dark flag follows the app theme). Languages load per kind: TS/JS/TSX/JSX, Python, Rust, C/C++/ObjC, Go,
+  JSON, Markdown, Swift (legacy mode). The viewer's font, size and 24 px line height are kept.
+- **What keeps the read-only viewer** (`DebugFile` decides): images, audio, SVG, binary files, files over 500,000
+  characters (the viewer's own "large" limit), files the server refuses to open for editing (outside the project,
+  not UTF-8), and servers without the route. Those keep the wave 3 debugger marks. A file with pending agent changes
+  keeps the review inline diff (`ReviewFileGate`); its unsaved editor state waits behind it and a later save meets
+  the usual 409.
+- **One gutter.** A glyph column (a breakpoint dot, hollow when unverified, warning-coloured for a condition or log;
+  otherwise a bar in the colour of the line's worst diagnostic) and the line numbers. A click in either toggles a
+  breakpoint (this replaces the viewer's "line click opens a comment"). F9 toggles on the cursor line while the editor
+  has focus, else on the paused line, as before. The paused line is tinted with a bar on its number, the top frame's
+  values sit in a row under it, and a stop scrolls it into view.
+- **Problems** of the file (matched with `file.normalize`) become lint diagnostics: an underline, a hover message with
+  the tool, and the gutter glyph. A zero-width position (tsc reports those) underlines the word there. They refresh
+  with the Problems store, so a save's LSP update arrives the normal way.
+- **Comments.** Upstream's line comment controller still owns the boxes and the draft; the editor places them as
+  block widgets under their lines and tints the selected and commented lines. Since the gutter now sets breakpoints,
+  the draft is reached from a "Comment" button that a text selection shows (not for a search match).
+- **Saving.** Cmd+S saves (`Mod-s` in the editor). Buffers live in `EditorProvider` (`workbench/editor-context.tsx`,
+  in `WorkbenchProviders`): the exact text from `GET /workbench/file` and the hash of its bytes. A save sends
+  `{ path, content, baseHash }`; a 409 shows a bar: **Reload from disk** (one undoable change) or **Overwrite**
+  (asked first; it writes over whatever the disk holds now). An unsaved file that changes on disk keeps its edits;
+  a clean one follows the disk. The file view re-renders its viewer after every change on disk (a save included),
+  so the editor hands its state (text, selection, undo history) and focus to the next view.
+- **Tabs.** A dot marks unsaved changes (`aria-label` "Unsaved changes"); editing a preview tab keeps it; closing a
+  tab with unsaved changes asks Save / Don't save / Cancel (close button, middle click and the close-tab command alike).
+- **Backend** (`packages/opencode/src/workbench/editor-file.ts`, workbench group): `GET /workbench/file?path=` returns
+  `{ content, hash }` (sha256 of the bytes; BOM, CRLF, leading and trailing whitespace kept: the legacy
+  `/file/content` trims, which would save files without their final newline); `PUT /workbench/file` with
+  `{ path, content, baseHash }` writes only over those bytes (`null`: only when absent), else 409 and nothing written.
+  Paths resolve against the directory and must stay inside the project with symlinks resolved (`containsPath` on real
+  paths, 403 otherwise); a symlinked file inside is written through. Writes go to a temporary file in the same folder,
+  then one rename, keeping the mode bits. A save publishes `file.watcher.updated` (not `file.edited`, which records
+  agent edits for investigations) and touches the language servers. Behind the server's auth; no agent tool or MCP
+  bridge route uses it.
+
+### Dependencies
+
+Exact versions, all published at least two weeks ago: `@codemirror/state` 6.7.6, `view` 6.43.13, `commands` 6.11.1,
+`language` 6.12.4, `search` 6.7.2, `lint` 6.9.7, `lang-javascript` 6.2.5, `lang-python` 6.2.1, `lang-rust` 6.0.2,
+`lang-cpp` 6.0.3, `lang-go` 6.0.1, `lang-json` 6.0.2, `lang-markdown` 6.5.2, `legacy-modes` 6.5.4, `@lezer/highlight`
+1.2.4. Four transitive parsers had resolved to releases under two weeks old; the root `overrides` pin them to the
+previous ones (`@lezer/lr` 1.4.10, `@lezer/css` 1.3.8, `@lezer/javascript` 1.5.5, `@lezer/markdown` 1.7.2). 33
+packages added in all, the newest 18 days old; the lockfile only gains entries.
+
+Bundle (vite build before and after): the entry chunk grows 6 KB (2779.8 → 2785.9 KB). CodeMirror loads with the first
+file opened: the editor chunk is 380.5 KB raw / 123.6 KB gzip; languages load per kind (raw / gzip): JS/TS 84.9 / 32.9,
+Python 44.2 / 18.3, Rust 81.8 / 28.9, C/C++ 101.6 / 32.5, Go 30.2 / 12.1, JSON 2.4 / 1.5, Markdown with its embedded
+HTML/CSS 98.6 / 37.4, Swift 3.9 / 1.8, plus the shared `@lezer/lr` 25.9 / 8.6 and autocomplete 8.2 / 3.5. All chunks:
++868 KB raw, +303 KB gzip. A Python file's first open costs about 150 KB gzip.
+
+### Files
+
+Fork: `workbench/{editor,editor.test,editor-view,editor-context,debug-file,client,panel,en}`, server
+`workbench/editor-file.ts`, `server/routes/instance/httpapi/{groups,handlers}/workbench.ts`, tests
+`test/server/httpapi-workbench-file.test.ts`, `test/server/httpapi-exercise/workbench.ts`,
+`e2e/regression/{editor-save,debug-panel}.spec.ts`.
+
+Upstream-owned files changed in wave 7:
+
+| File                                                              | Change                                                                   | Why                                                                |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| `packages/app/src/context/layout.tsx`                             | `tabCloseGuards` set; `tabs().close` asks the guards first (`// spicy:`) | Unsaved editor changes ask before a tab closes, whatever closes it |
+| `packages/app/src/components/session/session-sortable-tab-v2.tsx` | `useEditorOptional`; the unsaved dot (`// spicy:`)                       | Dirty marker on file tabs                                          |
+| `package.json` (root)                                             | four `@lezer/*` entries in `overrides` (JSON, no marker)                 | Keep transitive parsers two weeks old                              |
+
+Also edited: the review agent's `e2e/regression/review-agent-changes.spec.ts` (its server start waits while the port is
+busy; both real-server specs bind the app's default server port).
+
+### Limits
+
+- Breakpoints stay on their line numbers while lines are inserted above them (the debugger stores lines); the lint
+  marks move with edits until the next Problems refresh.
+- A file that mixes CRLF and LF is saved all-CRLF; a lone CR (old Mac) file is not special-cased.
+- The hash check and the rename are two steps; a write landing between them is lost (`ponytail:` note in
+  `editor-file.ts`).
+- Cmd+S works while the editor has focus; there is no app-level save command yet. No format-on-save.
+- Unsaved buffers live in memory for the workspace; reloading the page or closing the window does not ask (an
+  Electron `beforeunload` that cancels would block closing the window silently).
+
+### Wave 7 tests and verification
+
+- App unit tests (JSX override) 797: 796 pass, 1 known ICU failure; new `editor.test.ts` 6 (buffers: one read, a
+  server without the route, save, conflict, overwrite including a deleted file, reload, busy save, discard; mappings:
+  languages, line endings, problems to clamped ranges and word ranges, gutter glyph priority). `test-browser` 43/43;
+  typecheck clean (app and opencode).
+- Server: `httpapi-workbench-file.test.ts` 2/2 (exact round trip with BOM and CRLF; a reader holding the old file keeps
+  its bytes, i.e. the save replaced the file instead of rewriting it; mode kept; no temp files; `file.watcher.updated`
+  published; 409 on a stale base with the file untouched; `null` base creates only; `..`, absolute, symlinked file and
+  symlinked folder escapes refused with nothing written outside; a symlink inside written through; binary 400; missing
+  404). Negative controls: an in-place write fails the held-reader check, dropping the symlink resolution fails the
+  escape checks. `test:httpapi` 260/260 in each of coverage, auth and effect modes, with both new routes.
+- e2e: `editor-save.spec.ts` (real server) 1/1; `debug-panel.spec.ts` 7/7 (editor gutter, gutter click, Problems lint
+  marker); with the review, activity, Agent HQ, terminal and file-browser specs 33/33 (`--workers=2`). With the
+  port wait, the two real-server specs passed together in parallel in 6 of 7 runs; the failed one was the first run
+  after the CodeMirror packages were added, at the review spec's "Agent changes" menu step, and did not come back
+  (a cold Vite optimization of the new dependencies is the likely cause; not confirmed).
+- Real server (Playwright Chromium, no Electron): tsc problems in `src/broken.ts` as underlines, glyphs and a hover
+  message; search; the comment offer and a draft under lines 5-6; a gutter click and a debugpy stop on line 5 with
+  `value = 0` under it; an unsaved dot, a conflict and Reload; light and dark. Screenshots: scratchpad `wave7-shots/`.

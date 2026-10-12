@@ -2,7 +2,7 @@ import { Workbench } from "@opencode-ai/schema/workbench"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { Doctor } from "@/workbench/doctor"
-import { ApiNotFoundError } from "../errors"
+import { ApiNotFoundError, ConflictError, ForbiddenError, InvalidRequestError } from "../errors"
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import {
@@ -40,6 +40,29 @@ export const RunRecord = Schema.Struct({
   output: Schema.String.annotate({ description: "stdout and stderr as they arrived, capped at 256 KB" }),
   truncated: Schema.Boolean,
 }).annotate({ identifier: "WorkbenchRunRecord" })
+
+// The IDE editor's file access (src/workbench/editor-file.ts).
+export const FileQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  path: Schema.String.annotate({ description: "Absolute, or relative to the directory" }),
+})
+
+export const FileText = Schema.Struct({
+  content: Schema.String.annotate({ description: "The file's text exactly as on disk (UTF-8, BOM kept)" }),
+  hash: Schema.String.annotate({ description: "sha256 of the file's bytes: the baseHash of the next write" }),
+}).annotate({ identifier: "WorkbenchFileText" })
+
+export const FileWritePayload = Schema.Struct({
+  path: Schema.String.annotate({ description: "Absolute, or relative to the directory" }),
+  content: Schema.String,
+  baseHash: Schema.NullOr(Schema.String).annotate({
+    description: "hash of the bytes this edit started from; null when the file must not exist yet",
+  }),
+})
+
+export const FileWritten = Schema.Struct({
+  hash: Schema.String.annotate({ description: "sha256 of the bytes written" }),
+}).annotate({ identifier: "WorkbenchFileWritten" })
 
 export const WorkbenchApi = HttpApi.make("workbench")
   .add(
@@ -88,6 +111,31 @@ export const WorkbenchApi = HttpApi.make("workbench")
             identifier: "workbench.run",
             summary: "Get run",
             description: "One recent run with the output it printed.",
+          }),
+        ),
+        HttpApiEndpoint.get("file", `${root}/file`, {
+          query: FileQuery,
+          success: described(FileText, "The file's text and the hash of its bytes"),
+          error: [ApiNotFoundError, InvalidRequestError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.file.read",
+            summary: "Read a file to edit",
+            description:
+              "A text file inside the project, exactly as on disk, with the sha256 of its bytes. Binary files, files over 8 MB and paths outside the project (symlinks resolved) are refused.",
+          }),
+        ),
+        HttpApiEndpoint.put("writeFile", `${root}/file`, {
+          query: WorkspaceRoutingQuery,
+          payload: FileWritePayload,
+          success: described(FileWritten, "The hash of the bytes written"),
+          error: [ApiNotFoundError, InvalidRequestError, ForbiddenError, ConflictError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.file.write",
+            summary: "Save a file from the editor",
+            description:
+              "Replaces a file inside the project (symlinks resolved) through a temporary file and a rename, only when its bytes still hash to baseHash; otherwise answers 409 and writes nothing. Language servers are told about the change, so its problems refresh.",
           }),
         ),
         HttpApiEndpoint.get("doctor", `${root}/doctor`, {

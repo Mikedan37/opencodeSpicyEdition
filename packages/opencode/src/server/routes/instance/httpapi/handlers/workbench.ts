@@ -12,9 +12,13 @@ import { Doctor } from "@/workbench/doctor"
 import { WorkbenchProblems } from "@/workbench/problems/store"
 import { WorkbenchCheckers } from "@/workbench/verify/checkers"
 import { WorkbenchVerify } from "@/workbench/verify/verify"
+import { Watcher } from "@opencode-ai/core/filesystem/watcher"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { LSP } from "@/lsp/lsp"
+import { WorkbenchEditorFile } from "@/workbench/editor-file"
 import { InstanceHttpApi } from "../api"
-import { notFound } from "../errors"
-import { CheckPayload, ProblemsQuery } from "../groups/workbench"
+import { ConflictError, ForbiddenError, InvalidRequestError, notFound } from "../errors"
+import { CheckPayload, FileQuery, FileWritePayload, ProblemsQuery } from "../groups/workbench"
 
 export const workbenchHandlers = HttpApiBuilder.group(
   InstanceHttpApi,
@@ -27,6 +31,36 @@ export const workbenchHandlers = HttpApiBuilder.group(
       const config = yield* Config.Service
       const flags = yield* RuntimeFlags.Service
       const appProcess = yield* AppProcess.Service
+      const lsp = yield* LSP.Service
+      const events = yield* EventV2Bridge.Service
+
+      const refuse = (failure: WorkbenchEditorFile.Failure) => {
+        if (failure.kind === "missing") return notFound(failure.message)
+        if (failure.kind === "outside") return new ForbiddenError({ message: failure.message })
+        return new InvalidRequestError({ message: failure.message })
+      }
+
+      const file = Effect.fn("WorkbenchHttpApi.file")(function* (ctx: { query: typeof FileQuery.Type }) {
+        const instance = yield* InstanceState.context
+        const result = yield* Effect.promise(() => WorkbenchEditorFile.read(instance, ctx.query.path))
+        if (WorkbenchEditorFile.isFailure(result)) return yield* refuse(result)
+        return result
+      })
+
+      const writeFile = Effect.fn("WorkbenchHttpApi.writeFile")(function* (ctx: {
+        payload: typeof FileWritePayload.Type
+      }) {
+        const instance = yield* InstanceState.context
+        const result = yield* Effect.promise(() => WorkbenchEditorFile.write(instance, ctx.payload))
+        if (WorkbenchEditorFile.isFailure(result))
+          return yield* result.kind === "conflict" ? new ConflictError({ message: result.message }) : refuse(result)
+        // Not FileSystem.Event.Edited: that one records the agent's own edits (investigations).
+        yield* events.publish(Watcher.Event.Updated, { file: result.file, event: result.created ? "add" : "change" })
+        // The language servers re-read the file; their diagnostics reach Problems as usual. Not awaited: a server
+        // may still be starting.
+        yield* lsp.touchFile(result.file).pipe(Effect.forkDetach)
+        return { hash: result.hash }
+      })
 
       const list = Effect.fn("WorkbenchHttpApi.problems")(function* (ctx: { query: typeof ProblemsQuery.Type }) {
         return yield* problems.snapshot({
@@ -89,6 +123,8 @@ export const workbenchHandlers = HttpApiBuilder.group(
         .handle("runs", runs)
         .handle("run", run)
         .handle("doctor", doctor)
+        .handle("file", file)
+        .handle("writeFile", writeFile)
     }),
   // The doctor spawns probes through AppProcess, a stateless process runner the app graph does not expose.
 ).pipe(Layer.provide(LayerNode.compile(AppProcess.node)))

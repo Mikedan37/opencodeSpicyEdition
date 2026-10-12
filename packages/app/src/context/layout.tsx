@@ -89,6 +89,10 @@ export type ReviewDiffStyle = "unified" | "split"
 export type ReviewChangeMode = "git" | "branch" | "turn" | "agent" // spicy: agent changes review (src/review)
 export type ReviewPanelSource = "context-button" | "other"
 
+// spicy: a guard can keep a tab open (the IDE editor asks before unsaved changes go): it returns false and calls
+// `close` itself once the user chose (src/workbench/editor-context.tsx)
+export const tabCloseGuards = new Set<(tab: string, close: () => void) => boolean>()
+
 export type LayoutRoute =
   | { type: "home" }
   | { type: "draft"; draftID: string; server?: ServerConnection.Key }
@@ -1052,12 +1056,16 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           },
           close(tab: string) {
             const session = key()
-            const current = store.sessionTabs[session]
-            if (!current) return
-            apply(
-              session,
-              closeSessionTab({ tabs: current, preview: ephemeral.sessionTabPreview[session] }, normalize(tab)),
-            )
+            const close = () => {
+              const current = store.sessionTabs[session]
+              if (!current) return
+              apply(
+                session,
+                closeSessionTab({ tabs: current, preview: ephemeral.sessionTabPreview[session] }, normalize(tab)),
+              )
+            }
+            for (const guard of tabCloseGuards) if (!guard(tab, close)) return // spicy: unsaved editor changes
+            close()
           },
           move(tab: string, to: number) {
             const session = key()

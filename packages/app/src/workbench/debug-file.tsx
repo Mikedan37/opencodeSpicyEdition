@@ -1,6 +1,12 @@
-import { createEffect, createMemo, onCleanup, onMount } from "solid-js"
+import { createEffect, createMemo, lazy, onCleanup, onMount, Show, Suspense } from "solid-js"
 import { File, type FileProps, type TextFileProps } from "@opencode-ai/session-ui/file"
-import { useDebugOptional } from "./debug-context"
+import { isBinaryContent, mediaKindFromPath } from "@opencode-ai/session-ui/pierre/media"
+import { useDebugOptional, type DebugContextValue } from "./debug-context"
+import { EDITOR_MAX_CHARS } from "./editor"
+import { useEditorOptional } from "./editor-context"
+
+// CodeMirror loads with the first file opened for editing.
+const EditorView = lazy(() => import("./editor-view"))
 
 type Annotation<T> = NonNullable<TextFileProps<T>["annotations"]>[number]
 type Marks = {
@@ -17,9 +23,9 @@ const STYLES = ["background-image", "background-repeat", "background-color", "bo
 // Inline, so it also wins over the viewer's selection color on the same line.
 const PAUSED = "rgb(from var(--v2-state-fg-warning) r g b / 0.18)"
 
-// The app-wide File component with the debugger's marks in the read-only file viewer: breakpoint dots in the gutter, the
-// selected frame's line, and the top frame's values under it. Pierre renders lines into a shadow root, so the marks
-// are inline styles on its [data-column-number] / [data-line] nodes, reapplied whenever it re-renders them.
+// The app-wide File component. In the side panel's file tabs, text files open in the editor (editor-view.tsx), which
+// has the debugger's marks and Problems in its gutter; images, audio, binary and very large files keep the read-only
+// viewer, with the debugger's marks painted on it.
 export function DebugFile<T>(props: FileProps<T>) {
   const debug = useDebugOptional()
   // Only the file viewer (the one with line selection); tool output previews in the timeline show file contents
@@ -27,6 +33,40 @@ export function DebugFile<T>(props: FileProps<T>) {
   // Called directly, so diffs and previews keep the props object as is (no spread proxy per instance).
   if (!debug || props.mode !== "text" || !props.enableLineSelection) return File(props)
   const text = props as TextFileProps<T>
+  const editor = useEditorOptional()
+  const editable = () =>
+    !!editor &&
+    !!text.file.name &&
+    !mediaKindFromPath(text.file.name) &&
+    !isBinaryContent(text.media?.current) &&
+    text.file.contents.length <= EDITOR_MAX_CHARS
+  const viewer = () => <MarkedFile debug={debug} text={text} />
+  return (
+    <Show when={editable()} fallback={viewer()}>
+      <Suspense>
+        <EditorView
+          path={text.file.name!}
+          contents={text.file.contents}
+          annotations={text.annotations}
+          renderAnnotation={text.renderAnnotation as (annotation: unknown) => HTMLElement | undefined}
+          selectedLines={text.selectedLines}
+          commentedLines={text.commentedLines}
+          onLineSelectionEnd={text.onLineSelectionEnd}
+          search={text.search}
+          onRendered={text.onRendered}
+          fallback={viewer}
+        />
+      </Suspense>
+    </Show>
+  )
+}
+
+// The read-only viewer with the debugger's marks: breakpoint dots in the gutter, the selected frame's line, and the
+// top frame's values under it. Pierre renders lines into a shadow root, so the marks are inline styles on its
+// [data-column-number] / [data-line] nodes, reapplied whenever it re-renders them.
+function MarkedFile<T>(props: { debug: DebugContextValue; text: TextFileProps<T> }) {
+  const debug = props.debug
+  const text = props.text
   let host!: HTMLDivElement
 
   const name = () => (text.file.name ? (debug.relative(text.file.name) ?? text.file.name) : undefined)

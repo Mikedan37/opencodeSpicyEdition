@@ -9,9 +9,10 @@ const post = (body: unknown, signal?: AbortSignal) =>
   fetch(`${model.url}/chat/completions`, { method: "POST", body: JSON.stringify(body), signal })
 
 test("streams the scripted reply word by word and ends with [DONE]", async () => {
-  const text = await post({ stream: true, messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }] }).then(
-    (res) => res.text(),
-  )
+  const text = await post({
+    stream: true,
+    messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+  }).then((res) => res.text())
   const lines = text.split("\n").filter((line) => line.startsWith("data: "))
   expect(lines.at(-1)).toBe("data: [DONE]")
   const chunks = lines.slice(0, -1).map((line) => JSON.parse(line.slice(6)))

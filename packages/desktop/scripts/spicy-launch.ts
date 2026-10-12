@@ -16,10 +16,11 @@
 //   itself.
 // - Keychain: the Security framework resolves the user's keychains and their search-list preferences from HOME, so a
 //   fake HOME has no default keychain and the first Safe Storage write would make macOS show "Keychain Not Found".
-//   A throwaway keychain at <root>/home/Library/Keychains/login.keychain-db is made default, login and search list
-//   for the fake HOME only (every `security` call runs with HOME=<root>/home; the real login keychain and its
-//   preferences are never written), unlocked, without auto-lock, and deleted by cleanup(). --use-mock-keychain keeps
-//   Chromium out of it; the keychain is the backstop.
+//   A throwaway keychain at <root>/home/Library/Keychains/spicy.keychain-db (password "spicy-smoke") is made the
+//   default keychain and search list for the fake HOME only (every `security` call runs with HOME=<root>/home, so the
+//   real login keychain and its preferences are never written), unlocked, without auto-lock, and deleted by
+//   cleanup(). It is not named login.keychain-db: securityd treats that name as the login keychain and refuses to
+//   unlock it with its own password. --use-mock-keychain keeps Chromium out of it; the keychain is the backstop.
 // - XDG_{DATA,CONFIG,CACHE,STATE}_HOME and OPENCODE_TEST_HOME isolate the opencode server (the sidecar inherits the
 //   main process environment); ZDOTDIR keeps the login-shell environment probe away from real dotfiles;
 //   npm_config_offline/npm_config_cache keep the server's background @opencode-ai/plugin install off the network.
@@ -150,16 +151,19 @@ export type Launched = Awaited<ReturnType<typeof launch>>
 
 // Removes the throwaway keychain (call after the app has quit for the last time).
 export function cleanup(home: string) {
-  const keychain = path.join(home, "Library", "Keychains", "login.keychain-db")
+  const keychain = keychainPath(home)
   if (existsSync(keychain)) security(home, "delete-keychain", keychain)
 }
 
-function provisionKeychain(home: string) {
-  const keychain = path.join(home, "Library", "Keychains", "login.keychain-db")
-  if (!existsSync(keychain)) security(home, "create-keychain", "-p", "", keychain)
+const KEYCHAIN_PASSWORD = "spicy-smoke"
+const keychainPath = (home: string) => path.join(home, "Library", "Keychains", "spicy.keychain-db")
+
+export function provisionKeychain(home: string) {
+  const keychain = keychainPath(home)
+  if (!existsSync(keychain)) security(home, "create-keychain", "-p", KEYCHAIN_PASSWORD, keychain)
   security(home, "default-keychain", "-d", "user", "-s", keychain)
   security(home, "list-keychains", "-d", "user", "-s", keychain)
-  security(home, "unlock-keychain", "-p", "", keychain)
+  security(home, "unlock-keychain", "-p", KEYCHAIN_PASSWORD, keychain)
   security(home, "set-keychain-settings", keychain) // no timeout, no lock on sleep
   // Refuse to launch unless the fake HOME resolves to the throwaway keychain.
   const resolved = security(home, "default-keychain", "-d", "user").replace(/"/g, "").trim()
@@ -219,6 +223,7 @@ async function prepare(root: string) {
   for (const dir of [
     "home/Library/Application Support/" + APP_ID,
     "home/Library/Keychains",
+    "home/Library/Preferences", // the Security framework silently skips writing its search list without it
     "tmp",
     "npm-cache",
     "xdg/data",

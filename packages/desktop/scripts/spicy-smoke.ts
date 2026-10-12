@@ -34,6 +34,9 @@ const out = path.resolve(arg("--out") ?? path.join(import.meta.dir, "../../../do
 await mkdir(out, { recursive: true })
 
 type Check = { name: string; ok: boolean; ms: number; detail?: string }
+// Assistant message texts in the Agents workspace, with typographic quotes and whitespace normalized (replies render
+// as Markdown).
+const ASSISTANT = `[...document.querySelectorAll('[data-row="message"][data-role="assistant"]')].map((row) => row.textContent.replace(/[\u2018\u2019]/g, "'").replace(/\\s+/g, " ").trim())`
 const checks: Check[] = []
 const shots: string[] = []
 const model = serveScriptedModel()
@@ -177,17 +180,19 @@ try {
   await step("send a message", () => send(renderer!, "Hi Felix, introduce yourself."))
   await step("reply streams into the workspace", () =>
     renderer!.waitFor(
-      `(() => { const rows = document.querySelectorAll('[data-row="message"][data-role="assistant"]'); const text = rows[rows.length - 1]?.textContent ?? ""; return text.length > 15 && text.length < ${INTRO.length} && ${statusIs("working")} })()`,
+      `(() => { const text = ${ASSISTANT}.at(-1) ?? ""; return text.length > 15 && text.length < ${INTRO.length} && ${statusIs("working")} })()`,
       "partial assistant text while working",
     ),
   )
   await shot("streaming")
   await step("turn completes with the scripted reply", async () => {
     await renderer!.waitFor(statusIs("idle"), "idle after the turn", 30_000)
-    const text = await renderer!.evaluate<string>(
-      `[...document.querySelectorAll('[data-row="message"][data-role="assistant"]')].at(-1)?.textContent ?? ""`,
-    )
-    if (!text.includes(INTRO)) throw new Error(`assistant text was: ${text}`)
+    // The finished message is re-rendered as Markdown off the main thread, so wait for its text to settle.
+    await renderer!
+      .waitFor(`${ASSISTANT}.at(-1)?.includes(${JSON.stringify(INTRO)})`, "the full scripted reply")
+      .catch(async () => {
+        throw new Error(`assistant text was: ${await renderer!.evaluate<string>(`${ASSISTANT}.at(-1) ?? ""`)}`)
+      })
   })
   await shot("reply")
   await step(
@@ -211,7 +216,7 @@ try {
   await step("cancel a running turn", async () => {
     await send(renderer!, "Please give me a slow, very long answer.")
     await renderer!.waitFor(
-      `document.querySelector('[data-action="agenthq-cancel"]') && [...document.querySelectorAll('[data-row="message"][data-role="assistant"]')].at(-1)?.textContent?.includes("Paragraph 1")`,
+      `document.querySelector('[data-action="agenthq-cancel"]') && ${ASSISTANT}.at(-1)?.includes("Paragraph 1")`,
       "slow reply streaming",
     )
     await renderer!.click('[data-action="agenthq-cancel"]')
@@ -229,7 +234,7 @@ try {
     if (!(await renderer!.evaluate(`!!document.querySelector('[data-component="agenthq-workspace"]')`)))
       await renderer!.click('[data-component="agenthq-card"]')
     await renderer!.waitFor(
-      `[...document.querySelectorAll('[data-row="message"][data-role="assistant"]')].some((row) => row.textContent.includes(${JSON.stringify(INTRO.slice(0, 40))}))`,
+      `${ASSISTANT}.some((text) => text.includes(${JSON.stringify(INTRO.slice(0, 40))}))`,
       "conversation after reopening",
     )
   })
@@ -239,10 +244,7 @@ try {
   await step("send a turn and quit while it streams", async () => {
     await send(renderer!, "One more slow story, please.")
     await renderer!.waitFor(statusIs("working"), "working")
-    await renderer!.waitFor(
-      `[...document.querySelectorAll('[data-row="message"][data-role="assistant"]')].at(-1)?.textContent?.includes("Paragraph 1")`,
-      "streaming before quit",
-    )
+    await renderer!.waitFor(`${ASSISTANT}.at(-1)?.includes("Paragraph 1")`, "streaming before quit")
   })
   await step(
     "no processes left after quitting",
@@ -278,7 +280,7 @@ try {
         "interrupted status in the session list",
       )
       await renderer!.waitFor(
-        `[...document.querySelectorAll('[data-row="message"][data-role="assistant"]')].some((row) => row.textContent.includes(${JSON.stringify(INTRO.slice(0, 40))}))`,
+        `${ASSISTANT}.some((text) => text.includes(${JSON.stringify(INTRO.slice(0, 40))}))`,
         "first reply in the recovered history",
       )
       const detail = await api<{

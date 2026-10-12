@@ -1,6 +1,7 @@
 import path from "path"
 import { fileURLToPath } from "url"
 import { Option, Schema } from "effect"
+import { Glob } from "@opencode-ai/core/util/glob"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import type { WorkbenchProblems } from "../problems/store"
 
@@ -8,7 +9,8 @@ import type { WorkbenchProblems } from "../problems/store"
 // problems are 0-based. Relative paths resolve against the directory the tool ran in.
 
 type Draft = WorkbenchProblems.Draft
-export type Output = { stdout: string; stderr: string; exitCode: number; cwd: string }
+// `report`: the files a tool wrote into its report directory (see WorkbenchCheckers.REPORT_DIR), joined.
+export type Output = { stdout: string; stderr: string; exitCode: number; cwd: string; report?: string }
 
 // ---------------------------------------------------------------- clang SARIF (+ linker text)
 
@@ -341,44 +343,116 @@ export function goTest(output: Output): Draft[] {
   ]
 }
 
-// JUnit XML from bun test and node --test. ponytail: regex over the reporter's regular XML, not a full parser.
+// JUnit XML from bun test and node --test (on stdout). ponytail: regex over the reporters' regular XML, not a
+// full parser. JS stacks list the innermost frame first.
 export function junit(output: Output): Draft[] {
-  return [...output.stdout.matchAll(/<testcase\b([^>]*)>([\s\S]*?)<\/testcase>/g)].flatMap((match): Draft[] => {
-    const failure = /<failure\b([^>]*)>([\s\S]*?)<\/failure>|<failure\b([^>]*)\/>/.exec(match[2])
+  return failures(output.report ?? output.stdout).map((item) => {
+    const frame = frames(
+      item.body,
+      /(?:file:\/\/)?((?:\/|\.{0,2}[\w@-])[^\s():]*\.[cm]?[jt]sx?):(\d+):(\d+)/g,
+      output.cwd,
+    )[0]
+    return draft(
+      item,
+      frame ?? (item.file ? { file: path.resolve(output.cwd, item.file), line: item.line } : undefined),
+    )
+  })
+}
+
+// pytest --junitxml: tracebacks list the innermost frame last ("avg.py:2: ZeroDivisionError").
+export function pytest(output: Output): Draft[] {
+  return failures(output.report ?? "").map((item) =>
+    draft(
+      { ...item, code: `${item.classname}::${item.name}` },
+      frames(item.body, /^(\S[^:\n]*\.py):(\d+):/gm, output.cwd).at(-1),
+    ),
+  )
+}
+
+// swift test --parallel --xunit-output: the report names the failing tests; the console has where they failed.
+// XCTest prints `file.swift:line: error: -[Module.Class test] : message`, swift-testing prints
+// `✘ Test name() recorded an issue at File.swift:line:col: message` with a bare file name.
+export function swiftTest(output: Output): Draft[] {
+  // no test ran (a test target failed to build): report the compiler output
+  if (!/<testcase\b/.test(output.report ?? "")) return located(`${output.stdout}\n${output.stderr}`, output.cwd)
+  const xctest = [...output.stdout.matchAll(/^(.+?\.swift):(\d+): error: -\[(\S+) (\S+)\] : (.*)$/gm)]
+  const testing = [...output.stdout.matchAll(/^✘ Test (.+?) recorded an issue at (.+?):(\d+):(\d+): (.*)$/gm)]
+  return failures(output.report ?? "").map((item) => {
+    const failure = xctest.find((match) => match[3] === item.classname && match[4] === item.name)
+    if (failure)
+      return draft(
+        { ...item, message: failure[5] },
+        { file: path.resolve(output.cwd, failure[1]), line: Number(failure[2]) },
+      )
+    const issue = testing.find((match) => match[1] === item.name)
+    const file =
+      issue && (issue[2].includes("/") ? path.resolve(output.cwd, issue[2]) : findSource(output.cwd, issue[2]))
+    return draft(
+      { ...item, message: issue?.[5] ?? item.message },
+      issue && file ? { file, line: Number(issue[3]), column: Number(issue[4]) } : undefined,
+    )
+  })
+}
+
+type Failure = { name: string; classname: string; file?: string; line?: number; message: string; body: string }
+
+function failures(xml: string): Failure[] {
+  return [...xml.matchAll(/<testcase\b([^>]*)>([\s\S]*?)<\/testcase>/g)].flatMap((match) => {
+    const failure = /<(?:failure|error)\b([^>]*?)\/>|<(?:failure|error)\b([^>]*)>([\s\S]*?)<\/(?:failure|error)>/.exec(
+      match[2],
+    )
     if (!failure) return []
     const attrs = attributes(match[1])
-    const failureAttrs = attributes(failure[1] ?? failure[3] ?? "")
-    const body = xmlText(`${failureAttrs.message ?? ""}\n${failure[2] ?? ""}`)
-    // the first stack location inside the project, else the testcase's own file and line
-    const frame = [...body.matchAll(/(?:file:\/\/)?((?:\/|\.{0,2}[\w@-])[^\s():]*\.[cm]?[jt]sx?):(\d+):(\d+)/g)]
-      .map((item) => ({
-        file: path.resolve(output.cwd, item[1]),
-        line: Number(item[2]),
-        column: Number(item[3]),
-      }))
-      .find(
-        (item) =>
-          item.file.startsWith(output.cwd + path.sep) && !item.file.includes(`${path.sep}node_modules${path.sep}`),
-      )
-    const file = frame?.file ?? (attrs.file ? path.resolve(output.cwd, attrs.file) : undefined)
-    const line = frame?.line ?? (attrs.line ? Number(attrs.line) : undefined)
-    const message = xmlText(failureAttrs.message ?? failure[2] ?? "failed")
-      .split("\n")
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .slice(0, 4)
-      .join("\n")
+    const failureAttrs = attributes(failure[1] ?? failure[2] ?? "")
     return [
       {
-        kind: "test",
-        file,
-        range: line === undefined ? undefined : span(line, frame?.column ?? 1),
-        severity: "error",
-        message: `${xmlText(attrs.name ?? "test")}: ${message}`,
-        code: xmlText(attrs.name ?? "test"),
+        name: xmlText(attrs.name ?? "test"),
+        classname: xmlText(attrs.classname ?? ""),
+        file: attrs.file && xmlText(attrs.file),
+        line: attrs.line ? Number(attrs.line) : undefined,
+        message: xmlText(failureAttrs.message ?? failure[3] ?? "failed"),
+        body: xmlText(`${failureAttrs.message ?? ""}\n${failure[3] ?? ""}`),
       },
     ]
   })
+}
+
+// Stack or traceback locations inside the project (not in node_modules or site-packages), in text order.
+function frames(text: string, pattern: RegExp, cwd: string) {
+  return [...text.matchAll(pattern)]
+    .map((match) => ({
+      file: path.resolve(cwd, match[1]),
+      line: Number(match[2]),
+      column: match[3] === undefined ? undefined : Number(match[3]),
+    }))
+    .filter(
+      (frame) => frame.file.startsWith(cwd + path.sep) && !/[\\/](node_modules|site-packages)[\\/]/.test(frame.file),
+    )
+}
+
+function draft(
+  item: Pick<Failure, "name" | "message"> & { code?: string },
+  at?: { file: string; line?: number; column?: number },
+): Draft {
+  const message = item.message
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 4)
+    .join("\n")
+  return {
+    kind: "test",
+    file: at?.file,
+    range: at?.line === undefined ? undefined : span(at.line, at.column ?? 1),
+    severity: "error",
+    message: `${item.name}: ${message || "failed"}`,
+    code: item.code ?? item.name,
+  }
+}
+
+// swift-testing reports a bare file name; find it under the package's sources or tests.
+function findSource(cwd: string, name: string) {
+  return Glob.scanSync(`{Tests,Sources}/**/${name}`, { cwd, absolute: true })[0]
 }
 
 // cargo test --message-format=json: compiler messages are JSON lines (see `cargo`); the test harness writes text.

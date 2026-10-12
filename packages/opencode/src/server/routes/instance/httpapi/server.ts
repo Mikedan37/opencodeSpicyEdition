@@ -111,6 +111,7 @@ import { workspaceHandlers } from "./handlers/workspace"
 import { agenthqHandlers } from "./handlers/agenthq" // spicy: Agent HQ routes
 import { workbenchHandlers } from "./handlers/workbench" // spicy: Workbench problems routes
 import { WorkbenchProblems } from "@/workbench/problems/store" // spicy: Workbench services
+import { WorkbenchVerify } from "@/workbench/verify/verify" // spicy: Workbench services
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
 import { disposeMiddleware } from "./lifecycle"
@@ -276,6 +277,7 @@ const app = LayerNode.group([
   AgentRegistry.node, // spicy: Agent HQ services
   AgentSessions.node, // spicy: Agent HQ services
   WorkbenchProblems.node, // spicy: Workbench services
+  WorkbenchVerify.node, // spicy: Workbench services
 ])
 
 export function createRoutes(

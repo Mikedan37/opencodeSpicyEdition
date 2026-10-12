@@ -1,4 +1,5 @@
 // Fake language server that reports the same error by push (on open) and by pull (textDocument/diagnostic).
+// It exits (a crash) when a change brings the text CRASH.
 let buffer = Buffer.alloc(0)
 
 const error = {
@@ -24,6 +25,11 @@ function handle(data) {
       params: { uri: data.params.textDocument.uri, diagnostics: [error] },
     })
   if (data.method === "textDocument/diagnostic") return send({ id: data.id, result: { kind: "full", items: [error] } })
+  if (
+    data.method === "textDocument/didChange" &&
+    data.params.contentChanges.some((change) => change.text.includes("CRASH"))
+  )
+    process.exit(1)
   if (data.id !== undefined && data.method) send({ id: data.id, result: null })
 }
 

@@ -1,5 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { ascending } from "@opencode-ai/schema/identifier"
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { Context, Effect, Fiber, Layer, Option, Schedule, Stream } from "effect"
@@ -15,29 +17,43 @@ import { WorkbenchCheckers } from "./checkers"
 import { WorkbenchParse } from "./parse"
 
 export const BUDGET_MS = 60_000
+export const TEST_BUDGET_MS = 180_000 // when tests run
 const CONCURRENCY = 2 // units at a time
 const MAX_OUTPUT = 4 * 1024 * 1024 // per stream, in memory for parsing
 const MAX_STREAMED = 1024 * 1024 // per run, as workbench.run.output events
+const MAX_KEPT = 256 * 1024 // per run, kept for GET /workbench/runs/:runID
+const MAX_UNIT_FILES = 200
 const REPORTS = 50
+const RUNS = 100
+const NEEDS_APPROVAL = "needs approval (verify.exec)"
 
 export type Input = {
-  files: ReadonlyArray<string>
+  files?: ReadonlyArray<string>
+  /** A folder (its source files, gitignore-aware, at most 200) or one file. */
+  unit?: string
   trigger: Workbench.VerificationReport["trigger"]
   sessionID?: string
   budgetMs?: number
   /** Also run test runners (always exec-class). */
   tests?: boolean
-  /** Returns the exec-class units allowed to run. The check tool asks; the turn-end gate never asks. */
+  /** Returns the exec-class units allowed to run. The check tool asks; the gate and the MCP bridge never ask. */
   approve: (units: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<string>>
+  /** Why exec-class units that were not approved are skipped. */
+  approval?: string
 }
 
 export type Found = WorkbenchProblems.Draft & { tool: string; new: boolean }
 export type Result = { report: Workbench.VerificationReport; problems: Found[] }
+export type RunRecord = { run: Workbench.RunInfo; output: string; truncated: boolean }
 
 export interface Interface {
   readonly run: (input: Input) => Effect.Effect<Result>
   /** Reports this instance produced, oldest first. Only the engine writes them. */
   readonly reports: () => Effect.Effect<ReadonlyArray<Workbench.VerificationReport>>
+  /** Recent runs, newest first. */
+  readonly runs: () => Effect.Effect<ReadonlyArray<Workbench.RunInfo>>
+  /** One recent run with the output it printed (stdout and stderr as they arrived, capped). */
+  readonly record: (id: Workbench.RunID) => Effect.Effect<RunRecord | undefined>
   /** File extensions some checker handles. */
   readonly extensions: ReadonlyArray<string>
 }
@@ -57,22 +73,28 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
       const store = yield* WorkbenchProblems.Service
       const events = yield* EventV2Bridge.Service
       const spawner = yield* ChildProcessSpawner
-      const state = yield* InstanceState.make(() => Effect.succeed({ reports: [] as Workbench.VerificationReport[] }))
+      const ripgrep = yield* Ripgrep.Service
+      const fs = yield* FSUtil.Service
+      const extensions = [...new Set(checkers.flatMap((checker) => checker.extensions))]
+      const state = yield* InstanceState.make(() =>
+        Effect.succeed({ reports: [] as Workbench.VerificationReport[], runs: new Map<string, RunRecord>() }),
+      )
 
-      const publish = (run: Workbench.RunInfo) => events.publish(Workbench.Event.RunUpdated, { run })
+      const publish = (record: RunRecord, run: Workbench.RunInfo) => {
+        record.run = run
+        return events.publish(Workbench.Event.RunUpdated, { run })
+      }
 
-      // Runs one command, streaming output as workbench.run.output at most four times a second.
-      // Interruption (budget, newer run) closes the scope, which kills the process group.
-      const execute = Effect.fnUntraced(function* (
-        runID: Workbench.RunID,
-        plan: Extract<WorkbenchCheckers.Plan, { command: string[] }>,
-      ) {
+      // Runs one command, streaming output as workbench.run.output at most four times a second and keeping the
+      // start of it on the run record. Interruption (budget, newer run) closes the scope, which kills the
+      // process group.
+      const execute = Effect.fnUntraced(function* (record: RunRecord, command: string[], cwd: string) {
         const output = { stdout: "", stderr: "", streamed: 0, pending: "", seq: 0 }
         const flush = Effect.suspend(() => {
           if (!output.pending) return Effect.void
           const chunk = output.pending
           output.pending = ""
-          return events.publish(Workbench.Event.RunOutput, { runID, seq: output.seq++, chunk })
+          return events.publish(Workbench.Event.RunOutput, { runID: record.run.id, seq: output.seq++, chunk })
         })
         const collect = (stream: Stream.Stream<Uint8Array, unknown>, key: "stdout" | "stderr") =>
           stream.pipe(
@@ -82,13 +104,15 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
                 if (output[key].length < MAX_OUTPUT) output[key] += text
                 if (output.streamed < MAX_STREAMED) output.pending += text
                 output.streamed += text.length
+                if (record.output.length < MAX_KEPT) record.output = (record.output + text).slice(0, MAX_KEPT)
+                record.truncated = output.streamed > MAX_KEPT
               }),
             ),
           )
         const exitCode = yield* Effect.gen(function* () {
           const handle = yield* spawner.spawn(
-            ChildProcess.make(plan.command[0], plan.command.slice(1), {
-              cwd: plan.cwd,
+            ChildProcess.make(command[0], command.slice(1), {
+              cwd,
               extendEnv: true,
               env: { NO_COLOR: "1", CLICOLOR: "0", CARGO_TERM_COLOR: "never", TERM: "dumb" },
               stdin: "ignore",
@@ -106,22 +130,57 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
         return { exitCode, stdout: output.stdout, stderr: output.stderr }
       })
 
+      // XML reports the tool wrote into its report directory, in name order.
+      const reports = (dir: string) =>
+        fs.readDirectory(dir).pipe(
+          Effect.flatMap((names) =>
+            Effect.forEach(names.toSorted(), (name) => fs.readFileString(path.join(dir, name))),
+          ),
+          Effect.map((texts) => texts.join("\n")),
+          Effect.orElseSucceed(() => ""),
+        )
+
       const runUnit = Effect.fnUntraced(function* (
         unit: Planned,
-        context: { changed: Set<string>; deadline: number; approved: Set<string>; passed: Set<string> },
+        context: {
+          changed: Set<string>
+          deadline: number
+          approved: Set<string>
+          approval: string
+          passed: Set<string>
+        },
       ) {
         const checker = unit.checker
-        const info: Workbench.RunInfo = {
-          id: Workbench.RunID.create(),
-          kind: checker.test ? "test" : "check",
-          unit: unit.root,
-          checker: checker.id,
-          command: "command" in unit.plan ? unit.plan.command : [],
-          execClass: "command" in unit.plan ? unit.plan.execClass : "inert",
-          status: "queued",
+        const s = yield* InstanceState.get(state)
+        // A fresh directory for tools that write JUnit/xUnit reports; removed when the run ends.
+        const reportDir =
+          "command" in unit.plan && unit.plan.command.some((arg) => arg.includes(WorkbenchCheckers.REPORT_DIR))
+            ? yield* fs.makeTempDirectoryScoped({ prefix: "opencode-report-" }).pipe(Effect.orDie)
+            : undefined
+        const command =
+          "command" in unit.plan
+            ? unit.plan.command.map((arg) =>
+                reportDir ? arg.replaceAll(WorkbenchCheckers.REPORT_DIR, reportDir) : arg,
+              )
+            : []
+        const record: RunRecord = {
+          run: {
+            id: Workbench.RunID.create(),
+            kind: checker.test ? "test" : "check",
+            unit: unit.root,
+            checker: checker.id,
+            command,
+            execClass: "command" in unit.plan ? unit.plan.execClass : "inert",
+            status: "queued",
+          },
+          output: "",
+          truncated: false,
         }
+        s.runs.set(record.run.id, record)
+        for (const id of [...s.runs.keys()].slice(0, -RUNS)) s.runs.delete(id)
+        const info = record.run
         const done = Effect.fnUntraced(function* (run: Workbench.RunInfo, problems: Found[] = []) {
-          yield* publish(run)
+          yield* publish(record, run)
           return {
             run,
             problems,
@@ -141,15 +200,15 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
         if (checker.after && !context.passed.has(`${checker.after}\0${unit.root}`))
           return yield* done({ ...info, status: "skipped", reason: `${checker.after} did not pass` })
         if (info.execClass === "exec" && !context.approved.has(unit.root))
-          return yield* done({ ...info, status: "skipped", reason: "needs approval (verify.exec)" })
+          return yield* done({ ...info, status: "skipped", reason: context.approval })
         const remaining = context.deadline - Date.now()
         if (remaining <= 0) return yield* done({ ...info, status: "skipped", reason: "budget" })
 
         const begun = yield* store.begin(producer, meta)
         const running = { ...info, status: "running" as const, startedAt: Date.now() }
-        yield* publish(running)
+        yield* publish(record, running)
         const plan = unit.plan
-        const outcome = yield* execute(info.id, plan).pipe(
+        const outcome = yield* execute(record, command, plan.cwd).pipe(
           Effect.map((result) => ({ type: "exit" as const, ...result })),
           Effect.timeoutOption(remaining),
           Effect.map(Option.getOrElse(() => ({ type: "timeout" as const }))),
@@ -175,10 +234,13 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
           stderr: WorkbenchParse.stripAnsi(outcome.stderr),
           exitCode: outcome.exitCode,
           cwd: plan.cwd,
+          report: reportDir ? yield* reports(reportDir) : undefined,
         })
+        const empty = checker.empty?.[outcome.exitCode]
         // A failing exit with nothing parsed is still a failure, never a pass.
         const silent =
           outcome.exitCode !== 0 &&
+          empty === undefined &&
           !(checker.findings ?? []).includes(outcome.exitCode) &&
           !parsed.some((item) => item.severity === "error")
         const drafts = silent
@@ -198,16 +260,24 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
         const failed = problems.some((item) => item.severity === "error")
         if (!failed) context.passed.add(`${checker.id}\0${unit.root}`)
         yield* settle({ state: "idle", observedAt: running.startedAt, runID: info.id, problems: drafts })
-        return yield* done(
-          {
-            ...running,
-            status: failed ? "failed" : "passed",
-            finishedAt,
-            exitCode: outcome.exitCode,
-            counts: WorkbenchProblems.count(problems),
-          },
-          problems,
-        )
+        const final = {
+          ...running,
+          finishedAt,
+          exitCode: outcome.exitCode,
+          counts: WorkbenchProblems.count(problems),
+        }
+        // the tool ran but found nothing to run (pytest exit 5): not a pass
+        if (!failed && empty !== undefined) return yield* done({ ...final, status: "skipped", reason: empty }, problems)
+        return yield* done({ ...final, status: failed ? "failed" : "passed" }, problems)
+      }, Effect.scoped)
+
+      // A folder's source files (gitignore-aware), or the file itself.
+      const expand = Effect.fnUntraced(function* (target: string) {
+        if (!(yield* fs.isDir(target))) return [target]
+        const entries = yield* ripgrep
+          .glob({ cwd: target, pattern: `**/*{${extensions.join(",")}}`, limit: MAX_UNIT_FILES })
+          .pipe(Effect.orElseSucceed(() => []))
+        return entries.map((entry) => path.join(target, entry.path))
       })
 
       const run = Effect.fn("WorkbenchVerify.run")(function* (input: Input) {
@@ -216,9 +286,10 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
         const resolve = (file: string) => path.resolve(ctx.directory, file)
         const deadline = Date.now() + (input.budgetMs ?? BUDGET_MS)
         // the files asked about are the changed files: errors in them are new, errors elsewhere in a unit are not
-        const changed = new Set(input.files.map(resolve))
+        const requested = [...(input.files ?? []), ...(input.unit ? yield* expand(resolve(input.unit)) : [])]
+        const changed = new Set(requested.map(resolve))
         const files = yield* Effect.promise(async () => {
-          const candidates = [...new Set(input.files.map(resolve))].filter((file) => containsPath(file, ctx))
+          const candidates = [...changed].filter((file) => containsPath(file, ctx))
           const exists = await Promise.all(candidates.map((file) => Filesystem.exists(file)))
           return candidates.filter((_, index) => exists[index])
         })
@@ -233,7 +304,13 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
           "command" in unit.plan && unit.plan.execClass === "exec" ? [unit.root] : [],
         )
         const approved = new Set(exec.length ? yield* input.approve([...new Set(exec)]) : [])
-        const context = { changed, deadline, approved, passed: new Set<string>() }
+        const context = {
+          changed,
+          deadline,
+          approved,
+          approval: input.approval ?? NEEDS_APPROVAL,
+          passed: new Set<string>(),
+        }
         // Units that share a root run in order (go vet waits for go build); others run CONCURRENCY at a time.
         const groups = Object.values(Object.groupBy(units, (unit) => unit.root)).flatMap((group) =>
           group ? [group] : [],
@@ -281,14 +358,19 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
         return { report, problems: checks.flatMap((check) => check.problems) }
       })
 
-      const reports = Effect.fn("WorkbenchVerify.reports")(function* () {
-        return (yield* InstanceState.get(state)).reports
-      })
-
       return Service.of({
         run,
-        reports,
-        extensions: [...new Set(checkers.flatMap((checker) => checker.extensions))],
+        reports: Effect.fn("WorkbenchVerify.reports")(function* () {
+          return (yield* InstanceState.get(state)).reports
+        }),
+        runs: Effect.fn("WorkbenchVerify.runs")(function* () {
+          return [...(yield* InstanceState.get(state)).runs.values()].map((record) => record.run).toReversed()
+        }),
+        record: Effect.fn("WorkbenchVerify.record")(function* (id: Workbench.RunID) {
+          const record = (yield* InstanceState.get(state)).runs.get(id)
+          return record && { ...record }
+        }),
+        extensions,
       })
     }),
   )
@@ -346,7 +428,7 @@ export const nodeFor = (checkers: WorkbenchCheckers.Info[]) =>
   LayerNode.make({
     service: Service,
     layer: layerFor(checkers),
-    deps: [WorkbenchProblems.node, EventV2Bridge.node, CrossSpawnSpawner.node],
+    deps: [WorkbenchProblems.node, EventV2Bridge.node, CrossSpawnSpawner.node, Ripgrep.node, FSUtil.node],
   })
 
 export const node = nodeFor(WorkbenchCheckers.all)

@@ -1,5 +1,3 @@
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Effect, Schema } from "effect"
 import path from "path"
 import { InstanceState } from "@/effect/instance-state"
@@ -8,9 +6,7 @@ import { WorkbenchGate } from "../verify/gate"
 import { WorkbenchVerify } from "../verify/verify"
 import DESCRIPTION from "./check.txt"
 
-const MAX_UNIT_FILES = 200
 const MAX_LISTED = 50
-const TEST_BUDGET_MS = 180_000
 
 // Unknown keys are rejected so a call cannot pass a report, a status or anything else the engine decides.
 export const Parameters = Schema.Struct({
@@ -29,20 +25,6 @@ export const CheckTool = Tool.define(
   "check",
   Effect.gen(function* () {
     const verify = yield* WorkbenchVerify.Service
-    const ripgrep = yield* Ripgrep.Service
-    const fs = yield* FSUtil.Service
-
-    const unitFiles = Effect.fnUntraced(function* (target: string) {
-      if (!(yield* fs.isDir(target))) return [target]
-      const entries = yield* ripgrep
-        .glob({
-          cwd: target,
-          pattern: `**/*{${verify.extensions.join(",")}}`,
-          limit: MAX_UNIT_FILES,
-        })
-        .pipe(Effect.orElseSucceed(() => []))
-      return entries.map((entry) => path.join(target, entry.path))
-    })
 
     return {
       description: DESCRIPTION,
@@ -50,17 +32,15 @@ export const CheckTool = Tool.define(
       execute: (args: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
-          const files = args.files?.length
-            ? args.files.map((file) => path.resolve(instance.directory, file))
-            : args.unit
-              ? yield* unitFiles(path.resolve(instance.directory, args.unit))
-              : WorkbenchGate.turnFiles(ctx.messages, instance.directory)
+          const files =
+            args.files?.length || args.unit ? args.files : WorkbenchGate.turnFiles(ctx.messages, instance.directory)
           const result = yield* verify.run({
             files,
+            unit: args.unit,
             trigger: "agent",
             sessionID: ctx.sessionID,
             tests: args.tests,
-            budgetMs: args.tests ? TEST_BUDGET_MS : undefined,
+            budgetMs: args.tests ? WorkbenchVerify.TEST_BUDGET_MS : undefined,
             approve: (units) =>
               ctx
                 .ask({ permission: "verify.exec", patterns: [...units], always: [...units], metadata: { units } })
@@ -68,7 +48,7 @@ export const CheckTool = Tool.define(
           })
           const summary = result.report.summary
           return {
-            title: files.length
+            title: result.report.changedFiles.length
               ? `${summary.failed} failed, ${summary.passed} passed of ${result.report.checks.length} checks`
               : "nothing to check",
             metadata: { report: result.report },

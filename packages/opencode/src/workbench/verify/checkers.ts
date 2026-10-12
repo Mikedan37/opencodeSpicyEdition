@@ -1,15 +1,20 @@
 import os from "os"
 import path from "path"
-import { readdir } from "fs/promises"
+import { access, constants, readdir } from "fs/promises"
 import { which } from "@opencode-ai/core/util/which"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { Filesystem } from "@/util/filesystem"
+import { lazy } from "@/util/lazy"
 import type { WorkbenchProblems } from "../problems/store"
 import { WorkbenchParse } from "./parse"
 
 // Native checkers, modeled on format/formatter.ts: each one maps a changed file to its unit (the
 // tsconfig, crate, Go package, Swift package, compile_commands entry or Python project that owns it)
 // and plans one command for the unit. "exec" plans can run project code and need verify.exec.
+
+// A plan's command may contain this placeholder for a fresh directory the tool writes JUnit/xUnit reports into.
+// The runner creates the directory, hands its files to `parse` as `report` and removes it afterwards.
+export const REPORT_DIR = "$REPORT_DIR"
 
 export type Unit = { root: string; files: string[] }
 export type ExecClass = Workbench.RunInfo["execClass"]
@@ -27,6 +32,8 @@ export interface Info {
   findings?: number[]
   /** A test runner: runs only when tests are requested, always exec-class. */
   test?: boolean
+  /** Exit codes that mean the tool found nothing to run, with the reason; reported as skipped (pytest 5). */
+  empty?: Record<number, string>
   unit(file: string, stop: string): Promise<string | undefined>
   plan(unit: Unit, stop: string): Promise<Plan>
   parse(output: WorkbenchParse.Output): WorkbenchProblems.Draft[]
@@ -331,10 +338,112 @@ export const nodeTest: Info = {
   parse: WorkbenchParse.junit,
 }
 
-export const all: Info[] = [tsc, clang, swift, cargo, go, goVet, ruff, mypy, goTest, cargoTest, bunTest, nodeTest]
+// The first runnable pytest: every `pytest` on PATH, then `python3 -m pytest` for every python3 on PATH, each probed
+// with --version, because the first one on PATH may be dead (an x86_64 python3 on arm64).
+// ponytail: resolved once per process; restart opencode after installing pytest
+const pytestCommand = lazy(async () => {
+  const candidates = [
+    ...(await onPath("pytest")).map((bin) => [bin]),
+    ...(await onPath("python3")).map((bin) => [bin, "-m", "pytest"]),
+  ]
+  const runnable = await Promise.all(candidates.map((command) => runs([...command, "--version"])))
+  return candidates[runnable.indexOf(true)]
+})
+const pythonTest = /(^|\/)(test_[^/]*|[^/]*_test)\.py$/
+
+export const pytest: Info = {
+  id: "pytest",
+  kind: "test",
+  test: true,
+  extensions: [".py"],
+  empty: { 5: "no tests collected" },
+  unit: pythonUnit,
+  async plan(unit) {
+    const command = await pytestCommand()
+    if (!command) return { unavailable: "no runnable pytest (pytest or python3 -m pytest on PATH)" }
+    return {
+      command: [
+        ...command,
+        `--junitxml=${path.join(REPORT_DIR, "junit.xml")}`,
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        ...relative(unit, pythonTest),
+      ],
+      cwd: unit.root,
+      execClass: "exec",
+    }
+  },
+  parse: WorkbenchParse.pytest,
+}
+
+// SwiftPM packages only. On this toolchain xUnit output carries XCTest results only with --parallel and no
+// failure locations; the console output has them, so the parser joins both.
+export const swiftTest: Info = {
+  id: "swift-test",
+  kind: "test",
+  test: true,
+  after: "swift",
+  extensions: [".swift"],
+  async unit(file, stop) {
+    const manifest = await nearest(["Package.swift"], file, stop)
+    return manifest && path.dirname(manifest)
+  },
+  async plan(unit) {
+    const bin = which("swift")
+    if (!bin) return { unavailable: "swift not found" }
+    return {
+      command: [bin, "test", "--parallel", "--xunit-output", path.join(REPORT_DIR, "xunit.xml")],
+      cwd: unit.root,
+      execClass: "exec",
+    }
+  },
+  parse: WorkbenchParse.swiftTest,
+}
+
+export const all: Info[] = [
+  tsc,
+  clang,
+  swift,
+  cargo,
+  go,
+  goVet,
+  ruff,
+  mypy,
+  goTest,
+  cargoTest,
+  bunTest,
+  nodeTest,
+  pytest,
+  swiftTest,
+]
 
 async function nearest(names: string[], file: string, stop: string) {
   return (await Filesystem.findUp(names, path.dirname(file), stop))[0]
+}
+
+// Executables named `name` on PATH, in PATH order.
+async function onPath(name: string) {
+  const files = [...new Set((process.env.PATH ?? "").split(path.delimiter).filter(Boolean))].map((dir) =>
+    path.join(dir, name),
+  )
+  const ok = await Promise.all(
+    files.map((file) =>
+      access(file, constants.X_OK).then(
+        () => true,
+        () => false,
+      ),
+    ),
+  )
+  return files.filter((_, index) => ok[index])
+}
+
+// Whether a command starts and exits 0 within 5 s (a dead binary fails to spawn).
+async function runs(command: string[]) {
+  const proc = await Promise.resolve()
+    .then(() => Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore", timeout: 5_000 }))
+    .catch(() => undefined)
+  return proc ? (await proc.exited) === 0 : false
 }
 
 function relative(unit: Unit, only?: RegExp) {

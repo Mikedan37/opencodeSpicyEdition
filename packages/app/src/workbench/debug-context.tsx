@@ -43,6 +43,7 @@ function createDebug() {
     createStore(emptyPrefs()),
   )
   const debug = createDebugState({ client: workbench.client, directory: workbench.directory, prefs: [prefs, setPrefs] })
+  const [consoleFilter, setConsoleFilter] = createStore({ stdout: true, stderr: true, console: true })
   void debug.load()
 
   const stop = sdk().event.listen((event) => {
@@ -178,6 +179,7 @@ function createDebug() {
     takeOver,
     end,
     openStart,
+    consoleFilter: { state: consoleFilter, set: setConsoleFilter },
     // Terminal snapshots of program PTYs, so the Run tab restores a terminal it unmounted.
     terminals: new Map<string, Partial<LocalPTY> & { id: string }>(),
   }

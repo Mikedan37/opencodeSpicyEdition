@@ -160,8 +160,11 @@ export function VariableNode(props: { variable: Variable; path: string[]; depth?
             <Icon name={open() ? "chevron-down" : "chevron-right"} size="small" />
           </Show>
         </span>
-        <span class="shrink-0 text-v2-text-text-accent">{props.variable.name}</span>
-        <span class="shrink-0 text-v2-text-text-faint">=</span>
+        {/* An evaluation result has no name. */}
+        <Show when={props.variable.name}>
+          <span class="shrink-0 text-v2-text-text-accent">{props.variable.name}</span>
+          <span class="shrink-0 text-v2-text-text-faint">=</span>
+        </Show>
         <span class="min-w-0 truncate text-v2-text-text-base" title={props.variable.value}>
           {props.variable.value}
         </span>

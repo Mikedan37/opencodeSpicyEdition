@@ -134,6 +134,96 @@ test("debug side panel: start errors verbatim, stack, lazy variables, watches, o
   await expect(panel.locator('[data-workbench-side-tab="debug"]')).toBeVisible()
 })
 
+test("debug console: backlog and live rows merge, filters, attribution, evaluate, completions, history", async ({
+  page,
+}) => {
+  const mock = await setup(page)
+  mock.sessions = [session({ state: "stopped", stop: stopAt(1) })]
+  mock.backlog = [
+    row(4, "system", "system", "… 4 earlier rows dropped (256 KB output cap)"),
+    row(5, "stdout", "program", "hello from main"),
+    row(6, "stderr", "program", "warning: careful"),
+    row(7, "console", "adapter", "debugpy attached"),
+    { ...row(8, "stop", "adapter", "paused on breakpoint"), location: { file: `${directory}/app.py`, line: 4 } },
+  ]
+  mock.evaluate = (body) =>
+    body.expression === "items"
+      ? { ...row(21, "result", "human", "[0, 1, 2]"), variablesReference: 31 }
+      : row(23, "exception", "human", "NameError: name 'nope' is not defined")
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="debug"]').click()
+  const panel = page.locator('[data-component="workbench-debug-console"]')
+
+  // The backlog leads with the server's truncation row; a live row and a duplicate merge by seq
+  mock.emit(output(row(8, "stop", "adapter", "paused on breakpoint"), row(9, "stdout", "program", "live line")))
+  const rows = panel.locator("[data-console-row]")
+  await expect(rows).toHaveText([
+    /… 4 earlier rows dropped/,
+    /programhello from main/,
+    /warning: careful/,
+    /debuggerdebugpy attached/,
+    /paused on breakpointapp\.py:4/,
+    /programlive line/,
+  ])
+  await expect(panel.locator('[data-console-row="6"] [data-slot="console-chip"]')).toHaveCount(0)
+
+  // Filters hide streams
+  await panel.locator('[data-console-filter="stderr"]').click()
+  await expect(panel.locator('[data-console-row="6"]')).toHaveCount(0)
+  await panel.locator('[data-console-filter="stderr"]').click()
+  await expect(panel.locator('[data-console-row="6"]')).toBeVisible()
+
+  // Completions come from the adapter for the text before the cursor; Tab inserts the highlighted one
+  const input = panel.locator('[data-slot="debug-console-input"]')
+  await input.fill("ite")
+  await expect(panel.getByRole("option")).toHaveText([/items/, /iter/])
+  expect(mock.completions.at(-1)).toBe("?text=ite&column=4&frameID=1&directory=%2Fwork%2Fdebugging")
+  await input.press("ArrowDown")
+  await input.press("ArrowUp")
+  await input.press("Tab")
+  await expect(input).toHaveValue("items")
+  await expect(panel.getByRole("option")).toHaveCount(0)
+
+  // Enter evaluates in the selected frame; the result row is attributed to you and expands lazily
+  await input.press("Enter")
+  await expect.poll(() => mock.evaluations.at(-1)).toEqual({ expression: "items", frameID: 1 })
+  mock.emit(
+    output(row(20, "eval", "human", "items"), { ...row(21, "result", "human", "[0, 1, 2]"), variablesReference: 31 }),
+  )
+  await expect(panel.locator('[data-console-row="20"]')).toHaveText("you› items")
+  await expect(panel.locator('[data-console-row="21"]')).toContainText("[0, 1, 2]")
+  await panel.locator('[data-console-row="21"] [role="treeitem"] > button').click()
+  await expect(panel.locator('[data-console-row="21"] [role="group"] [role="treeitem"]')).toHaveCount(50)
+  expect(mock.variables).toEqual(["31:0"])
+
+  // A failing expression shows as an exception row; Up recalls earlier input
+  await input.fill("nope")
+  await input.press("Enter")
+  await expect(panel.locator('[data-console-row="23"]')).toHaveAttribute("data-kind", "exception")
+  await input.press("ArrowUp")
+  await expect(input).toHaveValue("nope")
+  await input.press("ArrowUp")
+  await expect(input).toHaveValue("items")
+  await input.press("ArrowDown")
+  await input.press("ArrowDown")
+  await expect(input).toHaveValue("")
+
+  // Evaluation needs a paused program
+  mock.emit(updated({ state: "running" }))
+  await expect(input).toBeDisabled()
+  await expect(input).toHaveAttribute("placeholder", "Pause the program to evaluate expressions")
+})
+
+function row(seq: number, kind: string, by: string, text: string) {
+  return { seq, at: seq, kind, by, text }
+}
+
+function output(...rows: Record<string, unknown>[]) {
+  return { type: "workbench.debug.output", properties: { sessionID: debugID, rows } }
+}
+
 function session(patch: Record<string, unknown> = {}) {
   return {
     id: debugID,
@@ -170,6 +260,12 @@ function stopAt(at: number) {
 async function setup(page: Page) {
   const pending: { directory: string; payload: unknown }[] = []
   const mock = {
+    // What GET /workbench/debug/sessions and GET .../output return; tests set them before navigating.
+    sessions: [] as unknown[],
+    backlog: [] as unknown[],
+    // Reply to POST .../evaluate; defaults to a plain result.
+    evaluate: undefined as ((body: Record<string, unknown>) => unknown) | undefined,
+    completions: [] as string[],
     startError: undefined as string | undefined,
     starts: [] as unknown[],
     controls: [] as string[],
@@ -242,7 +338,7 @@ async function setup(page: Page) {
     const url = new URL(request.url())
     const path = url.pathname
     const body = request.postDataJSON() as Record<string, unknown> | null
-    if (path === "/workbench/debug/sessions" && request.method() === "GET") return json(route, [])
+    if (path === "/workbench/debug/sessions" && request.method() === "GET") return json(route, mock.sessions)
     if (path === "/workbench/debug/sessions" && request.method() === "POST") {
       if (mock.startError) return json(route, { message: mock.startError }, 503)
       mock.starts.push(body)
@@ -273,7 +369,23 @@ async function setup(page: Page) {
     }
     if (action === "evaluate") {
       mock.evaluations.push(body)
-      return json(route, { seq: 90 + mock.evaluations.length, at: 1, kind: "result", by: "human", text: "2" })
+      return json(
+        route,
+        mock.evaluate?.(body ?? {}) ?? {
+          seq: 90 + mock.evaluations.length,
+          at: 1,
+          kind: "result",
+          by: "human",
+          text: "2",
+        },
+      )
+    }
+    if (action === "completions") {
+      mock.completions.push(url.search)
+      return json(route, [
+        { label: "items", type: "variable", start: 0, length: 3 },
+        { label: "iter", type: "function", start: 0, length: 3 },
+      ])
     }
     if (action === "breakpoints") {
       mock.breakpoints.push(body)
@@ -284,7 +396,7 @@ async function setup(page: Page) {
         ...(body?.exceptions ? { exceptions: body.exceptions } : {}),
       })
     }
-    if (action === "output") return json(route, [])
+    if (action === "output") return json(route, mock.backlog)
     return json(route, { message: path }, 404)
   })
 

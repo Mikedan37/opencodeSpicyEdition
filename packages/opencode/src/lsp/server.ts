@@ -29,10 +29,34 @@ export interface Handle {
 
 type RootFunction = (file: string, ctx: InstanceContext) => Promise<string | undefined>
 
+// spicy: Filesystem.up only checks literal names, so markers like "*.xcodeproj" never matched (REG-04). Here a
+// marker starting with "*" matches any directory entry with that suffix; the walk order is unchanged.
+async function* up(options: { targets: string[]; start: string; stop?: string }) {
+  let current = options.start
+  while (true) {
+    const entries = options.targets.some((target) => target.startsWith("*"))
+      ? await fs.readdir(current).catch(() => [] as string[])
+      : []
+    for (const target of options.targets) {
+      if (target.startsWith("*")) {
+        for (const entry of entries.filter((entry) => entry.endsWith(target.slice(1))).sort())
+          yield path.join(current, entry)
+        continue
+      }
+      if (await Filesystem.exists(path.join(current, target))) yield path.join(current, target)
+    }
+    if (options.stop === current) break
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+}
+
 const NearestRoot = (includePatterns: string[], excludePatterns?: string[]): RootFunction => {
   return async (file, ctx) => {
     if (excludePatterns) {
-      const excludedFiles = Filesystem.up({
+      // spicy: REG-04, suffix-aware lookup
+      const excludedFiles = up({
         targets: excludePatterns,
         start: path.dirname(file),
         stop: ctx.directory,
@@ -41,7 +65,8 @@ const NearestRoot = (includePatterns: string[], excludePatterns?: string[]): Roo
       await excludedFiles.return()
       if (excluded.value) return undefined
     }
-    const files = Filesystem.up({
+    // spicy: REG-04, suffix-aware lookup
+    const files = up({
       targets: includePatterns,
       start: path.dirname(file),
       stop: ctx.directory,
@@ -56,7 +81,8 @@ const NearestRoot = (includePatterns: string[], excludePatterns?: string[]): Roo
 const StrictNearestRoot = (includePatterns: string[], excludePatterns?: string[]): RootFunction => {
   return async (file, ctx) => {
     if (excludePatterns) {
-      const excludedFiles = Filesystem.up({
+      // spicy: REG-04, suffix-aware lookup
+      const excludedFiles = up({
         targets: excludePatterns,
         start: path.dirname(file),
         stop: ctx.directory,
@@ -65,7 +91,8 @@ const StrictNearestRoot = (includePatterns: string[], excludePatterns?: string[]
       await excludedFiles.return()
       if (excluded.value) return undefined
     }
-    const files = Filesystem.up({
+    // spicy: REG-04, suffix-aware lookup
+    const files = up({
       targets: includePatterns,
       start: path.dirname(file),
       stop: ctx.directory,
@@ -119,10 +146,13 @@ export const Typescript: Info = {
     ["deno.json", "deno.jsonc"],
   ),
   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
-  async spawn(root, ctx) {
+  async spawn(root, ctx, flags) {
     const tsserver = Module.resolve("typescript/lib/tsserver.js", ctx.directory)
     if (!tsserver) return
-    const bin = await Npm.which("typescript-language-server")
+    // spicy: Npm.which installs on a cache miss, so with downloads disabled only a binary on PATH is used (REG-06)
+    const bin = flags.disableLspDownload
+      ? which("typescript-language-server")
+      : await Npm.which("typescript-language-server")
     if (!bin) return
     const proc = spawn(bin, ["--stdio"], {
       cwd: root,
@@ -323,7 +353,7 @@ export const Biome: Info = {
     ".gql",
     ".html",
   ],
-  async spawn(root) {
+  async spawn(root, _ctx, flags) {
     const localBin = path.join(root, "node_modules", ".bin", "biome")
     let bin: string | undefined
     if (await Filesystem.exists(localBin)) bin = localBin
@@ -337,6 +367,7 @@ export const Biome: Info = {
     if (!bin) {
       const resolved = Module.resolve("biome", root)
       if (!resolved) return
+      if (flags.disableLspDownload) return // spicy: same install-on-miss as REG-06
       bin = await Npm.which("biome")
       if (!bin) return
       args = ["lsp-proxy", "--stdio"]
@@ -358,7 +389,8 @@ export const Biome: Info = {
 export const Gopls: Info = {
   id: "gopls",
   root: async (file, ctx) => {
-    const work = await NearestRoot(["go.work"])(file, ctx)
+    // spicy: strict, so a missing go.work falls through to go.mod instead of the instance dir (REG-03)
+    const work = await StrictNearestRoot(["go.work"])(file, ctx)
     if (work) return work
     return NearestRoot(["go.mod", "go.sum"])(file, ctx)
   },
@@ -855,8 +887,14 @@ export const FSharp: Info = {
 
 export const SourceKit: Info = {
   id: "sourcekit-lsp",
-  extensions: [".swift", ".objc", "objcpp"],
-  root: NearestRoot(["Package.swift", "*.xcodeproj", "*.xcworkspace"]),
+  // spicy: ".objc"/"objcpp" matched no real file (REG-05). Objective-C sources are .m/.mm; .m is also MATLAB/Octave,
+  // so those are only claimed inside an Apple project (Package.swift, *.xcodeproj, *.xcworkspace).
+  extensions: [".swift", ".m", ".mm"],
+  root: async (file, ctx) =>
+    (file.endsWith(".swift") ? NearestRoot : StrictNearestRoot)(["Package.swift", "*.xcodeproj", "*.xcworkspace"])(
+      file,
+      ctx,
+    ),
   async spawn(root) {
     // Check if sourcekit-lsp is available in the PATH
     // This is installed with the Swift toolchain

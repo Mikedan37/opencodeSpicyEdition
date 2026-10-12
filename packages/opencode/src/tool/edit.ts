@@ -202,7 +202,7 @@ export const EditTool = Tool.define(
 
           return {
             metadata: {
-              diagnostics,
+              ...LSP.Diagnostic.metadata(diagnostics, [normalizedFilePath]), // spicy: REG-08
               diff,
               filediff,
             },

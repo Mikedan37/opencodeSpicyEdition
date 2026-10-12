@@ -14,6 +14,8 @@ const DIAGNOSTICS_DEBOUNCE_MS = 150
 const DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS = 5_000
 const DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS = 10_000
 const DIAGNOSTICS_REQUEST_TIMEOUT_MS = 3_000
+// spicy: how long after start an empty pull report may still be provisional (REG-01, see `provisional` below)
+const DIAGNOSTICS_WARMUP_MS = 5_000
 
 const INITIALIZE_TIMEOUT_MS = 45_000
 
@@ -133,7 +135,19 @@ export async function create(input: {
     new StreamMessageReader(input.server.process.stdout as any),
     new StreamMessageWriter(input.server.process.stdin as any),
   )
-  input.server.process.stderr?.resume()
+  // spicy: keep a stderr tail and notice process death, so a server that dies fails initialize at once with a
+  // reason instead of after 45 s (REG-02) and a crash after start is reported through `exited` (REG-09)
+  let stderr = ""
+  input.server.process.stderr?.on("data", (chunk) => {
+    stderr = (stderr + chunk.toString()).slice(-2_000)
+  })
+  let exitReason: string | undefined
+  const exited = new Promise<string>((resolve) => {
+    input.server.process.once("error", (error) => resolve(error.message))
+    input.server.process.once("close", (code, signal) =>
+      resolve([`exited with ${signal ?? `code ${code}`}`, stderr.trim().split("\n").at(-1)].filter(Boolean).join(": ")),
+    )
+  })
   // --- Connection state ---
 
   const pushDiagnostics = new Map<string, Diagnostic[]>()
@@ -203,15 +217,31 @@ export async function create(input: {
       uri: pathToFileURL(input.root).href,
     },
   ])
-  connection.onRequest("workspace/diagnostic/refresh", async () => null)
+  // spicy: honor refresh (REG-01). sourcekit-lsp answers pulls with an empty report until the package's build
+  // settings load, then asks for a re-pull; it never pushes to a pull-capable client. Waiters re-pull on it.
+  let refreshed = false
+  connection.onRequest("workspace/diagnostic/refresh", async () => {
+    refreshed = true
+    emitRegistrationChange()
+    return null
+  })
   connection.listen()
+  // spicy: disposing rejects a pending initialize at once; the dead server's diagnostics are cleared through the
+  // normal storage functions so every listener sees it (REG-02/REG-09)
+  void exited.then((reason) => {
+    exitReason = reason
+    connection.dispose()
+    for (const file of pushDiagnostics.keys()) updatePushDiagnostics(file, [])
+    for (const file of pullDiagnostics.keys()) updatePullDiagnostics(file, [])
+  })
 
   // --- Initialize handshake ---
 
   const initialized = await withTimeout(
     connection.sendRequest<{ capabilities?: ServerCapabilities }>("initialize", {
       rootUri: pathToFileURL(input.root).href,
-      processId: input.server.process.pid,
+      // spicy: opencode's pid, so servers can exit when opencode dies (was the server's own pid, REG-10)
+      processId: process.pid,
       workspaceFolders: [
         {
           name: "workspace",
@@ -231,7 +261,7 @@ export async function create(input: {
             dynamicRegistration: true,
           },
           diagnostics: {
-            refreshSupport: false,
+            refreshSupport: true, // spicy: handled below (REG-01)
           },
         },
         textDocument: {
@@ -251,11 +281,19 @@ export async function create(input: {
     }),
     INITIALIZE_TIMEOUT_MS,
   ).catch((err) => {
-    throw new InitializeError({ serverID: input.serverID, cause: err })
+    // spicy: report why the process died rather than "connection got disposed" (REG-02)
+    throw new InitializeError({ serverID: input.serverID, cause: exitReason ? new Error(exitReason) : err })
   })
 
   const syncKind = getSyncKind(initialized.capabilities)
   const hasStaticPullDiagnostics = Boolean(initialized.capabilities?.diagnosticProvider)
+  // spicy: servers that register pull diagnostics at runtime (sourcekit-lsp does on the first Swift didOpen, while
+  // its package still loads) may answer early pulls with an empty report and refresh once the real one exists.
+  // Until that first refresh, during warm-up, their empty report is provisional; static providers (eslint,
+  // rust-analyzer) keep the fast path (REG-01).
+  const warmupUntil = Date.now() + DIAGNOSTICS_WARMUP_MS
+  const provisional = (filePath: string) =>
+    !hasStaticPullDiagnostics && !refreshed && Date.now() < warmupUntil && mergedDiagnostics(filePath).length === 0
 
   await connection.sendNotification("initialized", {})
 
@@ -505,10 +543,16 @@ export async function create(input: {
       timeout: DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS,
     })
 
-    while (Date.now() - startedAt < DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS) {
+    // spicy: stop once the server is dead (REG-09)
+    while (exitReason === undefined && Date.now() - startedAt < DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS) {
       const result = await requestDocumentDiagnostics(request.path)
-      if (result.matched) return
-      const remaining = DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS - (Date.now() - startedAt)
+      // spicy: a provisional empty report waits for a refresh, at most until warm-up ends (REG-01)
+      const pending = result.matched && provisional(request.path)
+      if (result.matched && !pending) return
+      const remaining = Math.min(
+        DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS - (Date.now() - startedAt),
+        pending ? warmupUntil - Date.now() : Infinity,
+      )
       if (remaining <= 0) return
       const next = await Promise.race([
         pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
@@ -527,10 +571,16 @@ export async function create(input: {
       timeout: DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS,
     })
 
-    while (Date.now() - startedAt < DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS) {
+    // spicy: stop once the server is dead (REG-09)
+    while (exitReason === undefined && Date.now() - startedAt < DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS) {
       const result = await requestFullDiagnostics(request.path)
-      if (result.handled || result.matched) return
-      const remaining = DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS - (Date.now() - startedAt)
+      // spicy: a provisional empty report waits for a refresh, at most until warm-up ends (REG-01)
+      const pending = result.matched && provisional(request.path)
+      if ((result.handled || result.matched) && !pending) return
+      const remaining = Math.min(
+        DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS - (Date.now() - startedAt),
+        pending ? warmupUntil - Date.now() : Infinity,
+      )
       if (remaining <= 0) return
       const next = await Promise.race([
         pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
@@ -550,6 +600,8 @@ export async function create(input: {
     get connection() {
       return connection
     },
+    // spicy: resolves with a reason when the server process dies (REG-09)
+    exited,
     notify: {
       async open(request: { path: string }) {
         request.path = Filesystem.normalizePath(

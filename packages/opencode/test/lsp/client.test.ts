@@ -104,7 +104,9 @@ describe("LSPClient interop", () => {
     })
 
     const params = await client.connection.sendRequest<any>("test/get-initialize-params", {})
-    expect(params.capabilities.workspace.diagnostics.refreshSupport).toBe(false)
+    // spicy: refresh is handled now (REG-01), so advertising it is not an overclaim
+    expect(params.capabilities.workspace.diagnostics.refreshSupport).toBe(true)
+    expect(params.processId).toBe(process.pid) // spicy: REG-10
     expect(params.capabilities.textDocument.publishDiagnostics.versionSupport).toBe(false)
 
     await client.shutdown()
@@ -484,5 +486,149 @@ describe("LSPClient interop", () => {
         await client.shutdown()
       },
     })
+  })
+})
+
+// spicy: REG-01 / REG-02 regression tests
+const errorAt = (message: string) => ({
+  range: { start: { line: 0, character: 17 }, end: { line: 0, character: 24 } },
+  message,
+  severity: 1,
+})
+
+async function openWithSourcekitPattern(input: {
+  diagnostics: ReturnType<typeof errorAt>[]
+  provisionalMs: number
+  mode: "document" | "full"
+}) {
+  const handle = spawnFakeServer() as any
+  await using tmp = await tmpdir()
+  const file = path.join(tmp.path, "main.swift")
+  await Bun.write(file, 'let count: Int = "three"\n')
+  return await withTestInstance({
+    directory: tmp.path,
+    fn: async (ctx) => {
+      const client = await LSPClient.create({
+        serverID: "fake",
+        server: handle as unknown as LSPServer.Handle,
+        root: tmp.path,
+        directory: tmp.path,
+        instance: ctx,
+      })
+      // Like sourcekit-lsp: register pull diagnostics on didOpen, answer an empty report until the package's
+      // build settings are "loaded", then send workspace/diagnostic/refresh; never push.
+      await client.connection.sendRequest("test/configure-pull-diagnostics", {
+        registerOn: "didOpen",
+        registrations: [{}],
+        provisionalMs: input.provisionalMs,
+        documentDiagnostics: input.diagnostics,
+      })
+      const version = await client.notify.open({ path: file })
+      const started = Date.now()
+      await client.waitForDiagnostics({ path: file, version, mode: input.mode })
+      const result = {
+        elapsed: Date.now() - started,
+        diagnostics: client.diagnostics.get(file) ?? [],
+        pulls: await client.connection.sendRequest<number>("test/get-diagnostic-request-count", {}),
+      }
+      await client.shutdown()
+      return result
+    },
+  })
+}
+
+describe("LSPClient provisional pull reports (REG-01)", () => {
+  for (const mode of ["document", "full"] as const) {
+    test(`${mode} mode re-pulls after the server's refresh instead of keeping the empty first report`, async () => {
+      const result = await openWithSourcekitPattern({
+        diagnostics: [errorAt("Cannot convert value of type 'String' to specified type 'Int'")],
+        provisionalMs: 400,
+        mode,
+      })
+      expect(result.diagnostics.map((item) => item.message)).toEqual([
+        "Cannot convert value of type 'String' to specified type 'Int'",
+      ])
+      expect(result.pulls).toBeGreaterThan(1)
+    })
+  }
+
+  test("an empty report after the refresh is final", async () => {
+    const result = await openWithSourcekitPattern({ diagnostics: [], provisionalMs: 300, mode: "document" })
+    expect(result.diagnostics).toEqual([])
+    expect(result.elapsed).toBeGreaterThanOrEqual(250)
+    expect(result.elapsed).toBeLessThan(1_500)
+  })
+
+  test("an empty report from a static pull provider is final at once", async () => {
+    const { spawn } = require("child_process")
+    const handle = {
+      process: spawn(process.execPath, [path.join(__dirname, "../fixture/lsp/fake-lsp-server.js")], {
+        stdio: "pipe",
+        env: { ...process.env, FAKE_LSP_STATIC_PULL: "1" },
+      }),
+    }
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "clean.js")
+    await Bun.write(file, "export {}\n")
+    const elapsed = await withTestInstance({
+      directory: tmp.path,
+      fn: async (ctx) => {
+        const client = await LSPClient.create({
+          serverID: "fake",
+          server: handle as unknown as LSPServer.Handle,
+          root: tmp.path,
+          directory: tmp.path,
+          instance: ctx,
+        })
+        const version = await client.notify.open({ path: file })
+        const started = Date.now()
+        await client.waitForDiagnostics({ path: file, version, mode: "document" })
+        const result = Date.now() - started
+        await client.shutdown()
+        return result
+      },
+    })
+    expect(elapsed).toBeLessThan(1_000)
+  })
+
+  test("a server that never refreshes holds an empty first report only until warm-up ends", async () => {
+    const result = await openWithSourcekitPattern({ diagnostics: [], provisionalMs: 0, mode: "document" })
+    expect(result.diagnostics).toEqual([])
+    expect(result.elapsed).toBeLessThan(5_500)
+  })
+})
+
+describe("LSPClient server death (REG-02)", () => {
+  test("a server that exits during initialize fails at once with its stderr", async () => {
+    const { spawn } = require("child_process")
+    // Same shape as the rustup proxy for a missing component: reads the request, prints, exits 1.
+    const proc = spawn(
+      process.execPath,
+      [
+        "-e",
+        `process.stdin.once("data", () => { process.stderr.write("error: Unknown binary 'rust-analyzer' in official toolchain\\n"); process.exit(1) })`,
+      ],
+      { stdio: "pipe" },
+    )
+    const started = Date.now()
+    const error = await withTestInstance({
+      directory: process.cwd(),
+      fn: (ctx) =>
+        LSPClient.create({
+          serverID: "rust",
+          server: { process: proc } as unknown as LSPServer.Handle,
+          root: process.cwd(),
+          directory: process.cwd(),
+          instance: ctx,
+        }).then(
+          () => undefined,
+          (err: unknown) => err,
+        ),
+    })
+    expect(Date.now() - started).toBeLessThan(3_000)
+    expect(error).toBeInstanceOf(LSPClient.InitializeError)
+    expect(String((error as InstanceType<typeof LSPClient.InitializeError>).cause)).toContain(
+      "exited with code 1: error: Unknown binary 'rust-analyzer' in official toolchain",
+    )
   })
 })

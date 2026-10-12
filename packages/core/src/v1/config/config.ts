@@ -16,6 +16,7 @@ import { ConfigPluginV1 } from "./plugin"
 import { ConfigProviderV1 } from "./provider"
 import { ConfigServerV1 } from "./server"
 import { ConfigSkillsV1 } from "./skills"
+import { ConfigWorkbenchV1 } from "./workbench" // spicy: Workbench repo checks (VER-07)
 
 export type Layout = ConfigLayoutV1.Layout
 
@@ -187,6 +188,7 @@ export const Info = Schema.Struct({
       }),
     }),
   ),
+  workbench: Schema.optional(ConfigWorkbenchV1.Info), // spicy: Workbench repo checks (VER-07)
 }).annotate({ identifier: "Config" })
 
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>

@@ -10,6 +10,7 @@ import {
   guessAdapter,
   launchConfigurations,
   mergeRows,
+  programOutput,
   splitArgs,
   type DebugConsole,
   type DebugSession,
@@ -182,6 +183,19 @@ describe("debug console", () => {
     expect(debug.prefs.history).toEqual(["x", "len(items)"])
     expect(calls.find((call) => call.name === "debugEvaluate")?.args).toEqual(["dbg_1", "len(items)", 7])
     expect(debug.state.consoles.dbg_1?.rows.at(-1)).toMatchObject({ seq: 100, kind: "result" })
+  })
+
+  test("program output joins the program's rows and counts every drop", () => {
+    expect(programOutput(undefined)).toEqual({ text: "", dropped: 0 })
+    const console: DebugConsole = { rows: [], bytes: 0, dropped: 2, floor: -1, backlog: "ready" }
+    mergeRows(console, [
+      row(1, "… 40 earlier rows dropped (256 KB output cap)", "system"),
+      row(2, "Traceback (most"),
+      row(3, "x = 1", "eval"),
+      row(4, " recent call last):\n"),
+      { ...row(5, "boom\n"), kind: "stderr" },
+    ])
+    expect(programOutput(console)).toEqual({ text: "Traceback (most recent call last):\nboom\n", dropped: 42 })
   })
 
   test("completion range covers the identifier before the cursor", () => {

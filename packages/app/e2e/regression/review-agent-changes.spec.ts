@@ -1,5 +1,5 @@
 import { base64Encode } from "@opencode-ai/core/util/encode"
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 import { execFileSync, spawn } from "node:child_process"
 import fs from "node:fs/promises"
 import { createServer, type IncomingMessage } from "node:http"
@@ -119,6 +119,11 @@ test("agent changes: hunks render inline, accept one, reject one, files on disk 
     const hunks = page.locator('[data-component="review-hunk"]')
     await expect(hunks).toHaveCount(2)
     await shot("1-review-panel")
+    // At the desktop app's default 1280×800 window the hunk bars wrap between their items, never inside a label.
+    await resize(page, 1280, 800)
+    await expect.poll(() => wrappedLabels(hunks)).toEqual([])
+    await shot("1b-review-panel-1280")
+    await resize(page, 1600, 1000)
 
     // Accept the focused (first) hunk with the keyboard: the file stays as the agent wrote it, the hunk moves to the
     // reviewed list.
@@ -157,6 +162,13 @@ test("agent changes: hunks render inline, accept one, reject one, files on disk 
     await expect(file.locator('[data-component="review-bar"]')).toContainText("Agent changes")
     await expect(file.locator('[data-component="review-hunk"]')).toHaveCount(1)
     await shot("4-file-view-inline")
+    // The same at 1280×800 for the file view's review bar and its hunk bar.
+    await resize(page, 1280, 800)
+    await expect
+      .poll(() => wrappedLabels(file.locator('[data-component="review-bar"], [data-component="review-hunk"]')))
+      .toEqual([])
+    await shot("4b-file-view-1280")
+    await resize(page, 1600, 1000)
     await file.locator('[data-component="review-hunk"] [data-action="reject"]').click()
     await expect(file).toHaveCount(0)
     expect(await read("b.txt")).toBe(B)
@@ -172,6 +184,33 @@ test("agent changes: hunks render inline, accept one, reject one, files on disk 
     await fs.rm(root, { recursive: true, force: true })
   }
 })
+
+// The side panel animates its width after a window resize; this waits for the settled layout.
+async function resize(page: Page, width: number, height: number) {
+  await page.setViewportSize({ width, height })
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  await page.waitForFunction(() =>
+    document.getAnimations().every((item) => !(item instanceof CSSTransition) || item.transitionProperty !== "width"),
+  )
+}
+
+// Labels of the buttons inside `scope` whose text spans more than one line.
+function wrappedLabels(scope: Locator) {
+  return scope.locator('[data-component="button-v2"]').evaluateAll((buttons) =>
+    buttons
+      .filter((button) => {
+        const tops = new Set<number>()
+        const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT)
+        while (walker.nextNode()) {
+          const range = document.createRange()
+          range.selectNodeContents(walker.currentNode)
+          for (const rect of range.getClientRects()) if (rect.width > 0) tops.add(Math.round(rect.top))
+        }
+        return tops.size > 1
+      })
+      .map((button) => button.textContent),
+  )
+}
 
 async function openAgentChanges(page: Page) {
   const panel = page.locator("#review-panel")

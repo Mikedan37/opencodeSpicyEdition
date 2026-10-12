@@ -1,7 +1,6 @@
 import { createContext, createEffect, createRoot, on, onCleanup, useContext, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Option, Schema } from "effect"
-import { Pty } from "@opencode-ai/schema/pty"
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import type { LocalPTY } from "@/context/terminal"
@@ -24,7 +23,9 @@ import { useWorkbench } from "./panel"
 const events = {
   updated: Schema.decodeUnknownOption(Workbench.Event.DebugUpdated.data),
   output: Schema.decodeUnknownOption(Workbench.Event.DebugOutput.data),
-  exited: Schema.decodeUnknownOption(Pty.Event.Exited.data),
+  // pty.exited's payload (schema/src/pty.ts), declared here: in dev, importing that module from the session page
+  // requests `/…/schema/src/pty.ts`, which e2e specs routing `**/pty*` answer with JSON, and the page fails to load.
+  exited: Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String, exitCode: Schema.Number })),
 }
 
 function createDebug() {
@@ -64,16 +65,20 @@ function createDebug() {
     debug.setOwner(owner, id).catch(fail(language.t("workbench.debug.failed.owner")))
   const end = () => debug.stop().catch(fail(language.t("workbench.debug.failed.stop")))
 
-  // A stop the human is driving shows its line in the viewer, unless the Debug tab is in front (it shows the stack).
+  // A stop the human is driving brings its file forward in the side panel, whatever tab is in front, unless the user
+  // is typing in that panel (a watch, a breakpoint condition, a comment).
   createEffect(
     on(
+      // Keyed by the stop alone: taking over an agent's paused session is not a new stop.
       () => {
         const session = debug.selected()
-        return session?.stop && session.owner === "human" ? `${session.id}:${session.stop.at}` : undefined
+        return session?.stop ? `${session.id}:${session.stop.at}` : undefined
       },
       (key) => {
-        const frame = debug.selected()?.stop?.frames[0]
-        if (!key || workbench.side() || !frame?.file || !frame.line || !debug.relative(frame.file)) return
+        const session = debug.selected()
+        const frame = session?.stop?.frames[0]
+        if (!key || session?.owner !== "human" || typingInSidePanel()) return
+        if (!frame?.file || !frame.line || !debug.relative(frame.file)) return
         openAt(frame.file, frame.line, false)
       },
       { defer: true },
@@ -187,11 +192,18 @@ function createDebug() {
     end,
     openStart,
     consoleFilter: { state: consoleFilter, set: setConsoleFilter },
-    // Terminal snapshots of program PTYs, so the Run tab restores a terminal it unmounted.
-    terminals: new Map<string, Partial<LocalPTY> & { id: string }>(),
+    // Terminal snapshots of program PTYs, so the Run tab restores a terminal it unmounted. `whole`: the snapshot was
+    // attached when the program ended, so it holds all of the output.
+    terminals: new Map<string, Partial<LocalPTY> & { id: string; whole?: boolean }>(),
     // The line each mounted file viewer shows selected, by project-relative path (debug-file.tsx registers them).
     viewers,
   }
+}
+
+function typingInSidePanel() {
+  const element = document.activeElement
+  if (!(element instanceof HTMLElement) || !element.closest("#review-panel")) return false
+  return element.isContentEditable || element.matches("input, textarea, select")
 }
 
 export type DebugContextValue = ReturnType<typeof createDebug>

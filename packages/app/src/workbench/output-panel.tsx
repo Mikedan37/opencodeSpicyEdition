@@ -241,24 +241,32 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
 
 function RunOutput(props: { entry: RunEntry }) {
   const language = useLanguage()
-  const openAt = useFileLineOpener()
   // Tools print paths relative to where they ran: the unit's folder, or the folder holding its config file.
   const base = () => {
     const unit = props.entry.info.unit
     return /\.[A-Za-z][\w]*$/.test(getFilename(unit)) ? getDirectory(unit) : unit
   }
+  return (
+    <OutputText
+      text={props.entry.output}
+      base={base()}
+      label={language.t("workbench.output.label", { checker: props.entry.info.checker })}
+      class="mx-3 max-h-80 rounded-[6px] bg-v2-background-bg-layer-01 py-1 shadow-[inset_0_0_0_0.5px_var(--v2-border-border-muted)]"
+    />
+  )
+}
+
+// Terminal output as lines with its ANSI styles and `file:line` links (relative paths resolve against `base`), the
+// newest line kept in view.
+export function OutputText(props: { text: string; base: string; label: string; class: string }) {
+  const openAt = useFileLineOpener()
+  const language = useLanguage()
   const lines = createMemo(() => {
-    const result = ansiLines(props.entry.output)
+    const result = ansiLines(props.text)
     return result.at(-1)?.length === 0 ? result.slice(0, -1) : result
   })
   return (
-    <VirtualList
-      items={lines()}
-      estimate={16}
-      follow
-      label={language.t("workbench.output.label", { checker: props.entry.info.checker })}
-      class="mx-3 max-h-80 rounded-[6px] bg-v2-background-bg-layer-01 py-1 shadow-[inset_0_0_0_0.5px_var(--v2-border-border-muted)]"
-    >
+    <VirtualList items={lines()} estimate={16} follow label={props.label} class={props.class}>
       {(segments) => (
         <div class="select-text whitespace-pre-wrap break-all px-2 font-mono text-[11px] leading-4 text-v2-text-text-base">
           <For each={segments}>
@@ -271,7 +279,7 @@ function RunOutput(props: { entry: RunEntry }) {
                         type="button"
                         class="cursor-pointer underline decoration-dotted underline-offset-2 hover:text-v2-text-text-accent"
                         title={language.t("workbench.problems.open", { file: getFilename(part.file), line: part.line })}
-                        onClick={() => openAt(resolvePath(base(), part.file), part.line)}
+                        onClick={() => openAt(resolvePath(props.base, part.file), part.line)}
                       >
                         {part.text}
                       </button>

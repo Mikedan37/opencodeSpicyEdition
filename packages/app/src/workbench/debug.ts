@@ -77,6 +77,19 @@ export function mergeRows(console: DebugConsole, incoming: readonly ConsoleRow[]
   trim(console)
 }
 
+// What the program wrote, as the console recorded it (its terminal output, escape codes stripped, when it ran in one):
+// the Run tab replays it once the PTY is gone. `dropped`: rows the caps removed, here or on the server.
+export function programOutput(console: DebugConsole | undefined) {
+  const rows = console?.rows ?? []
+  return {
+    text: rows.map((row) => (row.by === "program" ? row.text : "")).join(""),
+    dropped: rows.reduce(
+      (sum, row) => sum + (row.kind === "system" ? Number(DROPPED.exec(row.text)?.[1] ?? 0) : 0),
+      console?.dropped ?? 0,
+    ),
+  }
+}
+
 // ponytail: counts UTF-16 units, not UTF-8 bytes like the server; the cap is approximate for non-ASCII output.
 function trim(console: DebugConsole) {
   while (console.bytes > CONSOLE_BYTES && console.rows.length > 1) {

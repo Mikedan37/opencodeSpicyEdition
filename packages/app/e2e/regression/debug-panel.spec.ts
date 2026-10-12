@@ -103,10 +103,12 @@ test("debug side panel: start errors verbatim, stack, lazy variables, watches, o
   await expect(page.locator('[data-component="workbench-debug-console"]')).toBeVisible()
   await expect(page.locator('[data-component="workbench-debug-console"] [data-console-row]')).toHaveCount(0)
 
-  // Stepping posts the command; the next stop resets the frame to the top one
+  // Stepping posts the command; the next stop brings its file forward and resets the frame to the top one
   await debug.locator('[data-debug-action="next"]').click()
   await expect.poll(() => mock.controls).toEqual(["next"])
   mock.emit(updated({ state: "stopped", stop: stopAt(2) }))
+  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
+  await panel.locator('[data-workbench-side-tab="debug"]').click()
   await expect(debug.locator('[data-frame="1"] [data-slot="frame"]')).toHaveAttribute("aria-current", "true")
 
   // The agent drives: controls are disabled with a reason; Take over posts owner = human
@@ -287,6 +289,77 @@ test("run tab: the program's terminal stays after exit with its code; an interna
   await expect(page.locator('[data-workbench-tab="debug"]')).toHaveAttribute("aria-selected", "true")
 })
 
+test("run tab after the program ended: replays the debugger's copy of its output, or says it is gone", async ({
+  page,
+}) => {
+  const mock = await setup(page)
+  const program = "pty_program"
+  mock.sessions = [session({ ptyID: program })]
+  const state = { exited: false, sockets: 0 }
+  await page.route(`**/api/pty/${program}*`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        location: { directory, project: { id: projectID, directory } },
+        data: {
+          id: program,
+          title: "app.py",
+          command: "python3",
+          args: [],
+          cwd: directory,
+          status: state.exited ? "exited" : "running",
+          pid: 2,
+        },
+      }),
+    }),
+  )
+  // The /pty routes don't attach to an exited PTY: the server closes the socket with 4404
+  await page.routeWebSocket(new RegExp(`/api/pty/${program}/connect`), (socket) => {
+    state.sockets++
+    if (state.exited) return socket.close({ code: 4404, reason: "session exited" })
+    socket.send("loading orders\r\n")
+  })
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="run"]').click()
+  const run = page.locator('[data-component="workbench-run"]')
+  const terminal = run.locator(`[data-run-pty="${program}"] [data-component="terminal"]`)
+  await expect(terminal).toBeVisible()
+  await expect.poll(() => state.sockets).toBe(1)
+
+  // The program writes more and ends while another tab is in front
+  await page.locator('[data-workbench-tab="debug"]').click()
+  await expect(terminal).toHaveCount(0)
+  state.exited = true
+  mock.emit(
+    { type: "pty.exited", properties: { id: program, exitCode: 1 } },
+    updated({ state: "terminated", ptyID: program }),
+    output(row(1, "stdout", "program", "loading orders\n"), row(2, "stderr", "program", "ValueError: bad order\n")),
+  )
+  await expect(page.locator('[data-component="workbench-debug-console"]')).toContainText("ValueError: bad order")
+  await page.locator('[data-workbench-tab="run"]').click()
+  await expect(run.locator('[data-slot="run-status"]')).toHaveText("Exited with code 1")
+  const replay = run.locator("[data-run-replay]")
+  await expect(replay).toContainText("The program has ended")
+  await expect(replay).toContainText("loading orders")
+  await expect(replay).toContainText("ValueError: bad order")
+  await expect(terminal).toHaveCount(0)
+  expect(state.sockets).toBe(1)
+
+  // After a reload the exit was never seen: the terminal tries, the PTY is gone, and the debugger's copy is gone too
+  mock.sessions = [session({ state: "terminated", ptyID: program })]
+  mock.backlog = null
+  await page.reload()
+  await expectSessionTitle(page, title)
+  // The bottom panel and its tab are restored
+  await page.locator('[data-workbench-tab="run"]').click()
+  await expect(replay).toContainText("Output is no longer available")
+  await expect(terminal).toHaveCount(0)
+  expect(state.sockets).toBeGreaterThan(1)
+})
+
 test("editor gutter: paused line with values, breakpoint dots, F9, frame selection", async ({ page }) => {
   const mock = await setup(page)
   mock.sessions = [session()]
@@ -327,6 +400,47 @@ test("editor gutter: paused line with values, breakpoint dots, F9, frame selecti
   // Running clears the paused line
   mock.emit(updated({ state: "running" }))
   await expect(viewer.locator("[data-spicy-exec]")).toHaveCount(0)
+})
+
+test("a stop brings its file forward even when the Review tab is in front", async ({ page }) => {
+  const mock = await setup(page, {
+    vcsDiff: [
+      {
+        file: "src/other.ts",
+        additions: 1,
+        deletions: 1,
+        status: "modified",
+        patch:
+          "diff --git a/src/other.ts b/src/other.ts\n--- a/src/other.ts\n+++ b/src/other.ts\n@@ -1,2 +1,2 @@\n-export const a = 1\n+export const a = 2\n export const b = 3\n",
+      },
+    ],
+  })
+  mock.sessions = [session()]
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  const panel = page.locator("#review-panel")
+  await page.getByRole("button", { name: "Toggle review" }).click()
+  await expect(panel.getByRole("tab", { name: /Files Changed/ })).toHaveAttribute("data-selected", "")
+
+  mock.emit(updated({ state: "stopped", stop: stopAt(1) }))
+  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
+  await expect(panel.getByRole("tab", { name: /Files Changed/ })).not.toHaveAttribute("data-selected", "")
+
+  // Also over the Debug tab, except while the user types in the panel
+  await panel.locator('[data-workbench-side-tab="debug"]').click()
+  const debug = panel.locator('[data-component="workbench-debug"]')
+  await debug.getByPlaceholder("Add expression").click()
+  await expect.poll(() => mock.scopes.length).toBeGreaterThan(0)
+  const loaded = mock.scopes.length
+  mock.emit(updated({ state: "stopped", stop: stopAt(2) }))
+  // The new stop reloads the frame's scopes, so it has been applied while the Debug tab stays in front
+  await expect.poll(() => mock.scopes.length).toBeGreaterThan(loaded)
+  await expect(debug).toBeVisible()
+  await expect(debug.getByPlaceholder("Add expression")).toBeFocused()
+  await page.getByText(title).first().click()
+  mock.emit(updated({ state: "stopped", stop: stopAt(3) }))
+  await expect(debug).toBeHidden()
+  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
 })
 
 function row(seq: number, kind: string, by: string, text: string) {
@@ -370,12 +484,13 @@ function stopAt(at: number) {
   }
 }
 
-async function setup(page: Page) {
+async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
   const pending: { directory: string; payload: unknown }[] = []
   const mock = {
     // What GET /workbench/debug/sessions and GET .../output return; tests set them before navigating.
     sessions: [] as unknown[],
-    backlog: [] as unknown[],
+    // null: the server no longer has the session's output (404)
+    backlog: [] as unknown[] | null,
     // Reply to POST .../evaluate; defaults to a plain result.
     evaluate: undefined as ((body: Record<string, unknown>) => unknown) | undefined,
     completions: [] as string[],
@@ -427,6 +542,7 @@ async function setup(page: Page) {
     ],
     pageMessages: () => ({ items: [] }),
     fileList: () => [],
+    ...(options.vcsDiff ? { vcsDiff: options.vcsDiff } : {}),
     fileContent: (path) => {
       if (path === ".vscode/launch.json")
         return {
@@ -528,7 +644,8 @@ async function setup(page: Page) {
         ...(body?.exceptions ? { exceptions: body.exceptions } : {}),
       })
     }
-    if (action === "output") return json(route, mock.backlog)
+    if (action === "output")
+      return mock.backlog ? json(route, mock.backlog) : json(route, { message: "debug session not found" }, 404)
     return json(route, { message: path }, 404)
   })
 

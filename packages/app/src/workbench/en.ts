@@ -156,6 +156,12 @@ export const dict = {
     'debugpy runs programs in its internal console by default. Set "console": "integratedTerminal" in .vscode/launch.json to run the program in a terminal here.',
   "workbench.run.showConsole": "Show Debug Console",
   "workbench.run.exited": "Exited with code {{code}}",
+  "workbench.run.replay": "The program has ended. Its output as the debugger recorded it:",
+  "workbench.run.replay.label": "Program output",
+  "workbench.run.gone.title": "Output is no longer available",
+  "workbench.run.gone.description":
+    "The program's terminal closed when it ended, and the debugger's copy of its output could not be loaded.",
+  "workbench.run.empty": "The program wrote no output",
   "workbench.activity.list": "Investigations",
   "workbench.activity.unavailable": "This server doesn't provide investigations yet.",
   "workbench.activity.loading": "Loading investigations",

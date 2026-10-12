@@ -70,7 +70,10 @@ export type Options = {
   readonly onUpdate: (info: Workbench.DebugSessionInfo) => void
   readonly onOutput: (rows: Workbench.ConsoleRow[]) => void
   // runInTerminal reverse request; the service backs it with the PTY service.
-  readonly runInTerminal?: (args: DapClient.Body, output: (chunk: string) => void) => Promise<{ processId?: number }>
+  readonly runInTerminal?: (
+    args: DapClient.Body,
+    output: (chunk: string) => void,
+  ) => Promise<{ processId?: number; ptyID?: string }>
 }
 
 export type Outcome =
@@ -127,6 +130,7 @@ export function make(options: Options) {
     stopSeq: 0,
     steps: 0,
     stderr: "",
+    ptyID: undefined as string | undefined,
     processes: [] as Process[],
   }
   const holder: { client?: DapClient.Client; shutdown?: Promise<void> } = {}
@@ -147,6 +151,7 @@ export function make(options: Options) {
     ...(options.investigationID ? { investigationID: options.investigationID } : {}),
     ...(s.error ? { error: s.error } : {}),
     startedAt,
+    ...(s.ptyID ? { ptyID: s.ptyID } : {}),
   })
   const update = () => options.onUpdate(info())
   const terminal = () => s.state === "terminated" || s.state === "failed"
@@ -279,7 +284,10 @@ export function make(options: Options) {
     if (command === "runInTerminal" && options.runInTerminal) {
       const result = await options.runInTerminal(args, con.terminal)
       if (result.processId) record(result.processId, `terminal: ${String(args.title ?? "program")}`)
-      return result
+      s.ptyID = result.ptyID
+      update()
+      // The adapter only gets the DAP fields.
+      return result.processId ? { processId: result.processId } : {}
     }
     if (command === "startDebugging") {
       con.system("the adapter asked for a child debug session (startDebugging); not supported yet")

@@ -59,76 +59,13 @@ export function allowed(from: Status, to: Status) {
   return false
 }
 
-const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
-
-export const Note = Schema.Struct({
-  kind: Schema.Literals(["hypothesis", "question"]),
-  text: Schema.String,
-  at: Schema.Finite,
-})
-
-const Attempt = Schema.Struct({
-  n: NonNegativeInt,
-  // Hash over the attempt's edited files and their content hashes (S3).
-  patchHash: Schema.String,
-  changes: Schema.Array(Schema.Struct({ file: Schema.String, hash: Schema.String })),
-  errorFingerprints: Schema.Array(Schema.String),
-  errorCount: NonNegativeInt,
-  checkIDs: Schema.Array(Schema.String),
-  passed: Schema.optional(Schema.Boolean),
-  at: Schema.Finite,
-})
-
-export const Info = Schema.Struct({
-  id: Workbench.InvestigationID,
-  projectID: Schema.String,
-  directory: Schema.String,
-  sessionID: Schema.optional(Schema.String),
-  agentID: Schema.optional(Schema.String),
-  title: Schema.String,
-  status: Workbench.InvestigationStatus,
-  policy: Workbench.RecoveryPolicy,
-  // How to reproduce. Never replayed automatically; resume asks first.
-  target: Schema.optional(DebugLaunch.StartInput),
-  attempts: Schema.Array(Attempt),
-  evidence: Schema.Array(Workbench.EvidenceID),
-  // Model-written, so inferred.
-  notes: Schema.Array(Note),
-  checkpoints: Schema.Array(
-    Schema.Struct({
-      status: Workbench.InvestigationStatus,
-      at: Schema.Finite,
-      reason: Schema.optional(Schema.String),
-      evidenceID: Schema.optional(Workbench.EvidenceID),
-    }),
-  ),
-  // Recorded for orphan cleanup after a restart: killed only when pid and start time still match.
-  processes: Schema.Array(
-    Schema.Struct({ pid: NonNegativeInt, command: Schema.String, startedAt: Schema.optional(Schema.String) }),
-  ),
-  debugSessions: Schema.Array(Workbench.DebugSessionID),
-  steps: NonNegativeInt,
-  crashes: NonNegativeInt,
-  // Budget window start (S6): creation or the last resume.
-  since: Schema.Finite,
-  // Event order, so "after the last patch" never depends on clock resolution.
-  seq: NonNegativeInt,
-  lastPatch: Schema.optional(NonNegativeInt),
-  checkPassed: Schema.optional(NonNegativeInt),
-  reproPassed: Schema.optional(NonNegativeInt),
-  unverified: Schema.Array(Schema.String),
-  // The opencode process that owns the active work; another live process's records are left alone.
-  host: Schema.Struct({
-    pid: NonNegativeInt,
-    startedAt: Schema.optional(Schema.String),
-    // One per service instance; a process can hold more than one (server routes and AppRuntime).
-    token: Schema.optional(Schema.String),
-  }),
-  createdAt: Schema.Finite,
-  updatedAt: Schema.Finite,
-}).annotate({ identifier: "WorkbenchInvestigationRecord" })
-export type Info = typeof Info.Type
+// The record and its detail view are part of the shared contract.
+export const Info = Workbench.Investigation
+export type Info = Workbench.Investigation
 export type Draft = Types.DeepMutable<Info>
+
+/** A problem as the verification engine reports it. */
+export type Found = Problem & { readonly severity: string; readonly new: boolean }
 
 export type Problem = {
   readonly tool: string
@@ -165,12 +102,8 @@ export type Event =
   | { readonly type: "repro"; readonly passed: boolean; readonly summary: string; readonly runID?: Workbench.RunID }
   | { readonly type: "permission.denied"; readonly permission: string }
 
-export const Full = Schema.Struct({
-  investigation: Info,
-  evidence: Schema.Array(Workbench.Evidence),
-  report: Schema.String,
-}).annotate({ identifier: "WorkbenchInvestigationFull" })
-export type Full = typeof Full.Type
+export const Full = Workbench.InvestigationDetail
+export type Full = Workbench.InvestigationDetail
 
 export interface Interface {
   readonly list: () => Effect.Effect<Workbench.InvestigationSummary[]>
@@ -202,6 +135,17 @@ export interface Interface {
   /** Interrupted or waiting for the user → reproducing again, relaunching the stored target. */
   readonly resume: (id: Workbench.InvestigationID, actor: DebugSession.Actor) => Effect.Effect<Info, DebugError>
   readonly cancel: (id: Workbench.InvestigationID, reason: string) => Effect.Effect<Info, DebugError>
+  /**
+   * A finished verification run for an agent session: recorded on its open investigation as check evidence,
+   * plus reproduction evidence when the report includes test runs. Returns the updated record, if any.
+   */
+  readonly verified: (
+    sessionID: string,
+    report: Workbench.VerificationReport,
+    problems: readonly Found[],
+  ) => Effect.Effect<Info | undefined>
+  /** Why automatic repairs must stop for this session: its investigation is blocked or waits for the user. */
+  readonly halted: (sessionID: string) => Effect.Effect<string | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/WorkbenchInvestigation") {}
@@ -530,8 +474,15 @@ const layer = Layer.effect(
       }
     })
 
+    // Runs inside the edit tool's publish, so the patch is recorded before the turn-end check runs.
     const edited = Effect.fnUntraced(function* (ctx: InstanceContext, file: string) {
       if (!file) return
+      const active = (yield* load(ctx.project.id)).filter(
+        (item) =>
+          item.directory === ctx.directory &&
+          ["reproducing", "debugging", "diagnosing", "patching", "verifying"].includes(item.status),
+      )
+      if (!active.length) return
       const hash = yield* Effect.promise(() =>
         Bun.file(file)
           .arrayBuffer()
@@ -540,15 +491,68 @@ const layer = Layer.effect(
             () => "deleted",
           ),
       )
-      const active = (yield* load(ctx.project.id)).filter(
-        (item) =>
-          item.directory === ctx.directory &&
-          ["reproducing", "debugging", "diagnosing", "patching", "verifying"].includes(item.status),
-      )
       yield* Effect.forEach(active, (item) => record(item.id, { type: "patch", file, hash }), { discard: true })
     })
 
-    return Service.of({ list, get, full, open, current, launch, record, note, escalate, resume, cancel })
+    const verified = Effect.fn("WorkbenchInvestigation.verified")(
+      function* (sessionID: string, report: Workbench.VerificationReport, problems: readonly Found[]) {
+        const open = yield* current(sessionID)
+        if (!open) return undefined
+        const runs = report.checks.map((check) => check.run)
+        const tests = runs.filter((run) => run.kind === "test")
+        // A skipped, timed-out, unavailable or cancelled run is never a pass; neither is a report with no runs.
+        yield* record(open.id, {
+          type: "check",
+          passed: runs.length > 0 && runs.every((run) => run.status === "passed"),
+          runIDs: runs.map((run) => run.id),
+          // The errors repairs are about: in changed files (or without a file), as the gate counts them.
+          problems: problems
+            .filter((item) => item.severity === "error" && item.new)
+            .map((item) => ({
+              tool: item.tool,
+              message: item.message,
+              ...(item.code !== undefined ? { code: item.code } : {}),
+              ...(item.file ? { file: item.file } : {}),
+            })),
+          unverified: report.unverifiedFiles,
+        })
+        if (!tests.length) return yield* get(open.id)
+        // A test run is the reproduction for a bug a failing test shows.
+        const passed = tests.every((run) => run.status === "passed")
+        yield* record(open.id, {
+          type: "repro",
+          passed,
+          summary: `${tests.length} test run${tests.length === 1 ? "" : "s"} ${passed ? "passed" : "did not pass"} (${tests.map((run) => `${run.checker} ${run.status}`).join(", ")})`,
+          runID: tests[0].id,
+        })
+        return yield* get(open.id)
+      },
+      Effect.catchCause((cause) =>
+        Effect.logWarning("verification not recorded on the investigation", { cause }).pipe(Effect.as(undefined)),
+      ),
+    )
+
+    const halted = Effect.fn("WorkbenchInvestigation.halted")(function* (sessionID: string) {
+      const open = yield* current(sessionID)
+      if (!open || (open.status !== "blocked" && open.status !== "needs_human")) return undefined
+      return `investigation ${open.id} is ${open.status}${open.checkpoints.at(-1)?.reason ? `: ${open.checkpoints.at(-1)?.reason}` : ""}`
+    })
+
+    return Service.of({
+      list,
+      get,
+      full,
+      open,
+      current,
+      launch,
+      record,
+      note,
+      escalate,
+      resume,
+      cancel,
+      verified,
+      halted,
+    })
   }),
 )
 

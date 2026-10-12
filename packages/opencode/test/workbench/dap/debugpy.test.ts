@@ -259,6 +259,8 @@ print("END", flush=True)
           "terminal output never arrived",
         )
         expect(session.processes.some((item) => item.command.startsWith("terminal:"))).toBe(true)
+        // The Run tab attaches to this PTY with the /pty routes.
+        expect(session.info().ptyID).toStartWith("pty_")
       }),
     60_000,
   )

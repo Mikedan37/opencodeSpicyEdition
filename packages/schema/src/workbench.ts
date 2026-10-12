@@ -8,7 +8,7 @@ export * as Workbench from "./workbench"
 import { Schema } from "effect"
 import { define, inventory } from "./event"
 import { ascending } from "./identifier"
-import { NonNegativeInt, optional, statics } from "./schema"
+import { NonNegativeInt, PositiveInt, optional, statics } from "./schema"
 
 const RunIDSchema = Schema.String.check(Schema.isStartsWith("run")).pipe(Schema.brand("WorkbenchRunID"))
 export const RunID = RunIDSchema.pipe(
@@ -196,8 +196,45 @@ export const DebugSessionInfo = Schema.Struct({
   investigationID: optional(InvestigationID),
   error: optional(Schema.String),
   startedAt: Schema.Finite,
+  // PTY running the program when the adapter asked for a terminal (runInTerminal); attach with /pty/:ptyID/connect.
+  ptyID: optional(Schema.String),
 }).annotate({ identifier: "WorkbenchDebugSession" })
 export interface DebugSessionInfo extends Schema.Schema.Type<typeof DebugSessionInfo> {}
+
+export const DebugAdapter = Schema.Literals(["debugpy", "lldb-dap"])
+export type DebugAdapter = typeof DebugAdapter.Type
+
+export const DebugBreakpoint = Schema.Struct({
+  file: Schema.String.annotate({ description: "Source file, absolute or relative to the project" }),
+  line: PositiveInt.annotate({ description: "1-based line" }),
+  condition: optional(Schema.String).annotate({ description: "Stop only when this expression is true" }),
+  hitCondition: optional(Schema.String).annotate({ description: "Stop on this hit count, e.g. >= 3" }),
+  logMessage: optional(Schema.String).annotate({ description: "Log this message instead of stopping" }),
+})
+export interface DebugBreakpoint extends Schema.Schema.Type<typeof DebugBreakpoint> {}
+
+// What to debug. POST /workbench/debug/sessions takes it as the body; the agent's debug tool takes the same fields.
+export const DebugStartInput = Schema.Struct({
+  configuration: optional(Schema.String).annotate({ description: "Name of a configuration in .vscode/launch.json" }),
+  program: optional(Schema.String).annotate({
+    description:
+      "Program to debug (a .py file, a native binary), the test file for python-test, or the crate folder for rust-test",
+  }),
+  args: optional(Schema.Array(Schema.String)),
+  cwd: optional(Schema.String),
+  adapter: optional(DebugAdapter),
+  preset: optional(Schema.Literals(["python-test", "rust-test"])).annotate({
+    description:
+      "python-test runs the program file under pytest (unittest when pytest is missing). rust-test builds the crate (default: the project) with cargo test --no-run and debugs its unit-test binary; args go to the test binary, a test name filter first",
+  }),
+  stopOnEntry: optional(Schema.Boolean),
+  breakpoints: optional(Schema.Array(DebugBreakpoint)),
+  exceptions: optional(Schema.Array(Schema.String)).annotate({
+    description: "Exception filters, e.g. uncaught, raised, userUnhandled (debugpy) or cpp_throw (lldb-dap)",
+  }),
+  file: optional(Schema.String).annotate({ description: "Value of ${file} in launch.json" }),
+}).annotate({ identifier: "WorkbenchDebugStartInput" })
+export interface DebugStartInput extends Schema.Schema.Type<typeof DebugStartInput> {}
 
 export const ConsoleRow = Schema.Struct({
   seq: NonNegativeInt,
@@ -284,6 +321,72 @@ export const InvestigationSummary = Schema.Struct({
   updatedAt: Schema.Finite,
 }).annotate({ identifier: "WorkbenchInvestigation" })
 export interface InvestigationSummary extends Schema.Schema.Type<typeof InvestigationSummary> {}
+
+export const InvestigationNote = Schema.Struct({
+  kind: Schema.Literals(["hypothesis", "question"]),
+  text: Schema.String,
+  at: Schema.Finite,
+})
+
+// One repair attempt: the edits since the previous check, closed by the next check.
+export const InvestigationAttempt = Schema.Struct({
+  n: NonNegativeInt,
+  patchHash: Schema.String, // over the edited files and their content hashes (supervisor S3)
+  changes: Schema.Array(Schema.Struct({ file: Schema.String, hash: Schema.String })),
+  errorFingerprints: Schema.Array(Schema.String), // tool|code|file|message, numbers normalized (S2)
+  errorCount: NonNegativeInt, // errors in changed files (S4)
+  checkIDs: Schema.Array(Schema.String), // run IDs of the check that closed it
+  passed: optional(Schema.Boolean), // unset while open
+  at: Schema.Finite,
+})
+
+export const InvestigationCheckpoint = Schema.Struct({
+  status: InvestigationStatus,
+  at: Schema.Finite,
+  reason: optional(Schema.String),
+  evidenceID: optional(EvidenceID),
+})
+
+// The full record (GET /workbench/investigations/:id). Written by the server only.
+export const Investigation = Schema.Struct({
+  id: InvestigationID,
+  projectID: Schema.String,
+  directory: Schema.String,
+  sessionID: optional(Schema.String),
+  agentID: optional(Schema.String),
+  title: Schema.String,
+  status: InvestigationStatus,
+  policy: RecoveryPolicy,
+  target: optional(DebugStartInput), // how to reproduce; resume relaunches it after asking
+  attempts: Schema.Array(InvestigationAttempt),
+  evidence: Schema.Array(EvidenceID), // in order
+  notes: Schema.Array(InvestigationNote), // model-written, inferred
+  checkpoints: Schema.Array(InvestigationCheckpoint), // every status change, with the reason
+  processes: Schema.Array(
+    Schema.Struct({ pid: NonNegativeInt, command: Schema.String, startedAt: optional(Schema.String) }),
+  ),
+  debugSessions: Schema.Array(DebugSessionID),
+  steps: NonNegativeInt, // debug steps in the current budget window (S5)
+  crashes: NonNegativeInt, // debug adapter crashes (S8)
+  since: Schema.Finite, // budget window start: creation or the last resume (S6)
+  seq: NonNegativeInt, // event order
+  lastPatch: optional(NonNegativeInt), // seq of the last patch
+  checkPassed: optional(NonNegativeInt), // seq of the last passing check
+  reproPassed: optional(NonNegativeInt), // seq of the last passing reproduction
+  unverified: Schema.Array(Schema.String), // changed files no passing check covers
+  // The opencode process (and service instance) that owns active work; restart recovery leaves live owners alone.
+  host: Schema.Struct({ pid: NonNegativeInt, startedAt: optional(Schema.String), token: optional(Schema.String) }),
+  createdAt: Schema.Finite,
+  updatedAt: Schema.Finite,
+}).annotate({ identifier: "WorkbenchInvestigationRecord" })
+export interface Investigation extends Schema.Schema.Type<typeof Investigation> {}
+
+export const InvestigationDetail = Schema.Struct({
+  investigation: Investigation,
+  evidence: Schema.Array(Evidence),
+  report: Schema.String, // observed, inferred, verified and unverified items with IDs
+}).annotate({ identifier: "WorkbenchInvestigationDetail" })
+export interface InvestigationDetail extends Schema.Schema.Type<typeof InvestigationDetail> {}
 
 // ---------------------------------------------------------------- events
 

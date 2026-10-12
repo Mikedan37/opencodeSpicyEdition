@@ -201,6 +201,8 @@ export const DebugTool = Tool.define<
                 program: label,
                 investigation: record.id,
                 ...(args.configuration ? { configuration: args.configuration } : {}),
+                // The approval covers the build too: it runs project code (build scripts, proc macros).
+                ...(spec.build ? { build: spec.build.command.join(" ") } : {}),
               },
             },
             record.id,

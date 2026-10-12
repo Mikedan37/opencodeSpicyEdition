@@ -3,8 +3,6 @@
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
-import { DebugLaunch } from "@/workbench/dap/launch"
-import { WorkbenchInvestigation } from "@/workbench/investigation/investigation"
 import {
   ApiNotFoundError,
   ConflictError,
@@ -96,7 +94,7 @@ export const WorkbenchDebugApi = HttpApi.make("workbench-debug")
         }).annotateMerge(op("workbench.debug.list", "List debug sessions", "Live and recently ended debug sessions.")),
         HttpApiEndpoint.post("start", WorkbenchDebugPaths.start, {
           query: WorkspaceRoutingQuery,
-          payload: DebugLaunch.StartInput,
+          payload: Workbench.DebugStartInput,
           success: described(Workbench.DebugSessionInfo, "Started session"),
           error: errors,
         }).annotateMerge(
@@ -182,7 +180,7 @@ export const WorkbenchDebugApi = HttpApi.make("workbench-debug")
         HttpApiEndpoint.get("investigation", WorkbenchDebugPaths.investigation, {
           params: { investigationID: Workbench.InvestigationID },
           query: WorkspaceRoutingQuery,
-          success: described(WorkbenchInvestigation.Full, "Record, evidence and report"),
+          success: described(Workbench.InvestigationDetail, "Record, evidence and report"),
           error: errors,
         }).annotateMerge(
           op("workbench.investigation.get", "Get investigation", "The full record with its evidence and report."),

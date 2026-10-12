@@ -23,6 +23,8 @@ import { Storage } from "@/storage/storage"
 import { EventV2 } from "@opencode-ai/core/event"
 import { AgentProvider } from "./provider"
 import { AgentRegistry } from "./registry"
+import { AcpProvider } from "./providers/acp"
+import { ClaudeCodeProvider } from "./providers/claude-code"
 import { AgentDetect } from "./providers/detect"
 import { OpenCodeProvider } from "./providers/opencode"
 import { ReviewChanges } from "@/review/changes" // spicy: review hook
@@ -63,10 +65,7 @@ type Failure = AgentProvider.NotFoundError | AgentProvider.UnsupportedError | Ag
 export interface Interface {
   readonly providers: () => Effect.Effect<AgentHQ.ProviderStatus[]>
   readonly list: (agentID: AgentHQ.AgentID) => Effect.Effect<AgentHQ.AgentSessionInfo[], AgentProvider.NotFoundError>
-  readonly start: (
-    agentID: AgentHQ.AgentID,
-    input?: { readonly title?: string },
-  ) => Effect.Effect<AgentHQ.AgentSessionInfo, Failure>
+  readonly start: (agentID: AgentHQ.AgentID, input?: StartInput) => Effect.Effect<AgentHQ.AgentSessionInfo, Failure>
   readonly get: (sessionID: AgentHQ.AgentSessionID) => Effect.Effect<Detail, AgentProvider.NotFoundError>
   readonly send: (
     sessionID: AgentHQ.AgentSessionID,
@@ -82,7 +81,25 @@ export interface Interface {
   readonly forget: (agentID: AgentHQ.AgentID) => Effect.Effect<void>
 }
 
+export interface StartInput {
+  readonly title?: string
+  /** Run somewhere other than the identity's own directory, such as a task's worktree. */
+  readonly workingDirectory?: string
+  readonly taskID?: AgentHQ.TaskID
+}
+
 export class Service extends Context.Service<Service, Interface>()("@opencode/AgentHQSessions") {}
+
+const customAcp: AgentHQ.ProviderStatus = {
+  id: "acp",
+  name: "Custom ACP agent",
+  available: true,
+  auth: "unknown",
+  capabilities: {
+    ...AcpProvider.capabilities,
+    notes: ["Spawns the identity's launch command", ...(AcpProvider.capabilities.notes ?? [])],
+  },
+}
 
 const sessionKey = (id: string) => ["agenthq", "session", id]
 const historyKey = (id: string) => ["agenthq", "events", id]
@@ -97,9 +114,26 @@ const layer = Layer.effect(
     const scope = yield* Scope.Scope
     const providers: Record<AgentHQ.ProviderID, AgentProvider.Interface> = {
       opencode: yield* OpenCodeProvider.make,
-      "claude-code": yield* AgentDetect.make("claude-code"),
-      cursor: yield* AgentDetect.make("cursor"),
+      "claude-code": yield* ClaudeCodeProvider.make({
+        status: yield* AgentDetect.prober("claude-code", ClaudeCodeProvider.capabilities),
+        binary: () => AgentDetect.binary("claude-code"),
+      }),
+      cursor: yield* AgentDetect.cursor(),
       codex: yield* AgentDetect.make("codex"),
+      acp: yield* AcpProvider.make({
+        id: "acp",
+        status: Effect.succeed(customAcp),
+        launch: (agent) =>
+          agent.launch?.command
+            ? Effect.succeed(agent.launch)
+            : Effect.fail(
+                new AgentProvider.UnsupportedError({
+                  provider: "acp",
+                  action: "createSession",
+                  message: `Agent ${agent.name} has no ACP launch command`,
+                }),
+              ),
+      }),
     }
     const live = new Map<string, Live>()
     const locks = KeyedMutex.makeUnsafe<string>()
@@ -115,6 +149,11 @@ const layer = Layer.effect(
         // A status that changes nothing (repeated busy, progress while a permission waits) is not news.
         if (event.type === "status" && info === session.info) continue
         session.info = info
+        // A provider that lost its process or instance is detached; the next message attaches again.
+        if (event.type === "status" && event.status === "disconnected" && session.handle) {
+          yield* session.handle.close
+          session.handle = undefined
+        }
         const envelope = { sessionID: session.info.id, seq: session.seq++, at: Date.now(), event }
         append(session, envelope)
         published.push(envelope)
@@ -199,7 +238,7 @@ const layer = Layer.effect(
       const history = [...(yield* readHistory(id))]
       return yield* register({
         info: strip(stored.value),
-        agent,
+        agent: placed(agent, stored.value.workingDirectory),
         seq: (history.at(-1)?.seq ?? -1) + 1,
         history,
         persisted: Date.now(),
@@ -296,12 +335,9 @@ const layer = Layer.effect(
         .toSorted((a, b) => a.createdAt - b.createdAt)
     })
 
-    const start = Effect.fn("AgentHQSessions.start")(function* (
-      agentID: AgentHQ.AgentID,
-      input?: { readonly title?: string },
-    ) {
+    const start = Effect.fn("AgentHQSessions.start")(function* (agentID: AgentHQ.AgentID, input?: StartInput) {
       yield* ready
-      const agent = yield* registry.get(agentID)
+      const agent = placed(yield* registry.get(agentID), input?.workingDirectory)
       const now = Date.now()
       const session: Live = {
         info: {
@@ -309,6 +345,8 @@ const layer = Layer.effect(
           agentID,
           provider: agent.provider,
           ...(input?.title ? { title: input.title } : {}),
+          ...(input?.taskID ? { taskID: input.taskID } : {}),
+          ...(input?.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
           status: "starting",
           pendingPermissions: 0,
           createdAt: now,
@@ -439,6 +477,11 @@ const layer = Layer.effect(
     return Service.of({ providers: providerStatus, list, start, get, send, cancel, respond, forget })
   }),
 )
+
+/** The identity as a session sees it: a task session runs in the task's working directory. */
+function placed(agent: AgentHQ.AgentIdentity, workingDirectory: string | undefined): AgentHQ.AgentIdentity {
+  return workingDirectory ? { ...agent, workingDirectory } : agent
+}
 
 function strip(stored: Stored): AgentHQ.AgentSessionInfo {
   const { pid: _, ...info } = stored

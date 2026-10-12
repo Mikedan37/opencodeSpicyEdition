@@ -210,7 +210,12 @@ export const make = Effect.gen(function* () {
         emit({ type: "status", status: "failed" })
         return
       }
-      emit({ type: "turn.completed", ...(info.role === "assistant" && info.finish ? { stopReason: info.finish } : {}) })
+      if (info.role !== "assistant") return emit({ type: "turn.completed" })
+      emit({
+        type: "turn.completed",
+        ...(info.finish ? { stopReason: info.finish } : {}),
+        usage: { inputTokens: info.tokens.input, outputTokens: info.tokens.output, costUSD: info.cost },
+      })
     }
 
     // Listeners run inside the publisher's fiber: keep this synchronous and never let it fail.

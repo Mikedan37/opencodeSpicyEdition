@@ -285,7 +285,9 @@ describe("agenthq", () => {
       expect(tools.at(-1)).toMatchObject({ state: "completed" })
       expect(typeof tools.at(-1)?.output).toBe("string")
       expect(ofType(published, "reasoning").map((event) => event.text)).toEqual(["planning"])
-      expect(ofType(published, "turn.completed")).toEqual([{ type: "turn.completed", stopReason: "stop" }])
+      expect(ofType(published, "turn.completed")).toEqual([
+        { type: "turn.completed", stopReason: "stop", usage: { inputTokens: 0, outputTokens: 0, costUSD: 0 } },
+      ])
 
       // The persisted history is the compacted view: no deltas for a finished message, one entry per tool.
       const stored = Schema.decodeUnknownSync(Schema.Array(AgentHQ.AgentEventEnvelope))(
@@ -453,34 +455,37 @@ describe("agenthq", () => {
         'if [ "$1" = "--version" ]; then echo 2025.09.12-4852336; else printf "Commands:\\n  agent  Start\\n"; fi',
       )
 
-      const claude = yield* (yield* AgentDetect.make("claude-code", { PATH: bin })).status
+      const claude = yield* AgentDetect.status("claude-code", { env: { PATH: bin } })
       expect(claude).toMatchObject({ id: "claude-code", available: true, version: "2.1.296", auth: "unknown" })
       expect(claude.capabilities.permissionRequests).toBe(false)
-      const cursor = yield* (yield* AgentDetect.make("cursor", { PATH: bin })).status
+      const cursor = yield* AgentDetect.status("cursor", { env: { PATH: bin } })
       expect(cursor).toMatchObject({
         available: false,
         version: "2025.09.12-4852336",
         reason: "cursor-agent 2025.09.12 has no ACP mode; update cursor-agent",
       })
-      const codex = yield* (yield* AgentDetect.make("codex", { PATH: bin })).status
+      const codex = yield* AgentDetect.status("codex", { env: { PATH: bin } })
       expect(codex).toMatchObject({ available: false, reason: "codex not found on PATH" })
 
       yield* script(
         "cursor-agent",
         'if [ "$1" = "--version" ]; then echo 2026.01.01; else printf "Commands:\\n  acp  Start ACP\\n"; fi',
       )
-      expect(yield* (yield* AgentDetect.make("cursor", { PATH: bin })).status).toMatchObject({ available: true })
+      // With an ACP command, Cursor is driven through the ACP adapter and reports its capabilities.
+      const acpCursor = yield* (yield* AgentDetect.cursor({ PATH: bin })).status
+      expect(acpCursor).toMatchObject({ available: true, version: "2026.01.01" })
+      expect(acpCursor.capabilities).toMatchObject({ streaming: true, permissionRequests: true, cancel: true })
 
       // Through the manager: opencode is always there, every unavailable provider says why, and
       // provider.updated is published once per change, not on every call.
       const seen = yield* capture
       const sessions = yield* AgentSessions.Service
       const list = yield* sessions.providers()
-      expect(list.map((item) => item.id).toSorted()).toEqual(["claude-code", "codex", "cursor", "opencode"])
+      expect(list.map((item) => item.id).toSorted()).toEqual(["acp", "claude-code", "codex", "cursor", "opencode"])
       expect(list.find((item) => item.id === "opencode")).toMatchObject({ available: true })
       expect(list.filter((item) => !item.available).every((item) => !!item.reason)).toBe(true)
       yield* sessions.providers()
-      expect(seen.filter((event) => event.type === "agenthq.provider.updated")).toHaveLength(4)
+      expect(seen.filter((event) => event.type === "agenthq.provider.updated")).toHaveLength(5)
 
       // A provider without an adapter fails with a typed error and leaves no session behind.
       const registry = yield* AgentRegistry.Service
@@ -537,6 +542,87 @@ describe("agenthq", () => {
       expect(ofType(live, "turn.completed")).toHaveLength(1)
       expect(history.at(-1)?.seq).toBe(live.at(-1)?.seq)
     }),
+  )
+
+  it.live(
+    "AHQ-08b ACP contract: plan, thoughts, diffs, reject_always, crash → disconnected → resume without replay",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        const registry = yield* AgentRegistry.Service
+        const sessions = yield* AgentSessions.Service
+        const agent = yield* registry.create({
+          name: "Scripted",
+          avatar: { kind: "initials", value: "S" },
+          provider: "acp",
+          projectDirectory: dir,
+          launch: {
+            command: process.execPath,
+            args: [path.join(import.meta.dir, "../fixture/agenthq/fake-acp-agent.ts")],
+          },
+        })
+        const started = yield* sessions.start(agent.id)
+        expect(started.providerSessionID).toBe("fake-session")
+
+        yield* sessions.send(started.id, "plan")
+        const planned = yield* turnCompleted(started.id)
+        expect(ofType(planned, "plan")).toEqual([
+          {
+            type: "plan",
+            entries: [
+              { content: "read the file", status: "completed", priority: "high" },
+              { content: "edit the file", status: "in_progress", priority: "medium" },
+            ],
+          },
+        ])
+        expect(ofType(planned, "reasoning").map((event) => event.text)).toEqual(["thinking"])
+        // Text before a tool call is complete once the tool starts.
+        const kinds = planned.map((item) => item.event.type)
+        expect(kinds.indexOf("message", kinds.indexOf("message") + 1)).toBeLessThan(kinds.indexOf("tool"))
+        expect(ofType(planned, "tool")).toEqual([
+          { type: "tool", callID: "t1", tool: "edit", state: "completed", title: "Edit x.txt", output: "edited" },
+        ])
+        expect(ofType(planned, "file.changed")).toEqual([{ type: "file.changed", path: "/tmp/agenthq-x.txt" }])
+        expect(ofType(planned, "turn.completed")).toEqual([{ type: "turn.completed", stopReason: "end_turn" }])
+
+        yield* sessions.send(started.id, "ask")
+        const request = yield* waitHistory(
+          started.id,
+          (history) => ofType(history, "permission.requested")[0],
+          "scripted agent never asked",
+        )
+        expect(request).toMatchObject({ title: "Delete everything", tool: "delete", details: '{"path":"/"}' })
+        expect(request.options).toEqual([
+          { id: "yes", label: "Allow", kind: "allow_once" },
+          { id: "never", label: "Never", kind: "reject_always" },
+        ])
+        expect((yield* sessions.respond(started.id, request.requestID, "maybe").pipe(Effect.flip))._tag).toBe(
+          "AgentHQ.InvalidInputError",
+        )
+        yield* sessions.respond(started.id, request.requestID, "never")
+        const answered = yield* turnCompleted(started.id, 2)
+        expect(ofType(answered, "permission.resolved")).toEqual([
+          { type: "permission.resolved", requestID: request.requestID, outcome: "rejected" },
+        ])
+        expect(ofType(answered, "message").at(-1)?.text).toBe("answer: never")
+
+        yield* sessions.send(started.id, "crash")
+        const crashed = yield* waitHistory(
+          started.id,
+          (history, session) => (session.status === "disconnected" ? history : undefined),
+          "the crash was never reported",
+        )
+        expect(ofType(crashed, "error").at(-1)?.message).toContain("code 3")
+        expect(ofType(crashed, "error").at(-1)?.message).toContain("boom")
+
+        // The next message starts a new agent process and reattaches with session/load; the replay is ignored.
+        yield* sessions.send(started.id, "back again")
+        const resumed = yield* turnCompleted(started.id, 3)
+        const texts = ofType(resumed, "message").map((event) => event.text)
+        expect(texts.at(-1)).toBe("echo: back again")
+        expect(texts).not.toContain("old reply")
+        expect(texts).not.toContain("old question")
+      }),
   )
 
   it.effect("guard turns allow into ask except for read-only tools and keeps deny", () =>

@@ -50,6 +50,7 @@ import { Truncate } from "@/tool/truncate"
 import { Worktree } from "@/worktree"
 import { AgentRegistry } from "@/agenthq/registry" // spicy: Agent HQ services
 import { AgentSessions } from "@/agenthq/session" // spicy: Agent HQ services
+import { AgentOrchestrator } from "@/agenthq/orchestrator" // spicy: Agent HQ services
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
 import { Database } from "@opencode-ai/core/database/database"
@@ -281,6 +282,7 @@ const app = LayerNode.group([
   PtyTicket.node,
   AgentRegistry.node, // spicy: Agent HQ services
   AgentSessions.node, // spicy: Agent HQ services
+  AgentOrchestrator.node, // spicy: Agent HQ services
   WorkbenchProblems.node, // spicy: Workbench services
   DebugToolNode, // spicy: Workbench debug and investigation routes
   ReviewChanges.node, // spicy: review service

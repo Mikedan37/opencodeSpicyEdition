@@ -215,3 +215,200 @@ failed` (or `disconnected`) — the manager keeps history.
   doc plans `@anthropic-ai/claude-agent-sdk`, which is a new dependency and needs the coordinator). AHQ-09 is
   opt-in for a real authenticated `claude`, contract test otherwise.
 - Codex: blocked until `codex` is installed; evaluate its non-interactive protocol and approval surface then.
+
+# Wave 2
+
+## Contract changes (additive, `packages/schema/src/agent-hq.ts`)
+
+| Change                                                                                                                      | Why                                                                                                                |
+| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ProviderID` gains `"acp"`                                                                                                  | custom ACP agents (any binary that speaks ACP over stdio)                                                          |
+| `AgentIdentity.launch?: { command, args[] }`                                                                                | what provider `"acp"` spawns; settable on create, `PATCH` with `null` clears it. No env vars (never store secrets) |
+| `AgentEvent` gains `{ type: "plan", entries: { content, status: "pending" \| "in_progress" \| "completed", priority? }[] }` | ACP `plan` updates; each event replaces the previous plan                                                          |
+| `turn.completed.usage?: { inputTokens, outputTokens, costUSD? }`                                                            | what a turn cost (Claude Code result, OpenCode assistant message)                                                  |
+| `TaskID` (`tsk_`), `TaskStatus`, `Task`, `TaskReview`, `AgentMessageID` (`amg_`), `AgentMessage`                            | orchestration (below)                                                                                              |
+| `AgentSessionInfo.taskID?`, `AgentSessionInfo.workingDirectory?`                                                            | a task's session and where it runs (the task's worktree)                                                           |
+| events `agenthq.task.updated { task }`, `agenthq.task.removed { id }`, `agenthq.message { message }`                        | in the same `AgentHQ.Event.Definitions` inventory, so no manifest edit                                             |
+
+## ACP adapter (`src/agenthq/providers/acp.ts`)
+
+Client side of `@agentclientprotocol/sdk` over the agent's stdio. The process is spawned with the existing
+`ChildProcessSpawner` in its own process group (killed as a group on close, SIGKILL after 3 s); cwd is the
+identity's `workingDirectory ?? projectDirectory`.
+
+- `initialize` advertises **no** client capabilities (`fs.readTextFile/writeTextFile: false`, `terminal: false`):
+  the agent does its own file and shell work and must ask through `session/request_permission`.
+- `session/new` per Agent HQ session (`providerSessionID` = ACP `sessionId`, `mcpServers: []` is the hook for the
+  Workbench MCP bridge). Resume after a restart or crash: `session/resume` when advertised, else `session/load` with
+  its replayed updates suppressed, else 409.
+- Turns: `session/prompt`; one prompt at a time per session (later messages queue behind it).
+- Mapping: `agent_message_chunk` → `message.delta` (`messageID` = ACP `messageId`, or a generated id per text
+  block), completed text → `message` when a tool/plan/permission update or the turn end arrives;
+  `agent_thought_chunk` → `reasoning`; `tool_call`/`tool_call_update` → `tool` (`pending` → started,
+  `in_progress` → running, `completed`, `failed` → error; `tool` = ACP `kind`, output preview from text content or
+  `rawOutput`); diff content → `file.changed`; `plan` → `plan`; prompt result → `turn.completed { stopReason }`
+  (ACP stop reasons: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`; `cancelled` → status `cancelled`).
+- Permissions: each request becomes `permission.requested` with the agent's own options (`id` = ACP `optionId`,
+  `kind` passes through: `allow_once`, `allow_always`, `reject_once`, `reject_always`); the request id is
+  `acp_<n>_<toolCallId>`. Only `POST .../permissions/:requestID` answers it; `permission.resolved` is `allowed` for
+  `allow_*`, `rejected` for `reject_*`.
+- Cancel: `session/cancel`, and every parked permission request is answered `cancelled` (as ACP requires).
+- Agent exit or a closed stream: `error` (exit code + stderr tail) then `status: disconnected`. The manager drops
+  the dead handle on `disconnected`, so the next message starts a new process and reattaches.
+
+Providers using it:
+
+- `cursor`: launches `cursor-agent acp` only when detection finds an `acp` command in `cursor-agent --help`;
+  until then `available: false` with `cursor-agent 2025.09.12 has no ACP mode; update cursor-agent` and starting
+  a session returns 409 with that reason.
+- `acp` (custom): launches `identity.launch`. Status `available: true` (per-identity command), capabilities as above.
+- Future `agentkit`: if the AgentKit daemon speaks ACP it needs no new code (an `acp` identity whose `launch`
+  runs it, or a `ProviderID` entry pointing `AcpProvider.make` at its binary). See the final report for a non-ACP
+  bridge.
+
+## Claude Code adapter (`src/agenthq/providers/claude-code.ts`)
+
+`@anthropic-ai/claude-agent-sdk` **0.3.293** (exact pin, its own commit). One SDK `query()` in streaming-input
+mode per Agent HQ session, so one Claude Code process serves every turn; `providerSessionID` is a UUID passed as
+`sessionId` (resume passes it as `resume`).
+
+- Runs the detected `claude` binary (`pathToClaudeCodeExecutable`), so the owner's existing login is used; the
+  adapter never reads, copies or logs credentials and passes no `env`.
+- Isolation: `settingSources: []` (no `~/.claude` settings, hooks or CLAUDE.md), `strictMcpConfig: true` with
+  `mcpServers: {}` (the hook for the Workbench MCP bridge), `cwd` = the identity's working directory.
+- Permissions: `permissionMode: "default"` is set explicitly (when omitted, Claude Code may start in `auto`, where
+  a classifier approves calls). Every `canUseTool` call becomes `permission.requested` (`requestID` =
+  `cc_<toolUseID>`, options `allow` → allow_once, `always` → allow_always, `deny` → reject_once) and waits for
+  `POST .../permissions/:requestID`. "Always" applies only Claude Code's own allow-rule suggestions, re-scoped to
+  the in-memory session (never written to settings files); mode switches such as `acceptEdits` are never applied.
+- Mapping: stream events → `message.delta` (`messageID` = `<api message id>-<block index>`), a finished text block
+  → `message`, a finished thinking block → `reasoning`, `tool_use` → `tool started` (title = command / file path /
+  pattern), `tool_result` → `tool completed|error` (+ `file.changed` for Edit/MultiEdit/Write/NotebookEdit), result
+  → `turn.completed { stopReason, usage: { inputTokens, outputTokens, costUSD } }`, failed result → `error` +
+  `failed`, assistant `error` field → `error`. Subagent traffic is not mapped.
+- Cancel: `query.interrupt()`; parked prompts are denied; the interrupted turn's result is swallowed (matched by
+  the `uuid` sent with each user message). Close: `query.close()`. Process end → `error` + `disconnected`.
+- Capabilities: streaming, tool events, permission requests, cancel, resume, models (`identity.model`, e.g.
+  `haiku`); `mcpTools: false` until the bridge is wired.
+
+Contract change (additive): `turn.completed` gains optional `usage { inputTokens, outputTokens, costUSD? }`. The
+OpenCode adapter fills it from the assistant message's tokens and cost.
+
+### The one real Claude Code session (2026-10-12)
+
+`SPICY_REAL_CLAUDE=1 bun test --timeout 240000 test/agenthq/claude-code.test.ts -t "REAL:"`, run once. Temp project
+dir, model `haiku`, `maxTurns: 1`, `persistSession: false`, the test answers any permission request with `deny`.
+
+```
+SPICY_REAL_CLAUDE evidence {"durationMs":3069,"deltas":2,"answer":"pong","end":{"type":"turn.completed",
+"stopReason":"end_turn","usage":{"inputTokens":2,"outputTokens":4,"costUSD":0.0032092}},"permissionRequests":0,"tools":0}
+```
+
+Session start to turn end 3.07 s; two streamed deltas; final text `pong`; reported cost $0.0032092 (2 input
+tokens outside the cache, 4 output). Without the variable the test is skipped and says why in its name.
+
+## Orchestration engine (`src/agenthq/orchestrator.ts`)
+
+Process-global service on top of `AgentSessions`; it knows sessions only through that interface, never a
+provider's internals (providers stay leaves behind `AgentProvider`). Records: `["agenthq","task",id]` and
+`["agenthq","message",id]` in the JSON store. Events carry `location.directory` = the assignee's (task) or
+recipient's (message) project.
+
+### Tasks
+
+- Create: `{ title, description?, assignee: AgentID, dependsOn?: TaskID[], isolated?: boolean }`. Status is derived
+  from dependencies: all `done` → `ready`; any `failed`/`cancelled`/`blocked` → `blocked` (reason names it);
+  otherwise `pending` (`reason: 'Waiting on "<title>", …'`). Unknown dependencies are 400. Changes propagate down
+  dependency chains (a failure blocks every task after it; a retry that ends `done` unblocks them).
+- Edit (`PATCH`, only while pending/ready/blocked/failed/cancelled): title, description (`null` clears), assignee,
+  `dependsOn`, `isolated`. A dependency that would close a cycle is 400 `Dependency cycle: A → C → B → A`.
+- Start (`POST .../start`, from ready/failed/cancelled once dependencies are `done`; otherwise 409 with the
+  reason): an isolated task first gets a git worktree from opencode's worktree module (branch
+  `task-<three-word-slug>-<4 hex>`, no slashes; under `<data>/worktree/<projectID>/`), then the assignee gets a
+  new session (`taskID` set, `workingDirectory` = the worktree) whose first message is the task brief: title,
+  description, completed dependencies with their summaries, and the worktree note. A setup failure leaves the
+  task `failed` with the reason.
+- Session → task: `turn.completed` → `review` (the worktree's changes are committed on the task branch, authored
+  `<agent> (Agent HQ)`; `result.summary` = the last assistant message); session `failed`/`disconnected` →
+  `failed`; `cancelled` → `cancelled`; `interrupted` (restart) → `failed` with "send it a message or start the
+  task again".
+- Review gate: `GET .../review` is a dry run (`TaskReview`: branch, base = the project's current branch, commits,
+  per-file additions/deletions, `clean`, `mergeable`, `reason`; conflicts come from `git merge-tree`, nothing is
+  touched). `POST .../approve` (only from `review`) commits leftover worktree changes, refuses with 409 if the
+  project has uncommitted changes to tracked files (untracked files do not count; git refuses itself if they
+  would be overwritten), runs `git merge --no-ff` of the branch into the project's current branch (commit
+  `Merge task: <title>`), aborts and returns 409 on any merge failure, and on success removes the worktree and
+  branch and marks the task `done`. A task without a worktree just becomes `done`. Nothing else ever merges.
+- Cancel: marks `cancelled` first, then cancels the running session; dependents become `blocked`. The worktree
+  is kept for inspection; `DELETE` removes the task and its worktree (409 while another task depends on it).
+
+### Agent messages
+
+`POST /agenthq/messages { from?: AgentID | "user" | "system" (default "user"), to, text, taskID?, evidenceIDs?,
+relay? }`. Delivery target: the task's session when `to` is the task's assignee, else the recipient's newest
+session, else a new session titled "Messages". The text arrives as a user message headed
+`Message from <sender> [about task "<title>" (<id>)]:`. `relay: true` routes the recipient's next answer back to
+the sender (as a new message with `inReplyTo` and `hops + 1`, itself relaying), so two agents can hold an
+exchange. Limits stop it deterministically; the stopping message is stored with `delivery: "failed"`, a `reason`
+and `relay: false`, and nothing further is sent:
+
+| Limit                                            | Reason text                                         |
+| ------------------------------------------------ | --------------------------------------------------- |
+| more than 6 replies in one exchange (`hops > 6`) | `Stopped: the exchange reached the 6-reply limit`   |
+| 20 messages for one task                         | `Stopped: task <id> reached its 20-message limit`   |
+| 10 messages from one agent within 60 s           | `Stopped: <agent> sent 10 messages within a minute` |
+| a reply identical to the message it answers      | `Stopped: the reply repeats the message it answers` |
+
+Pending relays are in memory (an exchange in flight during a restart is not resumed).
+
+### Routes (wave 2)
+
+| Method | Path                             | Body / query                                              | 200                                                              | Errors                                                |
+| ------ | -------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------- |
+| GET    | `/agenthq/tasks`                 |                                                           | `Task[]`, oldest first                                           |                                                       |
+| POST   | `/agenthq/tasks`                 | create input above                                        | `Task`                                                           | 400, 404 (assignee)                                   |
+| GET    | `/agenthq/tasks/:taskID`         |                                                           | `Task`                                                           | 404                                                   |
+| PATCH  | `/agenthq/tasks/:taskID`         | edit input above                                          | `Task`                                                           | 400, 404, 409                                         |
+| DELETE | `/agenthq/tasks/:taskID`         |                                                           | `true`                                                           | 404, 409                                              |
+| POST   | `/agenthq/tasks/:taskID/start`   |                                                           | `Task` (`running`, `result.sessionID`, `worktree` when isolated) | 400, 404, 409, 502                                    |
+| POST   | `/agenthq/tasks/:taskID/cancel`  |                                                           | `Task`                                                           | 404                                                   |
+| GET    | `/agenthq/tasks/:taskID/review`  |                                                           | `TaskReview`                                                     | 404                                                   |
+| POST   | `/agenthq/tasks/:taskID/approve` |                                                           | `Task` (`done`)                                                  | 404, 409 (not in review, dirty project, merge failed) |
+| GET    | `/agenthq/messages`              | `?taskID=&agentID=` (agentID matches sender or recipient) | `AgentMessage[]`, oldest first                                   |                                                       |
+| POST   | `/agenthq/messages`              | send input above                                          | `AgentMessage` (`delivered`, or `failed` + `reason`)             | 400, 404                                              |
+
+409 bodies are `{"_tag":"ConflictError","message":"<reason>"}`; the rest as in wave 1.
+
+### Future `agentkit` provider
+
+Agent HQ owns orchestration; AgentKit (the ProjectBlaze daemon) is only ever a provider. If it speaks ACP it
+works today as a custom `acp` identity (`launch` = its command), or as a dedicated `ProviderID` entry pointing
+`AcpProvider.make` at its binary. A non-ACP bridge needs one `AgentProvider.Interface` implementation:
+create/resume a daemon session and return its id, send a prompt, cancel, answer permission prompts (surfacing
+them as `permission.requested`, never auto-approving), close, and stream its activity as normalized
+`AgentEvent`s through `emit`; its own task store stays internal to it.
+
+## Tests (wave 2)
+
+| Test                                                            | What it proves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AHQ-08 (`test/agenthq/acp.test.ts`)                             | Real `opencode acp` from this tree (isolated HOME/XDG via a launcher script, fake model server), driven only through HTTP: create `acp` identity → start session → message → streamed reply with a `bash` tool → `permission.requested` (allow_once/allow_always/reject_once) → answered via `POST /agenthq/sessions/:id/permissions/:requestID` → tool completed with output → `message` + `turn.completed end_turn`; second turn hangs → `POST .../cancel` → `cancelled`, no extra `turn.completed`; `DELETE` the identity → the agent's process is gone (`pgrep`)                                                                                                                                                                                          |
+| AHQ-08b (`test/agenthq/agenthq.test.ts`)                        | Scripted ACP agent (`test/fixture/agenthq/fake-acp-agent.ts`): `plan`, thought → `reasoning`, text completed before the tool, diff → `file.changed`, `reject_always` option and invalid option (400-class error), crash → `error` with exit code and stderr + `disconnected`, next message reattaches with `session/load` and the replay is not recorded                                                                                                                                                                                                                                                                                                                                                                                                      |
+| AHQ-07 (updated)                                                | Cursor with an ACP-capable `cursor-agent` reports available with ACP capabilities; the manager lists five providers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| AHQ-09 (`test/agenthq/claude-code.test.ts`, scripted SDK)       | Isolation options (binary, `settingSources: []`, `strictMcpConfig`, `mcpServers: {}`, `permissionMode: "default"`, own `sessionId`, no bypass flag); streamed text/thinking emitted once with usage on `turn.completed`; a prompt parks until answered, `always` re-scoped to the session and mode switches dropped; deny path; cancel interrupts quietly and the session keeps working; crash → `disconnected` and later sends fail; close; resume passes `resume`; unavailable → typed error                                                                                                                                                                                                                                                                |
+| AHQ-09 real (opt-in)                                            | One real session through the installed `claude`, evidence above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Orchestration (`test/agenthq/orchestrator.test.ts`, fake model) | Dependency ordering (start refused with the waiting reason, review is not done, approving unblocks the dependent, the brief carries the dependency's summary); cycle rejection (`A → C → B → A`, self, unknown dependency); worktree isolation (two isolated tasks write the same file in separate worktrees, the project is untouched, the dry run lists the file and commit); review gate (a dirty project is refused and left untouched, approve merges `Merge task: …` and removes the worktree, the now-conflicting second branch is reported by the dry run and refused with the merge aborted); hop-limit stop (exactly 7 model calls, 8 messages, the 8th failed with the reason, nothing after); cancellation (session cancelled, dependent blocked) |
+
+Results on the final tree (from `packages/opencode`, `SPICY_REAL_CLAUDE` unset):
+
+| Command                                             | Result                                                                       |
+| --------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `bun test --timeout 120000 test/agenthq`            | 25 pass, 1 skip (the opt-in real Claude session, reason in its name), 0 fail |
+| `bun test --timeout 30000 test/server test/session` | 716 pass, 9 skip, 1 todo (pre-existing), 0 fail                              |
+| `bun run test:httpapi`                              | 231 pass, 0 fail, 0 missing in coverage, auth and effect modes               |
+| `bun run typecheck`                                 | clean                                                                        |
+
+Upstream-owned edits in wave 2: `server.ts` gains one more import and `AgentOrchestrator.node` in the `app` group
+(both `// spicy:`); everything else is in fork-owned files (`src/agenthq/**`, the Agent HQ group/handlers, the
+`agenthq` exercise scenario file, `test/agenthq/**`, `test/fixture/agenthq/**`). `packages/opencode/package.json` and
+`bun.lock` gain `@anthropic-ai/claude-agent-sdk` 0.3.293.

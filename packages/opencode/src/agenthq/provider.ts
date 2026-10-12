@@ -13,6 +13,11 @@ export class InvalidInputError extends Schema.TaggedErrorClass<InvalidInputError
   message: Schema.String,
 }) {}
 
+/** The request conflicts with the current state (a task that is not ready, a dirty project, a merge conflict). */
+export class ConflictError extends Schema.TaggedErrorClass<ConflictError>()("AgentHQ.ConflictError", {
+  message: Schema.String,
+}) {}
+
 export class UnsupportedError extends Schema.TaggedErrorClass<UnsupportedError>()("AgentHQ.UnsupportedError", {
   provider: AgentHQ.ProviderID,
   action: Schema.String,

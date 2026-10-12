@@ -51,7 +51,7 @@ function createDebug() {
     if (details.type === "workbench.debug.updated")
       return Option.map(events.updated(details.properties), (data) => debug.update(data.session))
     if (details.type === "workbench.debug.output")
-      return Option.map(events.output(details.properties), (data) => debug.output(data.sessionID, data.rows))
+      return Option.map(events.output(details.properties), (data) => debug.output(data.debugSessionID, data.rows))
     if (details.type === "pty.exited")
       return Option.map(events.exited(details.properties), (data) => debug.exited(data.id, data.exitCode))
   })

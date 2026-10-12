@@ -411,7 +411,7 @@ const RunOutput = define({
 const DebugUpdated = define({ type: "workbench.debug.updated", schema: { session: DebugSessionInfo } })
 const DebugOutput = define({
   type: "workbench.debug.output",
-  schema: { sessionID: DebugSessionID, rows: Schema.Array(ConsoleRow) },
+  schema: { debugSessionID: DebugSessionID, rows: Schema.Array(ConsoleRow) },
 })
 const InvestigationUpdated = define({
   type: "workbench.investigation.updated",

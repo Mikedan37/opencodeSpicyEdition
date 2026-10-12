@@ -207,7 +207,7 @@ const layer = Layer.effect(
           publish(events.publish(Workbench.Event.DebugUpdated, { session: info }))
           if (options.observe && !data.closing) publish(options.observe(session))
         },
-        onOutput: (rows) => publish(events.publish(Workbench.Event.DebugOutput, { sessionID: id, rows })),
+        onOutput: (rows) => publish(events.publish(Workbench.Event.DebugOutput, { debugSessionID: id, rows })),
         runInTerminal: terminal(data.ctx.directory),
       })
       data.sessions.set(id, { session, ...(actor.sessionID ? { agentSessionID: actor.sessionID } : {}) })

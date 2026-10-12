@@ -859,8 +859,6 @@ export function createServerSession(
   }
 
   const eventSessionID = (event: { type: string; properties?: unknown }) => {
-    // spicy: workbench.debug.output names a debug session (dbg_…) `sessionID`; fetching it as a chat session 500s
-    if (event.type.startsWith("workbench.")) return
     const properties = event.properties
     if (!properties || typeof properties !== "object") return
     if ("sessionID" in properties && typeof properties.sessionID === "string") return properties.sessionID

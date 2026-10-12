@@ -319,7 +319,7 @@ function row(seq: number, kind: string, by: string, text: string) {
 }
 
 function output(...rows: Record<string, unknown>[]) {
-  return { type: "workbench.debug.output", properties: { sessionID: debugID, rows } }
+  return { type: "workbench.debug.output", properties: { debugSessionID: debugID, rows } }
 }
 
 function session(patch: Record<string, unknown> = {}) {

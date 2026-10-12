@@ -46,7 +46,8 @@ Merged tree (`f8c5092c5`): `bun test test/lsp test/workbench test/agenthq test/t
 
 | Item | Status | Evidence |
 |---|---|---|
-| Tasks, dependency graph, worktrees, messaging | ON HOLD: overlaps the owner's AgentKit daemon (ProjectBlaze AgentDaemon) being bridged into OpenCode Native; owner decision needed | |
+| Tasks, dependency graph, worktrees, messaging | planned (`spicy-agenthq`, after the ACP and Claude Code adapters). Owner decision 2026-10-12: the IDE owns orchestration; AgentKit is a provider, never the task engine (avoids a circular dependency) | |
+| AgentKit provider | planned: preferably through the generic ACP adapter once AgentKit exposes ACP | |
 | Change review (Cursor-style accept/reject per hunk/file) | in progress (`spicy-review`, backend for both UIs) | |
 | Desktop launch harness + packaged build + CDP smoke | in progress (`spicy-desktop`) | |
 | Team view | planned | |

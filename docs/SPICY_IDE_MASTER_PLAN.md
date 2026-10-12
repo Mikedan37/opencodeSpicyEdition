@@ -168,5 +168,6 @@ Agent HQ test IDs (added to the plan's catalogue):
 - Turn-end gate default `fix`, capped at 2 automatic repairs by the supervisor.
 - Supervisor is deterministic rules (S1–S8), not a model.
 - Cursor via ACP only (no headless auto-approve mode). Codex adapter is blocked until `codex` is installed.
+- Agent HQ owns orchestration (tasks, worktrees, messaging, review gate). External agent systems, including the owner's AgentKit daemon, plug in only as providers behind `AgentProvider` (ideally via ACP); dependencies point from the IDE to providers, never back (2026-10-12).
 - Read-only viewer with a gutter first; an editable editor (CodeMirror 6 vs Monaco) is evaluated in wave 3 and only
   replaces the viewer after it passes tests.

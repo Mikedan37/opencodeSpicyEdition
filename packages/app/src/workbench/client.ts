@@ -70,6 +70,17 @@ const DebugCompletion = Schema.Struct({
 export type DebugCompletion = typeof DebugCompletion.Type
 export type DebugAction = "continue" | "pause" | "next" | "stepIn" | "stepOut"
 
+// Agent HQ orchestration (groups/agenthq.ts; docs/spicy/notes-agenthq.md "Routes (wave 2)"). `description: null`
+// clears it on edit.
+export type TaskDraft = {
+  title: string
+  description?: string | null
+  assignee: string
+  dependsOn?: string[]
+  isolated?: boolean
+}
+export type MessageDraft = { from?: string; to: string; text: string; taskID?: string; relay?: boolean }
+
 const decoders = {
   providers: Schema.decodeUnknownOption(Schema.Array(AgentHQ.ProviderStatus)),
   agents: Schema.decodeUnknownOption(Schema.Array(AgentHQ.AgentIdentity)),
@@ -88,6 +99,14 @@ const decoders = {
   debugRow: Schema.decodeUnknownOption(Workbench.ConsoleRow),
   debugRows: Schema.decodeUnknownOption(Schema.Array(Workbench.ConsoleRow)),
   debugCompletions: Schema.decodeUnknownOption(Schema.Array(DebugCompletion)),
+  tasks: Schema.decodeUnknownOption(Schema.Array(AgentHQ.Task)),
+  task: Schema.decodeUnknownOption(AgentHQ.Task),
+  taskReview: Schema.decodeUnknownOption(AgentHQ.TaskReview),
+  messages: Schema.decodeUnknownOption(Schema.Array(AgentHQ.AgentMessage)),
+  message: Schema.decodeUnknownOption(AgentHQ.AgentMessage),
+  investigations: Schema.decodeUnknownOption(Schema.Array(Workbench.InvestigationSummary)),
+  investigation: Schema.decodeUnknownOption(Workbench.InvestigationDetail),
+  investigationSummary: Schema.decodeUnknownOption(Workbench.InvestigationSummary),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -131,6 +150,8 @@ export function createWorkbenchClient(input: {
       return result.value
     })
   const debug = (id: string) => `/workbench/debug/sessions/${encodeURIComponent(id)}`
+  const task = (id: string) => `/agenthq/tasks/${encodeURIComponent(id)}`
+  const investigation = (id: string) => `/workbench/investigations/${encodeURIComponent(id)}`
   const agent = (id: string) => `/agenthq/agents/${encodeURIComponent(id)}`
   const session = (id: string) => `/agenthq/sessions/${encodeURIComponent(id)}`
 
@@ -179,6 +200,26 @@ export function createWorkbenchClient(input: {
     debugOwner: (id: string, owner: "idle" | "agent" | "human") =>
       decoded(decoders.debugSession, "POST", `${debug(id)}/owner`, { owner }),
     debugStop: (id: string) => decoded(decoders.debugSession, "DELETE", debug(id)),
+    tasks: () => decoded(decoders.tasks, "GET", "/agenthq/tasks"),
+    createTask: (draft: TaskDraft) => decoded(decoders.task, "POST", "/agenthq/tasks", draft),
+    updateTask: (id: string, draft: Partial<TaskDraft>) => decoded(decoders.task, "PATCH", task(id), draft),
+    removeTask: (id: string) => call("DELETE", task(id)),
+    startTask: (id: string) => decoded(decoders.task, "POST", `${task(id)}/start`),
+    cancelTask: (id: string) => decoded(decoders.task, "POST", `${task(id)}/cancel`),
+    // Dry run of approving: what merging the task's branch would bring in. Touches nothing.
+    taskReview: (id: string) => decoded(decoders.taskReview, "GET", `${task(id)}/review`),
+    approveTask: (id: string) => decoded(decoders.task, "POST", `${task(id)}/approve`),
+    messages: (filter: { taskID?: string; agentID?: string }) =>
+      decoded(
+        decoders.messages,
+        "GET",
+        `/agenthq/messages?${new URLSearchParams(Object.entries(filter).filter((entry): entry is [string, string] => !!entry[1]))}`,
+      ),
+    sendMessage: (draft: MessageDraft) => decoded(decoders.message, "POST", "/agenthq/messages", draft),
+    investigations: () => decoded(decoders.investigations, "GET", "/workbench/investigations"),
+    investigation: (id: string) => decoded(decoders.investigation, "GET", investigation(id)),
+    resumeInvestigation: (id: string) => decoded(decoders.investigationSummary, "POST", `${investigation(id)}/resume`),
+    cancelInvestigation: (id: string) => decoded(decoders.investigationSummary, "POST", `${investigation(id)}/cancel`),
   }
 }
 

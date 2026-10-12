@@ -194,11 +194,12 @@ export function WorkbenchTabTriggers() {
   const agenthq = useAgentHQ()
   const language = useLanguage()
   const problemCounts = createMemo(() => workbench.problems.state.snapshot?.counts)
+  // Agents that need the user, plus tasks waiting for the user's review.
   const attention = createMemo(
     () =>
       agenthq.state.agents.filter((agent) =>
         agentAttention(agentSessions(agenthq.state.sessions, agent.id), agenthq.seen),
-      ).length,
+      ).length + agenthq.tasks.state.tasks.filter((task) => task.status === "review").length,
   )
   const running = createMemo(() => workbench.runs.state.runs.filter((entry) => !isFinished(entry.info.status)).length)
   const badge = (tab: WorkbenchTab) => {

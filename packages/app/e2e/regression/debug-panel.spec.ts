@@ -57,7 +57,7 @@ test("debug side panel: start errors verbatim, stack, lazy variables, watches, o
   await expect(dialog).toBeHidden()
   expect(mock.starts.at(-1)).toEqual({ program: "app.py", args: ["--name", "Ada L", "3"], stopOnEntry: true })
 
-  // A stop the human drives opens its file; the Debug tab shows the stack and the top frame's locals
+  // A stop the human drives opens its file; the Debug tab shows the stack and the top frame's scopes
   mock.emit(updated({ state: "stopped", stop: stopAt(1) }))
   const panel = page.locator("#review-panel")
   await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
@@ -68,7 +68,12 @@ test("debug side panel: start errors verbatim, stack, lazy variables, watches, o
   await expect(debug.locator("[data-frame]")).toHaveCount(2)
   await expect(debug.locator('[data-frame="1"] [data-slot="frame"]')).toHaveAttribute("aria-current", "true")
   await expect(debug.locator('[data-frame="1"] [data-slot="frame"]')).toContainText("main")
-  await expect(debug.locator('[data-variable="x"]')).toContainText("x=1")
+  // Cheap scopes open by themselves; an expensive one waits for a click
+  await expect(debug.locator('[data-frame-scopes="1"] [data-variable="x"]')).toContainText("x=1")
+  await expect(debug.locator('[data-frame-scopes="1"] [data-variable="Globals"]')).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  )
 
   // Children load lazily, 50 at a time
   await debug.locator('[data-variable="items"] > button').click()
@@ -76,17 +81,27 @@ test("debug side panel: start errors verbatim, stack, lazy variables, watches, o
   await debug.getByRole("button", { name: "Load more" }).click()
   await expect(debug.locator('[data-variable="items"] [role="group"] [role="treeitem"]')).toHaveCount(53)
   await expect(debug.getByRole("button", { name: "Load more" })).toHaveCount(0)
-  expect(mock.variables).toEqual(["11:0", "11:50"])
+  expect(mock.variables).toEqual(["30:0", "11:0", "11:50"])
+  expect(mock.scopes).toEqual([1])
 
   // Watches evaluate in the selected frame on each stop while the human drives
   await debug.getByPlaceholder("Add expression").fill("x + 1")
   await debug.getByPlaceholder("Add expression").press("Enter")
   await expect(debug.locator('[data-watch="x + 1"]')).toContainText("x + 1=2")
+  // Another frame shows its own scopes; watches evaluate there as watches
   await debug.locator('[data-frame="2"] [data-slot="frame"]').click()
-  await expect.poll(() => mock.evaluations.at(-1)).toEqual({ expression: "x + 1", frameID: 2 })
-  await expect(debug.locator('[data-debug-section="variables"]')).toContainText(
-    "Variables are listed for the top frame",
-  )
+  await expect.poll(() => mock.evaluations.at(-1)).toEqual({ expression: "x + 1", frameID: 2, context: "watch" })
+  const outer = debug.locator('[data-frame-scopes="2"]')
+  await expect(outer.locator('[data-variable="count"]')).toContainText("count=6")
+  await expect(outer.locator('[data-variable="label"]')).toContainText("label='orders'")
+  await expect(outer.locator('[data-variable="x"]')).toHaveCount(0)
+  await outer.locator('[data-variable="Globals"] > button').click()
+  await expect(outer.locator('[data-variable="__name__"]')).toContainText("__name__='__main__'")
+  expect(mock.scopes).toEqual([1, 2])
+  expect(mock.variables.slice(3)).toEqual(["40:0", "41:0"])
+  // Watch results stay out of the Debug Console (start opened it in the bottom panel)
+  await expect(page.locator('[data-component="workbench-debug-console"]')).toBeVisible()
+  await expect(page.locator('[data-component="workbench-debug-console"] [data-console-row]')).toHaveCount(0)
 
   // Stepping posts the command; the next stop resets the frame to the top one
   await debug.locator('[data-debug-action="next"]').click()
@@ -151,7 +166,7 @@ test("debug console: backlog and live rows merge, filters, attribution, evaluate
   ]
   mock.evaluate = (body) =>
     body.expression === "items"
-      ? { ...row(21, "result", "human", "[0, 1, 2]"), variablesReference: 31 }
+      ? { ...row(21, "result", "human", "[0, 1, 2]"), variablesReference: 77 }
       : row(23, "exception", "human", "NameError: name 'nope' is not defined")
   await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
   await expectSessionTitle(page, title)
@@ -193,13 +208,13 @@ test("debug console: backlog and live rows merge, filters, attribution, evaluate
   await input.press("Enter")
   await expect.poll(() => mock.evaluations.at(-1)).toEqual({ expression: "items", frameID: 1 })
   mock.emit(
-    output(row(20, "eval", "human", "items"), { ...row(21, "result", "human", "[0, 1, 2]"), variablesReference: 31 }),
+    output(row(20, "eval", "human", "items"), { ...row(21, "result", "human", "[0, 1, 2]"), variablesReference: 77 }),
   )
   await expect(panel.locator('[data-console-row="20"]')).toHaveText("you› items")
   await expect(panel.locator('[data-console-row="21"]')).toContainText("[0, 1, 2]")
   await panel.locator('[data-console-row="21"] [role="treeitem"] > button').click()
   await expect(panel.locator('[data-console-row="21"] [role="group"] [role="treeitem"]')).toHaveCount(50)
-  expect(mock.variables).toEqual(["31:0"])
+  expect(mock.variables).toEqual(["77:0"])
 
   // A failing expression shows as an exception row; Up recalls earlier input
   await input.fill("nope")
@@ -370,6 +385,7 @@ async function setup(page: Page) {
     owners: [] as string[],
     variables: [] as string[],
     evaluations: [] as unknown[],
+    scopes: [] as number[],
     breakpoints: [] as unknown[],
     emit(...items: Record<string, unknown>[]) {
       pending.push(...items.map((item) => ({ directory, payload: { id: `evt_${Math.random()}`, ...item } })))
@@ -451,9 +467,26 @@ async function setup(page: Page) {
       mock.owners.push(String(body?.owner))
       return json(route, session({ owner: body?.owner, state: "stopped", stop: stopAt(2) }))
     }
+    if (action === "scopes") {
+      const frame = Number(url.searchParams.get("frameID"))
+      mock.scopes.push(frame)
+      return json(route, [
+        { name: "Locals", variablesReference: frame === 1 ? 30 : 40 },
+        { name: "Globals", variablesReference: frame === 1 ? 31 : 41, expensive: true },
+      ])
+    }
     if (action === "variables") {
       const start = Number(url.searchParams.get("start") ?? 0)
-      mock.variables.push(`${url.searchParams.get("ref")}:${start}`)
+      const ref = Number(url.searchParams.get("ref"))
+      mock.variables.push(`${ref}:${start}`)
+      if (ref === 30) return json(route, stopAt(0).locals)
+      if (ref === 40)
+        return json(route, [
+          { name: "count", type: "int", value: "6", variablesReference: 0 },
+          { name: "label", type: "str", value: "'orders'", variablesReference: 0 },
+        ])
+      if (ref === 31 || ref === 41)
+        return json(route, [{ name: "__name__", type: "str", value: "'__main__'", variablesReference: 0 }])
       const count = start === 0 ? 50 : 3
       return json(
         route,
@@ -470,7 +503,8 @@ async function setup(page: Page) {
       return json(
         route,
         mock.evaluate?.(body ?? {}) ?? {
-          seq: 90 + mock.evaluations.length,
+          // watch and hover results are only returned (seq 0); repl results are console rows
+          seq: body?.context === "watch" ? 0 : 90 + mock.evaluations.length,
           at: 1,
           kind: "result",
           by: "human",

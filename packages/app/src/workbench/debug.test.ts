@@ -53,6 +53,10 @@ function setup(overrides: Record<string, (...args: any[]) => Promise<unknown>> =
       row(100, `value of ${expression}`, "result"),
     ),
     debugCompletions: stub("debugCompletions", () => []),
+    debugScopes: stub("debugScopes", () => [
+      { name: "Locals", variablesReference: 21 },
+      { name: "Globals", variablesReference: 22, expensive: true },
+    ]),
     debugOutput: stub("debugOutput", () => []),
     debugOwner: stub("debugOwner", (id: string) => session(id)),
     debugStop: stub("debugStop", (id: string) => session(id, { state: "terminated" })),
@@ -269,8 +273,89 @@ describe("breakpoints, exceptions and watches", () => {
     expect(debug.state.watch.total).toEqual({ at: "dbg_1:1:3", text: "= total", error: false, ref: 4 })
     expect(debug.state.watch.boom).toMatchObject({ error: true, text: "NameError: boom" })
     expect(debug.watchAt()).toBe("dbg_1:1:3")
+    // Watches ask for `watch` results, which add no console rows.
+    expect(calls.map((call) => call.args)).toEqual([
+      ["dbg_1", "total", 3, "watch"],
+      ["dbg_1", "boom", 3, "watch"],
+    ])
+    expect(debug.state.consoles.dbg_1).toBeUndefined()
     debug.removeWatch("boom")
     expect(debug.prefs.watches).toEqual(["total"])
+  })
+})
+
+describe("frame scopes", () => {
+  const frames = [
+    { id: 1, name: "inner", file: "/repo/app.py", line: 3 },
+    { id: 2, name: "outer", file: "/repo/app.py", line: 9 },
+  ]
+
+  test("each frame's scopes load once per stop; a new stop drops them; a failure can be retried", async () => {
+    let failing = false
+    const { debug, calls } = setup({
+      debugScopes: () =>
+        failing
+          ? Promise.reject(new WorkbenchRequestError("failed", "adapter error", 502))
+          : Promise.resolve([{ name: "Locals", variablesReference: 21 }]),
+    })
+    debug.update(session("dbg_1", { state: "stopped", stop: stop(1, frames) }))
+    debug.selectFrame(2)
+    await debug.loadScopes(2)
+    await debug.loadScopes(2)
+    expect(debug.scopes(2)).toEqual({ status: "ready", items: [{ name: "Locals", variablesReference: 21 }] })
+    expect(calls.filter((call) => call.name === "debugScopes").map((call) => call.args)).toEqual([["dbg_1", 2]])
+
+    debug.update(session("dbg_1", { state: "stopped", stop: stop(2, frames) }))
+    expect(debug.frameID()).toBe(1)
+    expect(debug.scopes(2)).toBeUndefined()
+    expect(Object.keys(debug.state.scopes)).toEqual([])
+    failing = true
+    await debug.loadScopes(1)
+    expect(debug.scopes(1)).toMatchObject({ status: "failed", error: "adapter error" })
+    failing = false
+    await debug.loadScopes(1)
+    expect(debug.scopes(1)?.status).toBe("ready")
+  })
+
+  test("a frame of an older stop takes the latest stop; the same stop keeps the server's message", async () => {
+    const stale = () =>
+      Promise.reject(
+        new WorkbenchRequestError(
+          "unavailable",
+          "frame 2 is not in the current stop; take frame ids from the latest stop",
+          404,
+        ),
+      )
+    let latest = session("dbg_1", { state: "stopped", stop: stop(5, [{ id: 7, name: "main" }] as typeof frames) })
+    const { debug } = setup({ debugScopes: stale, debugSessions: () => Promise.resolve([latest]) })
+    debug.update(session("dbg_1", { state: "stopped", stop: stop(1, frames) }))
+    debug.selectFrame(2)
+    await debug.loadScopes(2)
+    expect(debug.frameID()).toBe(7)
+    expect(Object.keys(debug.state.scopes)).toEqual([])
+
+    latest = session("dbg_1", { state: "stopped", stop: stop(5, [{ id: 7, name: "main" }] as typeof frames) })
+    await debug.loadScopes(7)
+    expect(debug.scopes(7)).toMatchObject({
+      status: "failed",
+      error: "frame 2 is not in the current stop; take frame ids from the latest stop",
+    })
+  })
+
+  test("without a scopes route the frame is marked unsupported; cheap scopes start open", async () => {
+    const { debug } = setup({
+      debugScopes: () => Promise.reject(new WorkbenchRequestError("unavailable", "GET /scopes: 200")),
+    })
+    debug.update(session("dbg_1", { state: "stopped", stop: stop(1, frames) }))
+    await debug.loadScopes(1)
+    expect(debug.scopes(1)?.status).toBe("unsupported")
+
+    expect(debug.expanded(["scope", "Locals"], true)).toBe(true)
+    debug.toggle(["scope", "Locals"], true)
+    expect(debug.expanded(["scope", "Locals"], true)).toBe(false)
+    expect(debug.expanded(["scope", "Globals"])).toBe(false)
+    debug.toggle(["scope", "Globals"])
+    expect(debug.expanded(["scope", "Globals"])).toBe(true)
   })
 })
 

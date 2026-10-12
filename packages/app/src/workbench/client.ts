@@ -102,6 +102,7 @@ const decoders = {
   debugRow: Schema.decodeUnknownOption(Workbench.ConsoleRow),
   debugRows: Schema.decodeUnknownOption(Schema.Array(Workbench.ConsoleRow)),
   debugCompletions: Schema.decodeUnknownOption(Schema.Array(DebugCompletion)),
+  debugScopes: Schema.decodeUnknownOption(Schema.Array(Workbench.DebugScope)),
   changeset: Schema.decodeUnknownOption(Review.ChangeSet),
   changesets: Schema.decodeUnknownOption(Schema.Array(Review.ChangeSet)),
   content: Schema.decodeUnknownOption(Review.Content),
@@ -144,7 +145,8 @@ export function createWorkbenchClient(input: {
         `${method} ${path}: ${response.status}`,
       )
     const value: unknown = await response.json()
-    if (response.status === 404) throw new WorkbenchRequestError("unavailable", serverMessage(value) ?? `${path}: 404`)
+    if (response.status === 404)
+      throw new WorkbenchRequestError("unavailable", serverMessage(value) ?? `${path}: 404`, 404)
     if (!response.ok)
       throw new WorkbenchRequestError(
         "failed",
@@ -194,8 +196,12 @@ export function createWorkbenchClient(input: {
       decoded(decoders.debugBreakpoints, "POST", `${debug(id)}/breakpoints`, body),
     debugVariables: (id: string, ref: number, start = 0) =>
       decoded(decoders.debugVariables, "GET", `${debug(id)}/variables?ref=${ref}&start=${start}`),
-    debugEvaluate: (id: string, expression: string, frameID?: number) =>
-      decoded(decoders.debugRow, "POST", `${debug(id)}/evaluate`, { expression, frameID }),
+    // `watch` and `hover` only return the result (seq 0): no console rows, no output event. `repl` is the console's.
+    debugEvaluate: (id: string, expression: string, frameID?: number, context?: Workbench.DebugEvaluateContext) =>
+      decoded(decoders.debugRow, "POST", `${debug(id)}/evaluate`, { expression, frameID, context }),
+    // The scopes of a frame of the current stop (404 for a frame of an older stop); children via debugVariables.
+    debugScopes: (id: string, frameID: number) =>
+      decoded(decoders.debugScopes, "GET", `${debug(id)}/scopes?frameID=${frameID}`),
     // `column` is the 1-based cursor position in `text`.
     debugCompletions: (id: string, text: string, column: number, frameID?: number) =>
       decoded(

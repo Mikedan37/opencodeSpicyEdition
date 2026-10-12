@@ -37,6 +37,7 @@ import { disposeApps } from "./backend"
 import { runtime } from "./runtime"
 import { type Scenario } from "./types"
 import { agenthqScenarios } from "./agenthq" // spicy: Agent HQ route scenarios
+import { reviewScenarios } from "./review" // spicy: review route scenarios
 
 function cursor(input: Record<string, unknown>) {
   return Buffer.from(JSON.stringify(input)).toString("base64url")
@@ -1835,6 +1836,7 @@ const scenarios: Scenario[] = [
     .at(() => ({ path: "/global/upgrade", body: { target: 1 } }))
     .status(400),
   ...agenthqScenarios, // spicy: Agent HQ route scenarios
+  ...reviewScenarios, // spicy: review route scenarios
 ]
 
 const llmScenarios = new Set([

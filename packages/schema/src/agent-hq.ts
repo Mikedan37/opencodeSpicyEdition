@@ -35,7 +35,7 @@ export const AgentMessageID = AgentMessageIDSchema.pipe(
 export type AgentMessageID = typeof AgentMessageID.Type
 
 // "acp": a custom Agent Client Protocol agent launched with the identity's `launch` command.
-export const ProviderID = Schema.Literals(["opencode", "claude-code", "codex", "cursor", "acp"])
+export const ProviderID = Schema.Literals(["opencode", "claude-code", "codex", "cursor", "acp", "agentkit"])
 export type ProviderID = typeof ProviderID.Type
 
 // Every adapter reports these honestly; the UI hides or disables what is false.

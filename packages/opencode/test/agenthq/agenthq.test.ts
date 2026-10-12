@@ -517,11 +517,18 @@ describe("agenthq", () => {
       const seen = yield* capture
       const sessions = yield* AgentSessions.Service
       const list = yield* sessions.providers()
-      expect(list.map((item) => item.id).toSorted()).toEqual(["acp", "claude-code", "codex", "cursor", "opencode"])
+      expect(list.map((item) => item.id).toSorted()).toEqual([
+        "acp",
+        "agentkit",
+        "claude-code",
+        "codex",
+        "cursor",
+        "opencode",
+      ])
       expect(list.find((item) => item.id === "opencode")).toMatchObject({ available: true })
       expect(list.filter((item) => !item.available).every((item) => !!item.reason)).toBe(true)
       yield* sessions.providers()
-      expect(seen.filter((event) => event.type === "agenthq.provider.updated")).toHaveLength(5)
+      expect(seen.filter((event) => event.type === "agenthq.provider.updated")).toHaveLength(6)
 
       // An unavailable provider fails with a typed error and leaves no session behind. (Cursor: no ACP mode in
       // any cursor-agent so far, and not installed where these tests run.)
@@ -834,6 +841,80 @@ describe("agenthq", () => {
       expect(yield* store.read(key, Option.some)).toEqual({ _tag: "found", value: { version: 3 } })
       const names = yield* Effect.promise(() => fs.readdir(path.dirname(target)))
       expect(names.toSorted()).toEqual(["record.json", path.basename(crashed)].toSorted())
+    }),
+  )
+
+  it.live("AHQ-15 AgentKit through the ACP adapter: streamed reply, diff, permission round trip, cancel", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      // A stand-in for `agentkit-bridge`: its `acp` mode is the scripted ACP agent.
+      const bridge = path.join(dir, "agentkit-bridge")
+      yield* Effect.promise(async () => {
+        await fs.writeFile(
+          bridge,
+          [
+            "#!/bin/sh",
+            '[ "$1" = "acp" ] || exit 2',
+            `exec '${process.execPath}' '${path.join(import.meta.dir, "../fixture/agenthq/fake-acp-agent.ts")}'`,
+          ].join("\n"),
+        )
+        await fs.chmod(bridge, 0o755)
+      })
+      const registry = yield* AgentRegistry.Service
+      const sessions = yield* AgentSessions.Service
+      // The identity's launch command replaces the bridge on PATH; Agent HQ adds `acp`.
+      const agent = yield* registry.create({
+        name: "Kit",
+        avatar: { kind: "initials", value: "K" },
+        provider: "agentkit",
+        projectDirectory: dir,
+        launch: { command: bridge, args: [] },
+      })
+      const started = yield* sessions.start(agent.id)
+      expect(started).toMatchObject({ provider: "agentkit", providerSessionID: "fake-session", status: "idle" })
+
+      // A streamed reply.
+      yield* sessions.send(started.id, "hello")
+      const replied = yield* turnCompleted(started.id)
+      expect(ofType(replied, "message").at(-1)?.text).toBe("echo: hello")
+
+      // A diff becomes file.changed, which is what review picks up.
+      yield* sessions.send(started.id, "plan")
+      const edited = yield* turnCompleted(started.id, 2)
+      expect(ofType(edited, "file.changed")).toEqual([{ type: "file.changed", path: "/tmp/agenthq-x.txt" }])
+
+      // A permission request waits for the human, and the answer reaches the agent.
+      yield* sessions.send(started.id, "ask")
+      const request = yield* waitHistory(
+        started.id,
+        (history) => ofType(history, "permission.requested")[0],
+        "AgentKit never asked",
+      )
+      expect((yield* sessions.get(started.id)).session).toMatchObject({
+        status: "needs_approval",
+        pendingPermissions: 1,
+      })
+      yield* sessions.respond(started.id, request.requestID, "yes")
+      const answered = yield* turnCompleted(started.id, 3)
+      expect(ofType(answered, "permission.resolved")).toEqual([
+        { type: "permission.resolved", requestID: request.requestID, outcome: "allowed" },
+      ])
+      expect(ofType(answered, "message").at(-1)?.text).toBe("answer: yes")
+
+      // Cancel: the agent keeps talking after it, and none of that is recorded.
+      yield* sessions.send(started.id, "hang")
+      yield* waitHistory(
+        started.id,
+        (history) => (ofType(history, "message.delta").some((event) => event.text === "working") ? true : undefined),
+        "the hanging turn never started",
+      )
+      expect((yield* sessions.cancel(started.id)).status).toBe("cancelled")
+      yield* Effect.sleep("300 millis")
+      const after = (yield* sessions.get(started.id)).history
+      const cancelled = after.findIndex((item) => item.event.type === "status" && item.event.status === "cancelled")
+      expect(cancelled).toBeGreaterThan(-1)
+      expect(after.slice(cancelled + 1).map((item) => item.event.type)).toEqual([])
+      expect(JSON.stringify(after)).not.toContain("after the cancel")
     }),
   )
 

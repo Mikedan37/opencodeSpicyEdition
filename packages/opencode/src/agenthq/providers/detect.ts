@@ -161,6 +161,57 @@ export const codex = Effect.fn("AgentHQ.detect.codex")(function* (env?: Env) {
   })
 })
 
+// AgentKit through its bridge's ACP mode (`agentkit-bridge acp`, from OpenCode Native's AgentKitBridge). An identity's
+// `launch.command` replaces the bridge found on PATH; Agent HQ always runs it with `acp`.
+export const AGENTKIT_BRIDGE = "agentkit-bridge"
+
+const agentkitCapabilities: AgentHQ.ProviderCapabilities = {
+  ...AcpProvider.capabilities,
+  notes: [
+    "Runs `agentkit-bridge acp` from PATH, or the identity's launch command",
+    ...(AcpProvider.capabilities.notes ?? []),
+  ],
+}
+
+/** AgentKit; available when an agentkit-bridge on PATH answers `acp --help`. */
+export const agentkit = Effect.fn("AgentHQ.detect.agentkit")(function* (env?: Env) {
+  const proc = yield* AppProcess.Service
+  const base = { id: "agentkit", name: "AgentKit", auth: "unknown", capabilities: agentkitCapabilities } as const
+  const find = () => which(AGENTKIT_BRIDGE, { PATH: (env ?? { PATH: process.env.PATH }).PATH ?? "" }) ?? undefined
+  const detected: Effect.Effect<AgentHQ.ProviderStatus> = Effect.gen(function* () {
+    const bin = find()
+    if (!bin) return { ...base, available: false, reason: "AgentKit bridge not found" }
+    // An ACP mode answers `acp --help` and names itself; a bridge without one fails or prints other usage.
+    const help = ChildProcess.make(bin, ["acp", "--help"], { stdin: "ignore", env: AgentProvider.agentEnv() })
+    const acp = yield* proc.run(help, { timeout: "3 seconds" }).pipe(
+      Effect.map(
+        (result) =>
+          result.exitCode === 0 && /\bacp\b/i.test(result.stdout.toString("utf8") + result.stderr.toString("utf8")),
+      ),
+      Effect.orElseSucceed(() => false),
+    )
+    if (!acp) return { ...base, available: false, reason: "this AgentKit bridge has no ACP mode yet" }
+    return { ...base, available: true }
+  }).pipe(Effect.provideService(AppProcess.Service, proc))
+  return yield* AcpProvider.make({
+    id: "agentkit",
+    status: detected,
+    launch: (agent) =>
+      Effect.gen(function* () {
+        if (agent.launch?.command) return { command: agent.launch.command, args: ["acp"] }
+        const current = yield* detected
+        const bin = find()
+        if (!current.available || !bin)
+          return yield* new AgentProvider.UnsupportedError({
+            provider: "agentkit",
+            action: "createSession",
+            message: current.reason ?? "AgentKit bridge not found",
+          })
+        return { command: bin, args: ["acp"] }
+      }),
+  })
+})
+
 /** Cursor through its ACP mode; refuses to start while detection says it is unavailable. */
 export const cursor = Effect.fn("AgentHQ.detect.cursor")(function* (env?: Env) {
   const proc = yield* AppProcess.Service

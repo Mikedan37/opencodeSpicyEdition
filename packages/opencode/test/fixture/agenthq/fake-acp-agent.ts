@@ -3,6 +3,7 @@
 //   "ask"   → asks permission (allow_once / reject_always) and reports the answer
 //   "late"  → a message and a finished tool, then after its answer a late chunk and tool update for them
 //   "crash" → writes to stderr and exits with code 3
+//   "hang"  → says "working", waits for session/cancel, then (out of protocol) says more and ends cancelled
 //   other   → echoes the text
 // session/load replays one old exchange, which the client must not record again.
 // With FAKE_ACP_RECORD set, session/new writes its params (cwd, mcpServers) to that file.
@@ -18,6 +19,9 @@ const input = new ReadableStream<Uint8Array>({
     process.stdin.on("end", () => controller.close())
   },
 })
+
+// Resolves the prompt that "hang" holds open.
+let cancelled: (() => void) | undefined
 
 new AgentSideConnection(
   (client): Agent => {
@@ -42,7 +46,7 @@ new AgentSideConnection(
         return {}
       },
       authenticate: async () => ({}),
-      cancel: async () => {},
+      cancel: async () => cancelled?.(),
       prompt: async (params) => {
         const sessionId = params.sessionId
         const text = params.prompt.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("")
@@ -89,6 +93,12 @@ new AgentSideConnection(
             },
           })
           return { stopReason: "end_turn" }
+        }
+        if (text === "hang") {
+          await say(sessionId, "working")
+          await new Promise<void>((resolve) => (cancelled = resolve))
+          await say(sessionId, " after the cancel")
+          return { stopReason: "cancelled" }
         }
         if (text === "late") {
           await client.sessionUpdate({

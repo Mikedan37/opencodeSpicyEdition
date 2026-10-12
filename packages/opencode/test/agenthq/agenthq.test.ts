@@ -498,7 +498,7 @@ describe("agenthq", () => {
       expect(cursor).toMatchObject({
         available: false,
         version: "2025.09.12-4852336",
-        reason: "cursor-agent 2025.09.12 has no ACP mode; update cursor-agent",
+        reason: "Cursor's CLI has no ACP mode; Agent HQ needs approvals routed to you",
       })
       const codex = yield* AgentDetect.status("codex", { env: { PATH: bin } })
       expect(codex).toMatchObject({ available: false, reason: "codex not found on PATH" })
@@ -523,12 +523,13 @@ describe("agenthq", () => {
       yield* sessions.providers()
       expect(seen.filter((event) => event.type === "agenthq.provider.updated")).toHaveLength(5)
 
-      // A provider without an adapter fails with a typed error and leaves no session behind.
+      // An unavailable provider fails with a typed error and leaves no session behind. (Cursor: no ACP mode in
+      // any cursor-agent so far, and not installed where these tests run.)
       const registry = yield* AgentRegistry.Service
       const agent = yield* registry.create({
-        name: "Cod",
+        name: "Cur",
         avatar: { kind: "initials", value: "C" },
-        provider: "codex",
+        provider: "cursor",
         projectDirectory: bin,
       })
       const failure = yield* sessions.start(agent.id).pipe(Effect.flip)

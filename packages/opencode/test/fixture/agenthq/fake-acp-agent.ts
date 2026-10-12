@@ -5,6 +5,7 @@
 //   "crash" → writes to stderr and exits with code 3
 //   other   → echoes the text
 // session/load replays one old exchange, which the client must not record again.
+// With FAKE_ACP_RECORD set, session/new writes its params (cwd, mcpServers) to that file.
 import { AgentSideConnection, ndJsonStream, type Agent } from "@agentclientprotocol/sdk"
 
 const output = new WritableStream<Uint8Array>({
@@ -27,7 +28,11 @@ new AgentSideConnection(
       })
     return {
       initialize: async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: true } }),
-      newSession: async () => ({ sessionId: "fake-session" }),
+      newSession: async (params) => {
+        // Contract tests read what the client sent when they ask for it.
+        if (process.env.FAKE_ACP_RECORD) await Bun.write(process.env.FAKE_ACP_RECORD, JSON.stringify(params))
+        return { sessionId: "fake-session" }
+      },
       loadSession: async (params) => {
         await client.sessionUpdate({
           sessionId: params.sessionId,

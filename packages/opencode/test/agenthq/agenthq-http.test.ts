@@ -43,10 +43,11 @@ describe("agenthq http", () => {
       // projectDirectory defaults to the directory the request is routed to.
       const created = yield* call(
         "/agenthq/agents",
-        json("POST", { name: "Cod", avatar: { kind: "initials", value: "C" }, provider: "codex" }),
+        // A custom ACP agent without a launch command: a provider that can never start, whatever is installed.
+        json("POST", { name: "Cod", avatar: { kind: "initials", value: "C" }, provider: "acp" }),
       )
       expect(created.status).toBe(200)
-      expect(created.body).toMatchObject({ name: "Cod", provider: "codex", projectDirectory: dir })
+      expect(created.body).toMatchObject({ name: "Cod", provider: "acp", projectDirectory: dir })
       const agentID = (created.body as { id: string }).id
 
       expect(
@@ -65,7 +66,7 @@ describe("agenthq http", () => {
       })
       expect(yield* call(`/agenthq/agents/${agentID}/sessions`, json("POST", {}))).toEqual({
         status: 409,
-        body: { _tag: "ConflictError", message: "Codex sessions are not supported by Agent HQ yet", resource: "codex" },
+        body: { _tag: "ConflictError", message: "Agent Cod has no ACP launch command", resource: "acp" },
       })
       expect(yield* call("/agenthq/sessions/ags_missing")).toEqual({
         status: 404,

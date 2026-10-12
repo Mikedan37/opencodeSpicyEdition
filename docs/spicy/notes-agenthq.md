@@ -295,7 +295,7 @@ mode per Agent HQ session, so one Claude Code process serves every turn; `provid
 Contract change (additive): `turn.completed` gains optional `usage { inputTokens, outputTokens, costUSD? }`. The
 OpenCode adapter fills it from the assistant message's tokens and cost.
 
-### The one real Claude Code session (2026-10-12)
+### The first real Claude Code session (2026-10-12, wave 2)
 
 `SPICY_REAL_CLAUDE=1 bun test --timeout 240000 test/agenthq/claude-code.test.ts -t "REAL:"`, run once. Temp project
 dir, model `haiku`, `maxTurns: 1`, `persistSession: false`, the test answers any permission request with `deny`.
@@ -306,7 +306,7 @@ SPICY_REAL_CLAUDE evidence {"durationMs":3069,"deltas":2,"answer":"pong","end":{
 ```
 
 Session start to turn end 3.07 s; two streamed deltas; final text `pong`; reported cost $0.0032092 (2 input
-tokens outside the cache, 4 output). Without the variable the test is skipped and says why in its name.
+tokens outside the cache, 4 output). Wave 3 replaced this test with the Workbench session below.
 
 ## Orchestration engine (`src/agenthq/orchestrator.ts`)
 
@@ -486,11 +486,54 @@ Claude Code and ACP agents (custom `acp` identities and Cursor) get exactly one 
 
 Limits:
 
-- Unverified: `setMcpServers` under `--strict-mcp-config`. The Claude Code path is tested against the scripted SDK
-  only (no real Claude run is approved), so it is not known whether the real binary admits a server added that way
-  in strict mode. The SDK docs scope strict mode to settings files, `.mcp.json`, plugins and agent frontmatter.
+- Verified on the real binary (Claude Code 2.1.296, below): `setMcpServers` under `--strict-mcp-config` connects
+  the Workbench server, lists its tools, and Claude calls them.
+- Claude Code defers the Workbench tools behind its tool search: the model calls `ToolSearch` first, which costs a
+  turn. `alwaysLoad: true` on the server config would put all 15 tool definitions in every prompt instead and make
+  the first turn wait for the connection (up to 5 s). Not set; a product choice.
+- Claude Code hands the model the tool's `structuredContent` (the doctor report as JSON), not the text summary.
 - After merging with `spicy-ide` (`97cca65c9`), `opencode workbench mcp` also serves the `debug_*` tools, so
   external agents get them through the same server.
+
+### The second real Claude Code session (2026-10-12, wave 3)
+
+Approved by the owner to check the Workbench server in a real session. Test:
+`SPICY_REAL_CLAUDE=1 bun test --timeout 300000 test/agenthq/claude-code.test.ts -t "REAL:"`, run once. A
+password-protected listener (`test/fixture/agenthq/listener.ts`, as in AHQ-08) is running, so the bridge comes from
+`AgentWorkbench.server(dir)` exactly as the manager builds it; the session is the adapter's, through the installed
+`claude` with the owner's login, model `haiku`, `maxTurns: 3`, `persistSession: false`. The test allows the doctor
+once (standing in for the human) and denies anything else. `SPICY_REAL_CLAUDE=status` runs everything before the
+prompt and nothing reaches the model; it ran twice while the test was written.
+
+Before the prompt (`mcpServerStatus()`, no model call):
+
+```
+{"connectMs":1884,"firstStatus":"connected","server":{"name":"opencode-workbench","status":"connected",
+"source":"dynamic","serverInfo":{"name":"opencode-workbench","version":"local"}},
+"tools":["workbench_problems","workbench_check","workbench_doctor","debug_start","debug_attach","debug_control",
+"debug_breakpoints","debug_inspect","debug_evaluate","debug_output","debug_status","debug_stop","debug_note",
+"debug_escalate","debug_resume"],"claudeFound":true,"claudeStrict":true,"claudeMcpConfigArg":false,
+"claudeHasPassword":false,"bridgeFound":true,"bridgeArgsHavePassword":false,"bridgeEnvHasPassword":true,
+"bridgeGotClaudeEnv":true}
+```
+
+- `setMcpServers` returns after the server connected: the first status read right after the session started was
+  already `connected` (session start including the claude process: 1.9 s).
+- The claude command line has `--strict-mcp-config` and no `--mcp-config`; its environment has no server password.
+  The bridge's arguments have no password; its environment has it, plus claude's whole environment.
+
+The prompt ("Call the mcp**opencode-workbench**workbench_doctor tool exactly once with no arguments, then reply
+with exactly: done"):
+
+- `ToolSearch` started and completed without a permission prompt (the Workbench tools are deferred).
+- `permission.requested` for `mcp__opencode-workbench__workbench_doctor`, answered allow once, `permission.resolved`
+  `allowed`.
+- The tool completed; its output (the doctor report JSON, starting with Swift: `sourcekit-lsp`, `swiftc` 6.4) came
+  back to the model.
+- One streamed delta, final text `done`, `turn.completed` `end_turn`, 5.0 s from session start.
+- Cost: $0.00432649 (6 input tokens outside the cache, 186 output).
+
+Afterwards: no bridge process left, no project written under `~/.claude/projects`, no new DiagnosticReports.
 
 ## Agent processes never get the server's credentials (wave 3 follow-up)
 

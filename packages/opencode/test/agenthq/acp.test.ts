@@ -46,6 +46,15 @@ const ofType = <T extends AgentHQ.AgentEvent["type"]>(list: readonly Envelope[],
 const auth = { username: "opencode", password: "ahq-bridge-secret" }
 const TOOLS = ["workbench_problems", "workbench_check", "workbench_doctor"].map((name) => `opencode-workbench_${name}`)
 
+// An explicit free port: port 0 would try 4096 first, which a developer's own opencode may be using.
+const freePort = () =>
+  new Promise<number>((resolve) => {
+    const probe = net.createServer().listen(0, "127.0.0.1", () => {
+      const { port } = probe.address() as net.AddressInfo
+      probe.close(() => resolve(port))
+    })
+  })
+
 /** A real listener with a password; Agent HQ hands its URL to the Workbench bridge. */
 const listener = Effect.acquireRelease(
   Effect.promise(async () => {
@@ -55,14 +64,7 @@ const listener = Effect.acquireRelease(
     }
     Flag.OPENCODE_SERVER_USERNAME = process.env.OPENCODE_SERVER_USERNAME = auth.username
     Flag.OPENCODE_SERVER_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD = auth.password
-    // An explicit free port: port 0 would try 4096 first, which a developer's own opencode may be using.
-    const port = await new Promise<number>((resolve) => {
-      const probe = net.createServer().listen(0, "127.0.0.1", () => {
-        const { port } = probe.address() as net.AddressInfo
-        probe.close(() => resolve(port))
-      })
-    })
-    return { saved, server: await Server.listen({ hostname: "127.0.0.1", port }) }
+    return { saved, server: await Server.listen({ hostname: "127.0.0.1", port: await freePort() }) }
   }),
   ({ saved, server }) =>
     Effect.promise(async () => {
@@ -123,6 +125,8 @@ describe("agenthq acp", () => {
         const { server } = yield* listener
         const dir = yield* tmpdirScoped({ git: true })
         const script = yield* launcher(llm.url)
+        // The agent's own listener gets a known free port, so the test can reach it.
+        const agentPort = yield* Effect.promise(freePort)
         const call = (route: string, init: RequestInit = {}) =>
           Effect.promise(async () => {
             const headers = new Headers(init.headers)
@@ -158,7 +162,7 @@ describe("agenthq acp", () => {
           name: "Relay",
           avatar: { kind: "preset", value: "robot" },
           provider: "acp",
-          launch: { command: script, args: ["--cwd", dir] },
+          launch: { command: script, args: ["--cwd", dir, "--port", String(agentPort)] },
         })
         expect(created.status).toBe(200)
         const agentID = (created.body as AgentHQ.AgentIdentity).id
@@ -173,18 +177,17 @@ describe("agenthq acp", () => {
         // The agent never inherits this server's credentials. Being opencode itself, it runs its own listener with a
         // password of its own: unknown to the parent, and still required.
         const pid = (yield* running).split("\n")[0]!
-        const environment = Bun.spawnSync(["ps", "-E", "-ww", "-p", pid, "-o", "command="]).stdout.toString()
+        const environment =
+          process.platform === "linux"
+            ? (yield* Effect.promise(() => fs.readFile(`/proc/${pid}/environ`, "utf8"))).replaceAll("\0", " ")
+            : Bun.spawnSync(["ps", "-E", "-ww", "-p", pid, "-o", "command="]).stdout.toString()
         const own = environment.match(/(?:^|\s)OPENCODE_SERVER_PASSWORD=(\S+)/)?.[1]
         expect(own).toMatch(/^[0-9a-f-]{36}$/)
         expect(environment).not.toContain(auth.password)
         expect(environment).not.toMatch(/(?:^|\s)OPENCODE_SERVER_USERNAME=/)
-        const port = Bun.spawnSync(["lsof", "-a", "-p", pid, "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-Fn"])
-          .stdout.toString()
-          .match(/^n.*:(\d+)$/m)?.[1]
-        expect(port).toBeDefined()
         const agentListener = (password?: string) =>
           Effect.promise(() =>
-            fetch(`http://127.0.0.1:${port}/agenthq/agents`, {
+            fetch(`http://127.0.0.1:${agentPort}/agenthq/agents`, {
               headers: password ? { authorization: `Basic ${btoa(`opencode:${password}`)}` } : {},
             }).then((response) => response.status),
           )

@@ -8,13 +8,14 @@ import { AppProcess } from "@opencode-ai/core/process"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Deferred, Effect, Exit, Layer, Schema, Scope } from "effect"
+import { Deferred, Effect, Exit, Layer, Option, Schema, Scope } from "effect"
 import fs from "fs/promises"
 import path from "path"
 import { AgentDetect } from "../../src/agenthq/providers/detect"
 import { guard } from "../../src/agenthq/providers/opencode"
 import { AgentRegistry } from "../../src/agenthq/registry"
 import { AgentSessions } from "../../src/agenthq/session"
+import { AgentStore } from "../../src/agenthq/store"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Permission } from "../../src/permission"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
@@ -33,6 +34,7 @@ const noopBootstrap = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap
 const nodes = LayerNode.group([
   AgentRegistry.node,
   AgentSessions.node,
+  AgentStore.node,
   SessionProjector.node,
   SessionStatus.node,
   InstanceStore.node,
@@ -751,6 +753,86 @@ describe("agenthq", () => {
       )
       expect(titled.title).toBe("E2E Title")
       expect((yield* sessions.list(agent.id)).find((item) => item.id === started.id)?.title).toBe("E2E Title")
+    }),
+  )
+
+  it.live("AHQ-13 an unreadable history survives a restart as .corrupt-*, and its session comes back interrupted", () =>
+    Effect.gen(function* () {
+      const { llm, dir } = yield* project
+      const first = yield* boot
+      const agent = yield* first.run(createAgent(dir))
+      const started = yield* first.run(AgentSessions.Service.use((sessions) => sessions.start(agent.id)))
+      yield* llm.push(reply().hang())
+      yield* first.run(AgentSessions.Service.use((sessions) => sessions.send(started.id, "interrupt me")))
+      yield* pollWithTimeout(
+        modelCalls(llm).pipe(Effect.map((count) => (count >= 1 ? true : undefined))),
+        "model was never called",
+      )
+      const stored = yield* first.run(AgentSessions.Service.use((sessions) => sessions.get(started.id)))
+      yield* Scope.close(first.scope, Exit.void)
+
+      // A crash in the middle of a turn: the record still says working and the history file is torn.
+      const history = AgentStore.file(["agenthq", "events", started.id])
+      const torn = `[{"sessionID":"${started.id}","seq":0,"at":1,"event":{"type":"sta`
+      yield* Effect.promise(async () => {
+        await fs.writeFile(history, torn)
+        await fs.writeFile(
+          AgentStore.file(["agenthq", "session", started.id]),
+          JSON.stringify({ ...stored.session, status: "working", pid: process.pid }),
+        )
+      })
+
+      const second = yield* boot
+      const recovered = yield* second.run(AgentSessions.Service.use((sessions) => sessions.get(started.id)))
+      expect(recovered.session.status).toBe("interrupted")
+      expect(recovered.session.error).toMatch(
+        /^This session's history could not be read \(it is not valid JSON\); it was quarantined as .+\.json\.corrupt-\d+$/,
+      )
+      // The torn file is kept aside, byte for byte; the history starts again from the recovery.
+      const aside = yield* Effect.promise(() => fs.readdir(path.dirname(history))).pipe(
+        Effect.map((names) => names.filter((name) => name.startsWith(`${path.basename(history)}.corrupt-`))),
+      )
+      expect(aside).toHaveLength(1)
+      expect(yield* Effect.promise(() => fs.readFile(path.join(path.dirname(history), aside[0]!), "utf8"))).toBe(torn)
+      expect(recovered.history.map((item) => item.event.type)).toEqual(["error", "status"])
+      const rewritten = yield* Effect.promise(() => fs.readFile(history, "utf8"))
+      expect((JSON.parse(rewritten) as Envelope[]).map((item) => item.event.type)).toEqual(["error", "status"])
+      yield* Scope.close(second.scope, Exit.void)
+    }),
+  )
+
+  it.live("AHQ-13b an unreadable identity record is moved aside, never read as an agent", () =>
+    Effect.gen(function* () {
+      const { dir } = yield* project
+      const registry = yield* AgentRegistry.Service
+      const agent = yield* createAgent(dir)
+      const record = AgentStore.file(["agenthq", "agent", agent.id])
+      yield* Effect.promise(() => fs.writeFile(record, JSON.stringify({ id: agent.id, name: 42 })))
+      expect((yield* registry.get(agent.id).pipe(Effect.flip))._tag).toBe("AgentHQ.NotFoundError")
+      expect((yield* registry.list()).map((item) => item.id)).not.toContain(agent.id)
+      const names = yield* Effect.promise(() => fs.readdir(path.dirname(record)))
+      expect(names.filter((name) => name.startsWith(`${path.basename(record)}.corrupt-`))).toHaveLength(1)
+      expect(names).not.toContain(path.basename(record))
+    }),
+  )
+
+  it.live("AHQ-14 a write that dies between its temporary file and the rename leaves the record whole", () =>
+    Effect.gen(function* () {
+      const store = yield* AgentStore.Service
+      const key = ["agenthq", "atomic-test", "record"]
+      const target = AgentStore.file(key)
+      yield* store.write(key, { version: 1 })
+      // The process dies after writing the temporary file, before the rename.
+      const crashed = `${target}.tmp-${process.pid}-crashed`
+      yield* Effect.promise(() => fs.writeFile(crashed, '{"version": 2, "half'))
+      expect(yield* store.read(key, Option.some)).toEqual({ _tag: "found", value: { version: 1 } })
+      expect(yield* store.list(["agenthq", "atomic-test"])).toEqual(["record"])
+
+      // A write that completes replaces the record and leaves no temporary file of its own.
+      yield* store.write(key, { version: 3 })
+      expect(yield* store.read(key, Option.some)).toEqual({ _tag: "found", value: { version: 3 } })
+      const names = yield* Effect.promise(() => fs.readdir(path.dirname(target)))
+      expect(names.toSorted()).toEqual(["record.json", path.basename(crashed)].toSorted())
     }),
   )
 

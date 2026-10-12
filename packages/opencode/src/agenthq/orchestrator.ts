@@ -16,11 +16,11 @@ import { GlobalBus, type GlobalEvent } from "@/bus/global"
 import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceStore } from "@/project/instance-store"
-import { Storage } from "@/storage/storage"
 import { Worktree } from "@/worktree"
 import { AgentProvider } from "./provider"
 import { AgentRegistry } from "./registry"
 import { AgentSessions } from "./session"
+import { AgentStore } from "./store"
 
 // Loop limits for agent-to-agent exchanges; a limit stops the exchange with a stated reason.
 const MAX_HOPS = 6
@@ -117,7 +117,7 @@ interface Delivery {
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const storage = yield* Storage.Service
+    const records = yield* AgentStore.Service
     const bridge = yield* EventV2Bridge.Service
     const events = yield* EventV2.Service
     const registry = yield* AgentRegistry.Service
@@ -144,8 +144,7 @@ const layer = Layer.effect(
       )
 
     const readTask = Effect.fnUntraced(function* (id: string) {
-      const value = yield* storage.read<unknown>(taskKey(id)).pipe(Effect.option)
-      return Option.flatMap(value, decodeTask)
+      return yield* records.find(taskKey(id), decodeTask)
     })
 
     const get = Effect.fn("AgentHQOrchestrator.get")(function* (id: AgentHQ.TaskID) {
@@ -155,13 +154,13 @@ const layer = Layer.effect(
     })
 
     const list = Effect.fn("AgentHQOrchestrator.list")(function* () {
-      const keys = yield* storage.list(["agenthq", "task"]).pipe(Effect.orElseSucceed(() => []))
-      const found = yield* Effect.forEach(keys, (key) => readTask(key.at(-1) ?? ""), { concurrency: 8 })
+      const ids = yield* records.list(["agenthq", "task"])
+      const found = yield* Effect.forEach(ids, readTask, { concurrency: 8 })
       return found.flatMap((item) => Option.toArray(item)).toSorted((a, b) => a.createdAt - b.createdAt)
     })
 
     const save = Effect.fnUntraced(function* (task: AgentHQ.Task) {
-      yield* storage.write(taskKey(task.id), task).pipe(Effect.orDie)
+      yield* records.write(taskKey(task.id), task).pipe(Effect.orDie)
       yield* bridge.publish(AgentHQ.Event.TaskUpdated, { task }, yield* where(task.assignee))
       return task
     })
@@ -171,16 +170,8 @@ const layer = Layer.effect(
       readonly agentID?: AgentHQ.AgentID
     }) {
       // ponytail: scans every message; index by task and agent when message volume grows.
-      const keys = yield* storage.list(["agenthq", "message"]).pipe(Effect.orElseSucceed(() => []))
-      const found = yield* Effect.forEach(
-        keys,
-        (key) =>
-          storage.read<unknown>(messageKey(key.at(-1) ?? "")).pipe(
-            Effect.option,
-            Effect.map((value) => Option.flatMap(value, decodeMessage)),
-          ),
-        { concurrency: 8 },
-      )
+      const ids = yield* records.list(["agenthq", "message"])
+      const found = yield* Effect.forEach(ids, (id) => records.find(messageKey(id), decodeMessage), { concurrency: 8 })
       return found
         .flatMap((item) => Option.toArray(item))
         .filter((item) => !filter.taskID || item.taskID === filter.taskID)
@@ -189,7 +180,7 @@ const layer = Layer.effect(
     })
 
     const saveMessage = Effect.fnUntraced(function* (message: AgentHQ.AgentMessage) {
-      yield* storage.write(messageKey(message.id), message).pipe(Effect.orDie)
+      yield* records.write(messageKey(message.id), message).pipe(Effect.orDie)
       yield* bridge.publish(AgentHQ.Event.MessageEvent, { message }, yield* where(message.to))
       return message
     })
@@ -369,7 +360,7 @@ const layer = Layer.effect(
           if (!task) return yield* missing(id)
           const dependent = all.find((item) => item.dependsOn.includes(id))
           if (dependent) return yield* conflict(`Task "${dependent.title}" depends on it`)
-          yield* storage.remove(taskKey(id)).pipe(Effect.orDie)
+          yield* records.remove(taskKey(id)).pipe(Effect.orDie)
           yield* bridge.publish(AgentHQ.Event.TaskRemoved, { id }, yield* where(task.assignee))
           return task
         }),
@@ -908,7 +899,7 @@ export const node = LayerNode.make({
   deps: [
     AgentRegistry.node,
     AgentSessions.node,
-    Storage.node,
+    AgentStore.node,
     EventV2Bridge.node,
     EventV2.node,
     InstanceStore.node,

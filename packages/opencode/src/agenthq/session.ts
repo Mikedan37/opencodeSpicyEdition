@@ -14,16 +14,17 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppProcess } from "@opencode-ai/core/process"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Cause, Context, Deferred, Effect, Fiber, Layer, Option, Queue, Schema, Scope } from "effect"
+import path from "path"
 import { Agent } from "@/agent/agent"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Permission } from "@/permission"
 import { InstanceStore } from "@/project/instance-store"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
-import { Storage } from "@/storage/storage"
 import { EventV2 } from "@opencode-ai/core/event"
 import { AgentProvider } from "./provider"
 import { AgentRegistry } from "./registry"
+import { AgentStore } from "./store"
 import { AcpProvider } from "./providers/acp"
 import { ClaudeCodeProvider } from "./providers/claude-code"
 import { AgentDetect } from "./providers/detect"
@@ -139,7 +140,7 @@ const historyKey = (id: string) => ["agenthq", "events", id]
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const storage = yield* Storage.Service
+    const store = yield* AgentStore.Service
     const events = yield* EventV2Bridge.Service
     const registry = yield* AgentRegistry.Service
     const review = yield* ReviewChanges.Service // spicy: review hook
@@ -213,7 +214,7 @@ const layer = Layer.effect(
         now - session.persisted >= PERSIST_INTERVAL
       ) {
         session.persisted = now
-        yield* storage.write(historyKey(session.info.id), session.history).pipe(Effect.orDie)
+        yield* store.write(historyKey(session.info.id), session.history).pipe(Effect.orDie)
       }
       if (session.info !== before) yield* save(session)
       const where = AgentRegistry.location(session.agent.projectDirectory)
@@ -225,7 +226,7 @@ const layer = Layer.effect(
     })
 
     const save = (session: Live) =>
-      storage.write(sessionKey(session.info.id), { ...session.info, pid: process.pid }).pipe(Effect.orDie)
+      store.write(sessionKey(session.info.id), { ...session.info, pid: process.pid }).pipe(Effect.orDie)
 
     const emitter =
       (session: Live): AgentProvider.Emit =>
@@ -280,15 +281,10 @@ const layer = Layer.effect(
 
     // ---------------------------------------------------------------- loading
 
-    const readStored = Effect.fnUntraced(function* (id: string) {
-      const value = yield* storage.read<unknown>(sessionKey(id)).pipe(Effect.option)
-      return Option.flatMap(value, decodeStored)
-    })
+    const readStored = (id: string) => store.find(sessionKey(id), decodeStored)
 
-    const readHistory = Effect.fnUntraced(function* (id: string) {
-      const value = yield* storage.read<unknown>(historyKey(id)).pipe(Effect.option)
-      return Option.getOrElse(Option.flatMap(value, decodeHistory), () => [])
-    })
+    // An unreadable history is never treated as empty: whoever loads the session quarantines it first.
+    const readHistory = (id: string) => store.read(historyKey(id), decodeHistory)
 
     const missing = (id: string) => new AgentProvider.NotFoundError({ message: `Agent session not found: ${id}` })
 
@@ -305,8 +301,13 @@ const layer = Layer.effect(
           message: `Agent session ${id} is driven by another opencode process (pid ${stored.value.pid})`,
         })
       const agent = yield* registry.get(stored.value.agentID).pipe(Effect.mapError(() => missing(id)))
-      const history = [...(yield* readHistory(id))]
-      return yield* register({
+      // A history that cannot be read is moved aside before anything is recorded, so it is never overwritten; a read
+      // error fails the load for the same reason.
+      const read = yield* readHistory(id).pipe(Effect.orDie)
+      const reason = read._tag === "corrupt" ? read.reason : undefined
+      const quarantined = reason ? yield* store.quarantine(historyKey(id), reason).pipe(Effect.orDie) : undefined
+      const history = read._tag === "found" ? [...read.value] : []
+      const session = yield* register({
         info: strip(stored.value),
         agent: placed(agent, stored.value.workingDirectory),
         seq: (history.at(-1)?.seq ?? -1) + 1,
@@ -318,6 +319,15 @@ const layer = Layer.effect(
         tools: new Set(),
         owed: 0,
       })
+      if (quarantined)
+        yield* submit(session, [
+          {
+            type: "error",
+            message: `This session's history could not be read (${reason}); it was quarantined as ${path.basename(quarantined)}`,
+          },
+          { type: "status", status: "interrupted" },
+        ])
+      return session
     })
 
     const attach = Effect.fnUntraced(function* (session: Live) {
@@ -339,8 +349,8 @@ const layer = Layer.effect(
     })
 
     const records = Effect.fnUntraced(function* () {
-      const keys = yield* storage.list(["agenthq", "session"]).pipe(Effect.orElseSucceed(() => []))
-      const found = yield* Effect.forEach(keys, (item) => readStored(item.at(-1) ?? ""), { concurrency: 8 })
+      const ids = yield* store.list(["agenthq", "session"])
+      const found = yield* Effect.forEach(ids, readStored, { concurrency: 8 })
       return found.flatMap((item) => Option.toArray(item))
     })
 
@@ -466,7 +476,15 @@ const layer = Layer.effect(
         )
       const stored = yield* readStored(sessionID)
       if (Option.isNone(stored)) return yield* missing(sessionID)
-      return { session: strip(stored.value), history: yield* readHistory(sessionID) }
+      const history = yield* readHistory(sessionID).pipe(Effect.orElseSucceed(() => ({ _tag: "missing" }) as const))
+      // The process that drives the session quarantines an unreadable history and reports it, as a load does.
+      if (history._tag === "corrupt" && owned(stored.value)) {
+        const session = yield* lock(sessionID)(load(sessionID)).pipe(Effect.mapError(() => missing(sessionID)))
+        return yield* writes.withLock(sessionID)(
+          Effect.sync(() => ({ session: session.info, history: [...session.history] })),
+        )
+      }
+      return { session: strip(stored.value), history: history._tag === "found" ? history.value : [] }
     })
 
     const send = Effect.fn("AgentHQSessions.send")(function* (sessionID: AgentHQ.AgentSessionID, text: string) {
@@ -542,8 +560,8 @@ const layer = Layer.effect(
               if (session?.handle)
                 yield* session.handle.cancel.pipe(Effect.ignore, Effect.andThen(session.handle.close))
               if (session?.consumer) yield* Fiber.interrupt(session.consumer)
-              yield* storage.remove(sessionKey(item.id)).pipe(Effect.ignore)
-              yield* storage.remove(historyKey(item.id)).pipe(Effect.ignore)
+              yield* store.remove(sessionKey(item.id)).pipe(Effect.ignore)
+              yield* store.remove(historyKey(item.id)).pipe(Effect.ignore)
             }),
           ),
         { discard: true },
@@ -693,7 +711,7 @@ export const node = LayerNode.make({
   layer,
   deps: [
     AgentRegistry.node,
-    Storage.node,
+    AgentStore.node,
     EventV2Bridge.node,
     EventV2.node,
     InstanceStore.node,

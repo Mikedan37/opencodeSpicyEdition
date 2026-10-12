@@ -1,5 +1,6 @@
 // Agent identities (name, avatar, provider, project). They live in the global JSON store and exist
 // independently of any provider process; many identities may share one provider.
+import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -7,8 +8,8 @@ import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import path from "path"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { Storage } from "@/storage/storage"
 import { InvalidInputError, NotFoundError } from "./provider"
+import { AgentStore } from "./store"
 
 const Launch = Schema.Struct({ command: Schema.String, args: Schema.Array(Schema.String) })
 
@@ -53,6 +54,8 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Ag
 const decode = Schema.decodeUnknownOption(AgentHQ.AgentIdentity)
 const key = (id: string) => ["agenthq", "agent", id]
 
+type Draft = Record<string, unknown>
+
 /** Agent HQ events carry the identity's project so the app files them under that directory. */
 export function location(directory: string) {
   return { location: { directory: AbsolutePath.make(directory) } }
@@ -61,13 +64,13 @@ export function location(directory: string) {
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const storage = yield* Storage.Service
+    const store = yield* AgentStore.Service
+    const edits = KeyedMutex.makeUnsafe<string>()
     const events = yield* EventV2Bridge.Service
     const fs = yield* FSUtil.Service
 
     const read = Effect.fnUntraced(function* (id: string) {
-      const value = yield* storage.read<unknown>(key(id)).pipe(Effect.option)
-      return Option.flatMap(value, decode)
+      return yield* store.find(key(id), decode)
     })
 
     const get = Effect.fn("AgentHQRegistry.get")(function* (id: AgentHQ.AgentID) {
@@ -77,8 +80,8 @@ const layer = Layer.effect(
     })
 
     const list = Effect.fn("AgentHQRegistry.list")(function* () {
-      const keys = yield* storage.list(["agenthq", "agent"]).pipe(Effect.orElseSucceed(() => []))
-      const found = yield* Effect.forEach(keys, (item) => read(item.at(-1) ?? ""), { concurrency: 8 })
+      const ids = yield* store.list(["agenthq", "agent"])
+      const found = yield* Effect.forEach(ids, read, { concurrency: 8 })
       return found.flatMap((item) => Option.toArray(item)).toSorted((a, b) => a.createdAt - b.createdAt)
     })
 
@@ -119,7 +122,7 @@ const layer = Layer.effect(
         createdAt: now,
         updatedAt: now,
       }
-      yield* storage.write(key(agent.id), agent).pipe(Effect.orDie)
+      yield* store.write(key(agent.id), agent).pipe(Effect.orDie)
       yield* events.publish(AgentHQ.Event.AgentUpdated, { agent }, location(agent.projectDirectory))
       return agent
     })
@@ -141,19 +144,21 @@ const layer = Layer.effect(
         ...(input.launch ? { launch: yield* launch(input.launch) } : {}),
         updatedAt: Date.now(),
       }
-      // Merge under the store's per-key lock so concurrent edits do not drop each other.
-      const merged = yield* storage
-        .update<Record<string, unknown>>(key(id), (draft) => {
-          Object.assign(draft, patch)
+      // Merge into the stored record (fields this build does not know stay) under a per-identity lock, so
+      // concurrent edits do not drop each other.
+      const merged = yield* edits.withLock(id)(
+        Effect.gen(function* () {
+          const stored = yield* store.find(key(id), (value) => Option.map(decode(value), () => value as Draft))
+          if (Option.isNone(stored)) return yield* new NotFoundError({ message: `Agent not found: ${id}` })
+          const draft: Draft = { ...stored.value, ...patch }
           if (input.model === null) delete draft.model
           if (input.specialty === null) delete draft.specialty
           if (input.workingDirectory === null) delete draft.workingDirectory
           if (input.launch === null) delete draft.launch
-        })
-        .pipe(
-          Effect.catchTag("NotFoundError", () => Effect.fail(new NotFoundError({ message: `Agent not found: ${id}` }))),
-          Effect.catchTag(["FileSystemError", "PlatformError"], Effect.die),
-        )
+          yield* store.write(key(id), draft).pipe(Effect.orDie)
+          return draft
+        }),
+      )
       const agent = decode(merged)
       if (Option.isNone(agent)) return yield* Effect.die(new Error(`stored agent ${id} no longer decodes`))
       yield* events.publish(AgentHQ.Event.AgentUpdated, { agent: agent.value }, location(agent.value.projectDirectory))
@@ -162,7 +167,7 @@ const layer = Layer.effect(
 
     const remove = Effect.fn("AgentHQRegistry.remove")(function* (id: AgentHQ.AgentID) {
       const current = yield* get(id)
-      yield* storage.remove(key(id)).pipe(Effect.orDie)
+      yield* store.remove(key(id)).pipe(Effect.orDie)
       yield* events.publish(AgentHQ.Event.AgentRemoved, { id }, location(current.projectDirectory))
     })
 
@@ -173,7 +178,7 @@ const layer = Layer.effect(
 export const node = LayerNode.make({
   service: Service,
   layer,
-  deps: [Storage.node, EventV2Bridge.node, FSUtil.node],
+  deps: [AgentStore.node, EventV2Bridge.node, FSUtil.node],
 })
 
 export * as AgentRegistry from "./registry"

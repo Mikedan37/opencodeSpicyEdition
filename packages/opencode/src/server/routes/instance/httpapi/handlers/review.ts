@@ -21,6 +21,11 @@ export const reviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "review", (h
       .handle("changeset", (ctx) =>
         review.get(ctx.params.changesetID).pipe(Effect.mapError((error) => notFound(error.message))),
       )
+      .handle("content", (ctx) =>
+        review
+          .content(ctx.params.changesetID, ctx.query.path)
+          .pipe(Effect.mapError((error) => notFound(error.message))),
+      )
       .handle("hunk", (ctx) =>
         review.hunk(ctx.params.changesetID, ctx.params.hunkID, ctx.payload.action).pipe(Effect.mapError(http)),
       )

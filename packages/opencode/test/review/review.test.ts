@@ -137,7 +137,18 @@ describe("review", () => {
       )
       expect(rejected.status).toBe(200)
       expect(yield* read(dir, "a.txt")).toBe(TEN.replace("two", "TWO"))
-      expect(fileOf(rejected.body, "a.txt")).toMatchObject({ state: "accepted", hunks: [], undoable: true })
+      expect(fileOf(rejected.body, "a.txt")).toMatchObject({
+        state: "accepted",
+        hunks: [],
+        undoable: true,
+        accepted: 1,
+        rejected: 1,
+      })
+      // Decided hunks keep their patch and state, in decision order.
+      expect(fileOf(rejected.body, "a.txt")?.decided.map((item) => [item.id, item.state, item.patch])).toEqual([
+        [a.hunks[0].id, "accepted", "@@ -2,1 +2,1 @@\n-two\n+TWO\n"],
+        [a.hunks[1].id, "rejected", "@@ -9,1 +9,1 @@\n-nine\n+NINE\n"],
+      ])
       expect(rejected.body.counts).toMatchObject({ files: 1, pending: 1, accepted: 1, rejected: 1 })
 
       // Every update reached the app with the project directory; the last one is the final state.
@@ -184,7 +195,14 @@ describe("review", () => {
       const undone = yield* call<Review.ChangeSet>(`${route}/undo`, json("POST", { path: "new.txt" }))
       expect(undone.status).toBe(200)
       expect(yield* read(dir, "new.txt")).toBe("created\n")
-      expect(fileOf(undone.body, "new.txt")).toMatchObject({ state: "pending", undoable: false, hunks: [{}] })
+      expect(fileOf(restored.body, "new.txt")?.decided.map((item) => item.state)).toEqual(["rejected"])
+      expect(fileOf(undone.body, "new.txt")).toMatchObject({
+        state: "pending",
+        undoable: false,
+        hunks: [{}],
+        rejected: 0,
+        decided: [],
+      })
       expect(yield* call(`${route}/undo`, json("POST", { path: "new.txt" }))).toEqual({
         status: 409,
         body: { _tag: "ConflictError", message: "nothing to undo", resource: "new.txt" },
@@ -301,6 +319,31 @@ describe("review", () => {
       expect((yield* changesets).map((item) => item.id)).toEqual([first.id])
       expect(fileOf(after, "a.txt")).toMatchObject({ state: "accepted", hunks: [] })
       expect(fileOf(after, "b.txt")).toMatchObject({ state: "pending", status: "added" })
+    }),
+  )
+
+  it.live("REV-08 the content route returns both sides byte for byte with the hunks of the same read", () =>
+    Effect.gen(function* () {
+      const { llm, call, waitFor, session, prompt } = yield* project({ "c.txt": "\nalpha\nbeta\n" })
+      const id = yield* session
+      yield* llm.tool("write", { filePath: "c.txt", content: "\nalpha\nBETA\n" })
+      yield* llm.text("done")
+      yield* prompt(id)
+      const [changeset] = yield* waitFor((list) => list.length === 1, "changeset never appeared")
+      const route = `/review/changesets/${changeset.id}/content`
+      // /file/content trims; this keeps the leading blank line and the final newline, so positions match the hunks.
+      expect((yield* call(`${route}?path=c.txt`)).body).toEqual({
+        path: "c.txt",
+        binary: false,
+        before: "\nalpha\nbeta\n",
+        after: "\nalpha\nBETA\n",
+        hunks: [changeset.files[0].hunks[0]],
+      })
+      expect(changeset.files[0].hunks[0]).toMatchObject({ newStart: 3, patch: "@@ -3,1 +3,1 @@\n-beta\n+BETA\n" })
+      expect((yield* call(`${route}?path=nope.txt`)).status).toBe(404)
+      // Once decided there is nothing left to diff.
+      yield* call(`/review/changesets/${changeset.id}/files`, decide("accept", { path: "c.txt" }))
+      expect((yield* call(`${route}?path=c.txt`)).body).toEqual({ path: "c.txt", binary: false, hunks: [] })
     }),
   )
 

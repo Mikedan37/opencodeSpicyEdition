@@ -185,6 +185,14 @@ describe("workbench MCP bridge: debug tools", () => {
         expect(text(started)).toContain("locals    total: int = 0 · xs: list = []")
         const session = (started.structuredContent as { session: { id: string; investigationID?: string } }).session
         expect(session.investigationID).toStartWith("inv_")
+        // The frames line names each frame's id; inspect reads the caller's frame by it.
+        const frames = (started.structuredContent as { snapshot: { frames: { id: number }[] } }).snapshot.frames
+        expect(text(started)).toContain(
+          `frames    #${frames[0].id} average (avg.py:3) <- #${frames[1].id} <module> (avg.py:8)`,
+        )
+        expect(text(yield* call(mcp, "debug_inspect", { frame: frames[1].id, path: "name" }))).toContain(
+          "name: str = 'bob'",
+        )
 
         // The asks live in the bridge's own opencode session, which also owns the investigation.
         const owner = yield* user.request(`/session/${asked.sessionID}`)

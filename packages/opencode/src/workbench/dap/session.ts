@@ -569,6 +569,22 @@ export function make(options: Options) {
   const read = <A, E>(actor: Actor, effect: Effect.Effect<A, E>) =>
     control.run(actor, "read", requireState("stopped").pipe(Effect.andThen(effect)))
 
+  // A frame id is valid only in the stop it came from (the adapter reuses or drops ids once the program runs).
+  // Without one, the top frame of the current stop.
+  const frame = (frameID: number | undefined) =>
+    Effect.suspend(() =>
+      frameID === undefined
+        ? Effect.succeed(s.frameID)
+        : s.stop?.frames.some((item) => item.id === frameID)
+          ? Effect.succeed(frameID)
+          : Effect.fail(
+              new DebugError({
+                kind: "not_found",
+                message: `frame ${frameID} is not in the current stop; take frame ids from the latest stop`,
+              }),
+            ),
+    )
+
   /** Ends the session: disconnect with terminateDebuggee, then kill the whole recorded process tree. */
   const terminate = (reason: string): Effect.Effect<void> =>
     Effect.suspend(() => {
@@ -638,28 +654,37 @@ export function make(options: Options) {
     breakpoints: (input: BreakpointsInput, actor: Actor) =>
       control.run(actor, "control", requireState("running", "stopped").pipe(Effect.andThen(configure(input)))),
     variables: (ref: number, actor: Actor, start = 0) => read(actor, DebugSnapshot.variables(request, ref, start)),
+    scopes: (frameID: number, actor: Actor) =>
+      read(actor, frame(frameID).pipe(Effect.andThen(DebugSnapshot.scopes(request, frameID)))),
     inspect: (input: { path?: string; ref?: number; frameID?: number; start?: number }, actor: Actor) =>
       read(actor, inspect(input)),
-    evaluate: (input: { expression: string; frameID?: number }, actor: Actor) =>
+    evaluate: (input: Workbench.DebugEvaluateInput, actor: Actor) =>
       // Humans may evaluate whoever drives; the agent needs control.
       control.run(
         actor,
         actor.by === "human" ? "read" : "control",
         requireState("stopped").pipe(
-          Effect.andThen(
+          Effect.andThen(frame(input.frameID)),
+          Effect.flatMap((frameID) =>
             DebugConsole.evaluate({
               request,
               console: con,
               adapter: options.adapter,
               expression: input.expression,
-              frameID: input.frameID ?? s.frameID,
+              frameID,
+              context: input.context ?? "repl",
               by: actor.by,
             }),
           ),
         ),
       ),
     completions: (input: { text: string; column?: number; frameID?: number }, actor: Actor) =>
-      read(actor, DebugConsole.completions({ request, ...input, frameID: input.frameID ?? s.frameID })),
+      read(
+        actor,
+        frame(input.frameID).pipe(
+          Effect.flatMap((frameID) => DebugConsole.completions({ request, ...input, frameID })),
+        ),
+      ),
     output: (after?: number) => con.list(after),
     system: con.system,
     setOwner: (to: "idle" | "agent" | "human", actor: Actor) => control.set(to, actor).pipe(Effect.map(info)),
@@ -677,7 +702,7 @@ export function make(options: Options) {
     return Effect.gen(function* () {
       if (input.ref !== undefined)
         return yield* DebugSnapshot.tree(request, input.ref, DebugSnapshot.LIMITS.depth, input.start)
-      const frameID = input.frameID ?? s.frameID
+      const frameID = yield* frame(input.frameID)
       if (frameID === undefined) return []
       const scopes =
         (yield* request<{ scopes?: { variablesReference: number; expensive?: boolean }[] }>("scopes", {

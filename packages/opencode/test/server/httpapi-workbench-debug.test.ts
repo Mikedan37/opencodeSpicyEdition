@@ -9,6 +9,7 @@ import { Effect } from "effect"
 import { AppRuntime } from "../../src/effect/app-runtime"
 import { Storage } from "../../src/storage/storage"
 import { WorkbenchInvestigation } from "../../src/workbench/investigation/investigation"
+import { Debugpy } from "../../src/workbench/dap/adapters/debugpy"
 
 const FAKE = path.join(import.meta.dir, "../workbench/fixture/fake-dap.ts")
 const root = "/workbench/debug/sessions"
@@ -225,4 +226,127 @@ describe("workbench debug HttpApi", () => {
       adapter.kill()
     }
   })
+})
+
+// Real debugpy; the program ends with os._exit(1), so Python never crashes.
+const NESTED = `import os
+
+
+def inner(n):
+    doubled = n * 2
+    return doubled
+
+
+def outer(label):
+    count = len(label)
+    return inner(count)
+
+
+result = outer("orders")
+print("result", result)
+os._exit(1)
+`
+const found = await Debugpy.resolve({ directory: process.cwd() })
+const missing = "error" in found ? found.error : undefined
+
+describe("workbench debug HttpApi (real debugpy)", () => {
+  test.skipIf(missing !== undefined)(
+    `scopes and variables of any frame, stale frames refused, watch evaluations kept out of the console${missing ? ` [skipped: ${missing}]` : ""}`,
+    async () => {
+      await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
+      await Bun.write(path.join(tmp.path, "nested.py"), NESTED)
+      const app = Server.Default().app
+      const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+      const call = (method: string, url: string, body?: object) =>
+        app.request(url, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) })
+      const json = async <T>(response: Response | Promise<Response>) => (await (await response).json()) as T
+      type Stop = { frames: { id: number; name: string; line: number }[] }
+      type Row = { seq: number; kind: string; text: string }
+      const events: GlobalEvent[] = []
+      const listen = (event: GlobalEvent) => events.push(event)
+      GlobalBus.on("event", listen)
+      const started = await call("POST", root, {
+        program: "nested.py",
+        breakpoints: [
+          { file: "nested.py", line: 6 },
+          { file: "nested.py", line: 15 },
+        ],
+      })
+      expect(started.status).toBe(200)
+      const session = `${root}/${(await json<{ id: string }>(started)).id}`
+      const stopAt = (line: number) =>
+        until(async () => {
+          const list = await json<{ id: string; state: string; stop?: Stop }[]>(call("GET", root))
+          const item = list.find((entry) => session.endsWith(entry.id))
+          return item?.state === "stopped" && item.stop?.frames[0]?.line === line ? item.stop : undefined
+        }, `never stopped at line ${line}`)
+      try {
+        const first = await stopAt(6)
+        expect(first.frames.slice(0, 3).map((frame) => frame.name)).toEqual(["inner", "outer", "<module>"])
+        const outer = first.frames[1]
+
+        // The caller's frame: its scopes, then its locals from the variables route.
+        const scopes = await json<{ name: string; variablesReference: number; expensive?: boolean }[]>(
+          call("GET", `${session}/scopes?frameID=${outer.id}`),
+        )
+        const locals = scopes.find((scope) => scope.name === "Locals")
+        expect(locals?.variablesReference).toBeGreaterThan(0)
+        const variables = await json<{ name: string; value: string }[]>(
+          call("GET", `${session}/variables?ref=${locals!.variablesReference}`),
+        )
+        expect(variables.map((item) => `${item.name} = ${item.value}`).toSorted()).toEqual([
+          "count = 6",
+          "label = 'orders'",
+        ])
+
+        // A watch returns its value and leaves the console alone; a repl evaluation still adds its rows.
+        const last = (await json<Row[]>(call("GET", `${session}/output`))).at(-1)?.seq ?? 0
+        const watched = await call("POST", `${session}/evaluate`, {
+          expression: "count * 10",
+          frameID: outer.id,
+          context: "watch",
+        })
+        expect(await watched.json()).toMatchObject({ seq: 0, kind: "result", by: "human", text: "60" })
+        const repl = await json<Row>(call("POST", `${session}/evaluate`, { expression: "doubled + 1" }))
+        expect(repl).toMatchObject({ kind: "result", by: "human", text: "13" })
+        expect(repl.seq).toBeGreaterThan(last)
+        const added = (await json<Row[]>(call("GET", `${session}/output?after=${last}`))).filter((row) =>
+          ["eval", "result", "exception"].includes(row.kind),
+        )
+        expect(added.map((row) => [row.kind, row.text])).toEqual([
+          ["eval", "doubled + 1"],
+          ["result", "13"],
+        ])
+        await until(
+          async () => (published().includes("doubled + 1") ? true : undefined),
+          "no output event for the repl evaluation",
+        )
+        expect(published()).not.toContain("count * 10")
+        expect(published()).not.toContain("60")
+
+        // Once the program ran on, the first stop's frames are stale.
+        expect((await call("POST", `${session}/control`, { action: "continue" })).status).toBe(200)
+        await stopAt(15)
+        const stale = await call("GET", `${session}/scopes?frameID=${outer.id}`)
+        expect(stale.status).toBe(404)
+        expect(JSON.stringify(await stale.json())).toContain(`frame ${outer.id} is not in the current stop`)
+        const staleWatch = await call("POST", `${session}/evaluate`, {
+          expression: "count",
+          frameID: outer.id,
+          context: "watch",
+        })
+        expect(staleWatch.status).toBe(404)
+      } finally {
+        GlobalBus.off("event", listen)
+        await call("DELETE", session)
+      }
+
+      function published() {
+        return events
+          .filter((event) => event.payload.type === "workbench.debug.output")
+          .flatMap((event) => (event.payload.properties as { rows: Row[] }).rows.map((row) => row.text))
+      }
+    },
+    60_000,
+  )
 })

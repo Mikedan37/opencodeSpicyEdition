@@ -46,7 +46,9 @@ export const Parameters = Schema.Struct({
   clear: Schema.optional(Schema.Array(Schema.String)).annotate({ description: "Files whose breakpoints to remove" }),
   path: Schema.optional(Schema.String).annotate({ description: "Variable path for inspect, e.g. orders.bob" }),
   ref: Schema.optional(NonNegativeInt).annotate({ description: "Variable reference for inspect" }),
-  frame: Schema.optional(Schema.Int).annotate({ description: "Stack frame id; defaults to the top frame" }),
+  frame: Schema.optional(Schema.Int).annotate({
+    description: "Stack frame id (the #id in the frames line of the latest stop); defaults to the top frame",
+  }),
   start: Schema.optional(NonNegativeInt).annotate({ description: "First child to show when paging inspect" }),
   expression: Schema.optional(Schema.String),
   since: Schema.optional(NonNegativeInt).annotate({ description: "Output row number to continue after" }),

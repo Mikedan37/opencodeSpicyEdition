@@ -449,3 +449,45 @@ bottom right.
   Globals; selecting `main` showed its Locals (`item`, `items`, `name`, `total`) and Globals through
   `GET scopes?frameID=3` and two `variables` pages; the watch `total + 100` = 100 was posted with
   `"context":"watch"` and the Debug Console stayed at its 2 rows. No new crash reports.
+
+## Wave 6: fixes from the desktop smoke
+
+- **A stop brings its file forward.** The line opener (`workbench/open-file.ts`) selected the new file tab before its
+  trigger registered, and Kobalte fell back to the first tab (Review / Files Changed). It now selects the tab again
+  once the trigger exists. The reveal (`debug-context.tsx`) is keyed by the stop alone and runs for human-driven
+  stops whatever side tab is in front, the Debug tab included; it leaves the panel alone while the user types in one
+  of its inputs (watch, breakpoint condition, comment). Agent stops and taking over a paused session don't move it.
+  Trade-off: stepping with the Debug tab in front now shows the file; the stack is one click away.
+- **Run tab after the program ends.** The `/pty` routes don't attach to an exited PTY: core `Pty.attach` fails with
+  `ExitedError` for anything not running, v1 `/pty/:id/connect` answers 404 and v2 `/api/pty/:id/connect` closes with
+  4404, although the service keeps exited sessions (25, 2 MB each). The debug service attaches to the program's PTY
+  itself and records its output in the Debug Console, so a Run tab that was not attached when the program ended
+  (opened after the exit, left before it, or reloaded) replays that copy with the Output tab's renderer
+  (`OutputText`, now exported from `output-panel.tsx`), noting dropped rows. A terminal that was attached at the end
+  keeps its snapshot (`terminals` entry `whole`). With no copy (the server no longer has the session): "Output is no
+  longer available"; with an empty copy: "The program wrote no output". The copy is ANSI-stripped, redacted and capped
+  at 256 KB. **What the PTY service would need** for an exact replay with colors: let `attach` (and both connect
+  routes) accept an exited session, send `replay` from the retained buffer for the given `cursor`, then close with
+  1000; or `GET /api/pty/:id/output?cursor=` → `{ replay, cursor, exitCode }`. The terminal component already sends
+  `cursor` and treats a 1000 close as the end, so the first option needs no UI change.
+- **Review buttons never wrap mid-word.** Pierre's annotation slot sets `word-break: break-word`, so a hunk bar
+  narrower than its chip and buttons shrank "Accept" and "Reject" to a few letters per line (split view, 1280×800,
+  side panel open: the bar is 169 px). Review buttons (`src/review/view.tsx`, the review agent's file) are now
+  `shrink-0 whitespace-nowrap`, and the hunk bar and file-action rows wrap between items.
+- **`pty.exited` decoded locally.** Importing `@opencode-ai/schema/pty` from the session page made dev builds request
+  `/…/schema/src/pty.ts`, which the upstream `review-terminal-stacked` spec's `**/pty*` route answered with JSON:
+  that spec has failed since wave 3. `debug-context.tsx` declares the two-field payload itself.
+- Files: `workbench/{open-file,debug-context,debug-run,debug,debug.test,en,output-panel}`, `review/view.tsx`,
+  `e2e/regression/{debug-panel,review-agent-changes}.spec.ts`. No upstream-owned file changed in wave 6.
+- Tests: app unit tests (JSX override) 790 pass, 1 fail (the known ICU "likely subtags" test), including the new
+  `programOutput` test; `test-browser` 43/43; typecheck clean. `debug-panel.spec.ts` 6/6, two tests new: a stop selects
+  `app.py` over Files Changed and over the Debug tab, but not while the watch input has focus; the Run tab replays the
+  console copy after the program ended away from the tab (no new socket), and after a reload with the copy gone says
+  "Output is no longer available" (both paths fail without the change). `review-agent-changes.spec.ts` (real server)
+  now checks the hunk bars and the file view's review bar at 1280×800 once the panel's width transition settles; it
+  failed before the fix (`Accept`, `Reject` wrapped in both bars) and passes after. Debug, activity, Agent HQ, review,
+  terminal and file-browser specs together 30/30 (`--workers=2`).
+- Real debugpy pass (isolated server, Playwright Chromium, no Electron): a stop on entry with Files Changed in front
+  selected `app.py` with the paused-line marks; "App in terminal" run to the end with the Problems tab in front, then
+  the Run tab showed `Exited with code 0` and `hello terminal, total=6` / `to stderr` with no terminal socket; after a
+  reload the terminal found the PTY gone (v1 404) and the tab replayed the server's copy. No new crash reports.

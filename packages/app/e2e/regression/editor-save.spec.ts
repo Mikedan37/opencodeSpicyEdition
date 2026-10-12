@@ -67,7 +67,28 @@ test("editor: edit, save, conflicts on a file changed on disk, and closing with 
     await page.keyboard.type("  # saved")
     await expect(unsaved).toHaveCount(1)
 
-    // The file changes on disk under the unsaved edit: the save is refused and nothing is written.
+    // A reload with an unsaved edit asks first (the browser's leave-page confirmation); staying keeps the edit.
+    const asked = page.waitForEvent("dialog")
+    const reloading = page.evaluate(() => location.reload()).catch(() => undefined)
+    const leave = await asked
+    expect(leave.type()).toBe("beforeunload")
+    await leave.dismiss()
+    await reloading
+    await expect(editor.locator(".cm-line").nth(1)).toHaveText("import sys, os  # saved")
+    await expect(unsaved).toHaveCount(1)
+
+    // Cmd+S saves the side panel's active file tab with the focus outside the editor (the app's command, not the
+    // editor's keymap).
+    await panel.getByRole("tab", { name: "app.py" }).click()
+    await page.keyboard.press("Control+s")
+    await expect(unsaved).toHaveCount(0)
+    await expect.poll(disk).toBe(ORIGINAL.replace("import sys", "import sys, os  # saved"))
+
+    // The file changes on disk under an unsaved edit: the save is refused and nothing is written.
+    await editor.locator(".cm-line").nth(1).click()
+    await page.keyboard.press("End")
+    await page.keyboard.type("!")
+    await expect(unsaved).toHaveCount(1)
     const theirs = "\nimport json\n"
     await fs.writeFile(file, theirs)
     await page.keyboard.press("Control+s")

@@ -14,6 +14,7 @@ import { PINCH_ZOOM_ENABLED_KEY, WINDOW_IDS_KEY } from "./store-keys"
 import { createUnresponsiveSampler } from "./unresponsive"
 import { nativeT } from "./native-translations"
 import { createWindowRegistry } from "./window-registry"
+import { unsavedDecision, unsavedPrompt } from "./unsaved" // spicy: unsaved editor edits
 import { safeWindowURL } from "./window-state"
 import { resolveExternalURL, resolveLocalFilePath } from "./external-url"
 
@@ -69,7 +70,10 @@ export function setRelaunchHandler(handler: () => void) {
   relaunchHandler = handler
 }
 
+let appQuitting = false // spicy: the unsaved-edits dialog says "Quit anyway" and cancels the quit
+
 export function setAppQuitting(quitting = true) {
+  appQuitting = quitting // spicy
   registry.setQuitting(quitting)
 }
 
@@ -279,6 +283,18 @@ function registerWindow(win: BrowserWindow, id: string) {
   // gets session-end before it closes; flag the quit so ids stay persisted.
   win.on("session-end", () => registry.setQuitting())
   win.on("closed", () => registry.closed(id))
+  // spicy: a page with unsaved editor edits blocks its unload; ask instead of keeping it silently (unsaved.ts)
+  win.webContents.on("will-prevent-unload", (event) => {
+    const answer = process.env.OPENCODE_SPICY_UNSAVED_ANSWER
+    const quitting = appQuitting
+    const decision = unsavedDecision({
+      answer,
+      response: answer ? undefined : dialog.showMessageBoxSync(win, unsavedPrompt(quitting)),
+      quitting,
+    })
+    if (decision.allowUnload) event.preventDefault()
+    if (decision.cancelQuit) setAppQuitting(false)
+  })
 }
 
 function windowStateFile(id: string) {

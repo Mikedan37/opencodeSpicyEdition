@@ -575,9 +575,7 @@ busy; both real-server specs bind the app's default server port).
 - A file that mixes CRLF and LF is saved all-CRLF; a lone CR (old Mac) file is not special-cased.
 - The hash check and the rename are two steps; a write landing between them is lost (`ponytail:` note in
   `editor-file.ts`).
-- Cmd+S works while the editor has focus; there is no app-level save command yet. No format-on-save.
-- Unsaved buffers live in memory for the workspace; reloading the page or closing the window does not ask (an
-  Electron `beforeunload` that cancels would block closing the window silently).
+- No format-on-save. (Cmd+S outside the editor and the unload prompts came in the follow-up below.)
 
 ### Wave 7 tests and verification
 
@@ -599,3 +597,31 @@ busy; both real-server specs bind the app's default server port).
 - Real server (Playwright Chromium, no Electron): tsc problems in `src/broken.ts` as underlines, glyphs and a hover
   message; search; the comment offer and a draft under lines 5-6; a gutter click and a debugpy stop on line 5 with
   `value = 0` under it; an unsaved dot, a conflict and Reload; light and dark. Screenshots: scratchpad `wave7-shots/`.
+
+### Wave 7 follow-up: unsaved edits survive reloads, closes and quits
+
+- **Browser.** While any buffer is dirty, `guardUnload` (`workbench/editor.ts`, called by `EditorProvider`) keeps a
+  `beforeunload` handler on the window, so a reload or a tab close shows the browser's leave-page confirmation; it is
+  removed once nothing is dirty (a memo, so it only changes when "any dirty" flips).
+- **Desktop.** Electron keeps a page that cancels its unload without asking, and emits `will-prevent-unload`.
+  `windows.ts` (`registerWindow`) answers it with a native dialog, "You have unsaved changes": **Quit anyway** while
+  quitting, else **Discard changes**, or **Cancel** (default and escape answer). Discarding lets the page go; Cancel
+  keeps it and, during a quit, clears the quitting flag. The decision is `unsaved.ts` (pure). Test hook:
+  `OPENCODE_SPICY_UNSAVED_ANSWER=discard|cancel` answers without a dialog, so an automated run never shows one. Save
+  all was left out (it needs the renderer to save first); Cancel, then Cmd+S, does it.
+- **Quit order.** The sidecar wait moved from `before-quit` to `will-quit` (`index.ts`): the windows close first, so a
+  window with unsaved edits can cancel the quit while the sidecar still runs; after every window closed, the quit
+  waits for the sidecar stop and quits again, as before. Relaunch, update install and SIGINT/SIGTERM still stop the
+  sidecar before their quit, so a Cancel there leaves the app without its sidecar (not changed here).
+- **Cmd+S** is the app command `workbench.editor.save` (`mod+s`, `workbench/keys.ts` `EDITOR_KEYS`), registered by
+  `EditorProvider`: it saves the side panel's active file tab if it has unsaved edits, wherever the focus is. The
+  command listener runs on `document` in the capture phase, so the editor's own `Mod-s` binding was removed: one path.
+- Upstream-owned files changed: `packages/desktop/src/main/windows.ts` (the `will-prevent-unload` handler and an
+  `appQuitting` flag, `// spicy:`), `packages/desktop/src/main/index.ts` (the `before-quit` / `will-quit` change,
+  `// spicy:`).
+- Tests: `test-browser/editor-unload.test.ts` (the handler is added once when a buffer turns dirty, stays while one is,
+  is removed when none is or on dispose, and cancels the event); `test-browser` 44/44. `editor-save.spec.ts` now
+  also reloads with an unsaved edit: the `beforeunload` dialog appears, dismissing it keeps the text and the dot; and
+  Ctrl+S with the focus on the tab saves. Negative controls: without the guard the dialog never comes; without the
+  command no save happens. e2e set 33/33. Desktop `unsaved.test.ts` 3/3 (decision, test hook, prompt), desktop tests
+  70/70, typecheck clean. No Electron launched.

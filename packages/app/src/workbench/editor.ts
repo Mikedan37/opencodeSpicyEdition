@@ -2,6 +2,7 @@
 // mappings the view uses (language, line endings, problems → diagnostics, gutter marks). The view is editor-view.tsx.
 import type { EditorState, Text } from "@codemirror/state"
 import type { Workbench } from "@opencode-ai/schema/workbench"
+import { createEffect, createMemo, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { WorkbenchRequestError } from "./client"
 
@@ -77,6 +78,7 @@ export function createEditorStore(client: EditorFileClient) {
     saved,
     live,
     dirty: (path: string) => !!state.files[path]?.dirty,
+    anyDirty: () => Object.values(state.files).some((buffer) => buffer?.dirty),
     setDirty: (path: string, dirty: boolean) => {
       if (state.files[path] && state.files[path].dirty !== dirty) setState("files", path, "dirty", dirty)
     },
@@ -105,6 +107,22 @@ export function createEditorStore(client: EditorFileClient) {
 }
 
 export type EditorStore = ReturnType<typeof createEditorStore>
+
+// While any buffer has unsaved edits the page asks before it unloads: the browser's leave-page confirmation on a
+// reload or a tab close; the desktop app shows its own dialog (packages/desktop/src/main/unsaved.ts).
+export function guardUnload(dirty: () => boolean, target: Pick<Window, "addEventListener" | "removeEventListener">) {
+  const ask = (event: BeforeUnloadEvent) => {
+    event.preventDefault()
+    // Older engines show the dialog only for a set returnValue.
+    event.returnValue = ""
+  }
+  const asking = createMemo(dirty)
+  createEffect(() => {
+    if (!asking()) return
+    target.addEventListener("beforeunload", ask)
+    onCleanup(() => target.removeEventListener("beforeunload", ask))
+  })
+}
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)

@@ -450,11 +450,6 @@ function Editor(props: EditorViewProps) {
   }
   const dark = () => EditorView.darkTheme.of(theme.mode() === "dark")
 
-  const save = async () => {
-    const current = view()
-    if (current) await editor.save(path, current.state.sliceDoc())
-  }
-
   const toggleBreakpoint = (state: EditorState, block: BlockInfo) => {
     void debug.toggleBreakpoint(path, state.doc.lineAt(block.from).number).catch((error: unknown) =>
       showToast({
@@ -541,14 +536,7 @@ function Editor(props: EditorViewProps) {
     search({ top: true }),
     commentTooltip,
     THEME,
-    keymap.of([
-      { key: "Mod-s", preventDefault: true, run: () => (void save(), true) },
-      ...defaultKeymap,
-      ...historyKeymap,
-      ...searchKeymap,
-      ...lintKeymap,
-      indentWithTab,
-    ]),
+    keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, ...lintKeymap, indentWithTab]),
     EditorView.contentAttributes.of({ "aria-label": language.t("workbench.editor.label", { file: name }) }),
     EditorView.updateListener.of((update) => {
       if (!update.docChanged) return

@@ -31,7 +31,7 @@ Plan: [SPICY_IDE_MASTER_PLAN.md](SPICY_IDE_MASTER_PLAN.md). Upstream edits: [../
 
 | Item | Owner branch | Status | Evidence |
 |---|---|---|---|
-| Registry + identities + persistence | `spicy-agenthq` | integration-tested (merged `2867de790`) | JSON store, schema-validated, events; AHQ-01/02 pass |
+| Registry + identities + persistence | `spicy-agenthq` | integration-tested (merged `2867de790`; data safety `1e5950c50`) | JSON store, schema-validated, events; AHQ-01/02 pass. Wave 4: Agent HQ's own `AgentStore` (same layout/format) writes temp-then-rename; unreadable or undecodable records are quarantined as `.corrupt-<ms>`, never overwritten, and a session with a quarantined history comes back `interrupted` with the reason (AHQ-13/13b/14) |
 | OpenCode provider adapter | `spicy-agenthq` | integration-tested (fake model) | Runs in the identity's project instance; allow→ask for non-read-only tools; AHQ-03/04/05 pass |
 | Session manager, events, recovery | `spicy-agenthq` | integration-tested | Gap-free seq, compacted capped history, interrupted on restart; AHQ-06/07/10 pass. Wave 3 (merged `f3fb79f48`): one writer per session (no late delta after cancel: AHQ-11 failed 5/5 before, 0/10 after), stale-output guards scoped to the current turn, open permission requests cancelled at turn end, session titles (`title` event, AHQ-12) |
 | `AgentHQApi` routes | `spicy-agenthq` | integration-tested | 11 routes; `test:httpapi` 220/220 after merge |

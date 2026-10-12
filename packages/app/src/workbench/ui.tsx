@@ -51,12 +51,21 @@ export const OUTPUT_GLYPH = '<path d="M4 6h16M4 10h11M4 14h16M4 18h8"/>'
 export const BUG_GLYPH =
   '<path d="M9 7.5a3 3 0 0 1 6 0"/><rect x="7" y="7.5" width="10" height="12" rx="5"/><path d="M12 11v8.5M3 13.5h4M17 13.5h4M4 8.5l3 2M20 8.5l-3 2M4 19l3-2M20 19l-3-2"/>'
 export const PLAY_GLYPH = '<path d="M8 5.5v13l10.5-6.5z"/>'
+export const DEBUG_GLYPHS = {
+  start: PLAY_GLYPH,
+  continue: '<path d="M6 5.5v13"/><path d="M10 5.5v13l9-6.5z"/>',
+  pause: '<path d="M8.5 5.5v13M15.5 5.5v13"/>',
+  next: '<path d="M4.5 14a7.5 7.5 0 0 1 14.2-3.4"/><path d="M19.5 5.5v5h-5"/><circle cx="12" cy="18.5" r="1.5"/>',
+  stepIn: '<path d="M12 3.5v10"/><path d="M8 9.5l4 4 4-4"/><circle cx="12" cy="19" r="1.5"/>',
+  stepOut: '<path d="M12 13.5v-10"/><path d="M8 7.5l4-4 4 4"/><circle cx="12" cy="19" r="1.5"/>',
+  stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/>',
+} as const
 
-export function Glyph(props: { path: string }) {
+export function Glyph(props: { path: string; size?: number }) {
   return (
     <svg
-      width="24"
-      height="24"
+      width={props.size ?? 24}
+      height={props.size ?? 24}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"

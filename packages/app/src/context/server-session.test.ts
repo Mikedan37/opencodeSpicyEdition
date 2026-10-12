@@ -213,6 +213,14 @@ describe("server session", () => {
     expect(ctx.store.data.part.msg_2_assistant).toMatchObject([{ type: "text", text: "world" }])
   })
 
+  // spicy: workbench.debug.output names a debug session `sessionID`; it must not be fetched as a chat session
+  test("does not resolve the debug session named by a workbench event", () => {
+    const ctx = setup({})
+    ctx.store.apply({ type: "workbench.debug.output", properties: { sessionID: "dbg_1", rows: [] } })
+    ctx.store.apply({ type: "todo.updated", properties: { sessionID: "ses_1", todos: [] } })
+    expect(ctx.get).toEqual([{ sessionID: "ses_1" }])
+  })
+
   test("resolves lineage by session ID without directory", async () => {
     const ctx = setup({ child: session("child", "root"), root: session("root") })
 

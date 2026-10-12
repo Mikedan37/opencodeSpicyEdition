@@ -1,6 +1,8 @@
 import {
   createEffect,
   createMemo,
+  createRoot,
+  createSignal,
   For,
   getOwner,
   lazy,
@@ -31,13 +33,16 @@ import { useLayout } from "@/context/layout"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { Persist, persisted } from "@/utils/persist"
 import { createWorkbenchClient } from "./client"
+import { DebugProvider } from "./debug-context"
 import { createProblemsState, type ProblemFilter } from "./problems"
 import { createRunsState, isFinished } from "./runs"
-import { BUG_GLYPH, Glyph, PanelState, PLAY_GLYPH, TONE_CLASS } from "./ui"
+import { PanelState, TONE_CLASS } from "./ui"
 
 const AgentsPanel = lazy(() => import("@/agenthq/agents-panel"))
 const ProblemsPanel = lazy(() => import("./problems-panel"))
 const OutputPanel = lazy(() => import("./output-panel"))
+const DebugConsolePanel = lazy(() => import("./debug-console"))
+const DebugRunPanel = lazy(() => import("./debug-run"))
 
 const runEvents = {
   updated: Schema.decodeUnknownOption(Workbench.Event.RunUpdated.data),
@@ -111,11 +116,24 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       terminal.cancelFocus()
       setPanel("tab", next)
     }
+    // The panels' opened flags live in the layout; build a layout view only when a command needs it, in a root that is
+    // disposed right away, so this provider adds no per-session-switch memos (useSessionLayout would) and none pile up.
+    const withView = (fn: (view: ReturnType<typeof layout.view>) => void) =>
+      runWithOwner(owner, () =>
+        createRoot((dispose) => {
+          fn(layout.view(sessionKey()))
+          dispose()
+        }),
+      )
     const show = (next: WorkbenchTab) => {
       open(next)
-      // The panel's opened flag is global; build a layout view only when a command needs it, so this provider adds no
-      // per-session-switch memos (useSessionLayout would).
-      runWithOwner(owner, () => layout.view(sessionKey()).terminal.open())
+      withView((view) => view.terminal.open())
+    }
+    // The Debug tab of the side panel (workbench/debug-side.tsx) shows over whatever tab the panel has selected.
+    const [side, setSide] = createSignal(false)
+    const showSide = () => {
+      withView((view) => !view.reviewPanel.opened() && view.reviewPanel.open())
+      setSide(true)
     }
     command.register("workbench", () => [
       {
@@ -148,7 +166,11 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       },
       open,
       show,
+      side,
+      showSide,
+      hideSide: () => setSide(false),
       directory,
+      client,
       problems,
       runs,
       problemFilter: { state: problemFilter, set: setProblemFilter },
@@ -159,7 +181,9 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
 export function WorkbenchProviders(props: ParentProps) {
   return (
     <AgentHQProvider>
-      <WorkbenchProvider>{props.children}</WorkbenchProvider>
+      <WorkbenchProvider>
+        <DebugProvider>{props.children}</DebugProvider>
+      </WorkbenchProvider>
     </AgentHQProvider>
   )
 }
@@ -234,18 +258,10 @@ export function WorkbenchTabContent(props: { tab: WorkbenchTab }) {
             <OutputPanel />
           </Match>
           <Match when={props.tab === "debug"}>
-            <PanelState
-              icon={<Glyph path={BUG_GLYPH} />}
-              title={language.t("workbench.debug.title")}
-              description={language.t("workbench.debug.description")}
-            />
+            <DebugConsolePanel />
           </Match>
           <Match when={props.tab === "run"}>
-            <PanelState
-              icon={<Glyph path={PLAY_GLYPH} />}
-              title={language.t("workbench.run.title")}
-              description={language.t("workbench.run.description")}
-            />
+            <DebugRunPanel />
           </Match>
         </Switch>
       </Suspense>

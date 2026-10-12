@@ -204,3 +204,142 @@ real output is usually uncolored; colors are covered by unit tests and the e2e s
   navigation 23.6 → 24.7 ms, cold tab switch 21.9 → 24.2 ms (ranges 20.6–22.4 / 22.3–27.3), v2 closed cold 17.3 → 18.3
   ms, v2 open cold 9.8 → 13.4 ms (ranges 8.1–12.4 / 7.9–19.2). Nothing added in wave 2 runs on a session switch; the new
   panels are lazy chunks.
+
+## Wave 3: debugger UI
+
+Built on the `spicy-dap` routes and events (`docs/spicy/notes-dap.md`, "UI reference"). State: `src/workbench/debug.ts`
+(pure store, unit tested) behind `DebugProvider` (`debug-context.tsx`, inside `WorkbenchProviders`), which follows
+`workbench.debug.updated` / `workbench.debug.output` / `pty.exited` and registers the debugger commands.
+
+### What exists
+
+- **Debug tab in the side panel** (v2 layout, `debug-side.tsx` + lazy `debug-panel.tsx`): a `Debug` trigger after
+  Review/Context (amber dot while paused, green while running). It shows over whatever tab the panel has selected; any
+  other tab or file opening hides it (other contents stay mounted, hidden by `debug-side.css`). Contents: toolbar
+  (start, continue/pause, step over/into/out, stop; a disabled button says why in its tooltip: ending, the agent drives,
+  starting, running), session picker, owner chip (You / Agent / No owner / Ending) with **Take over**
+  (`POST /owner {owner:"human"}`), status line ("Paused: breakpoint", the exception id/description, a failed session's
+  error verbatim), call stack (click selects the frame; the arrow opens its file at the line), variables of the top
+  frame as a lazy tree (children paged 50 at a time with "Load more"; open nodes stay open across steps and reload with
+  the new references), watches, breakpoints and exception filters.
+- **Start dialog** (F5 with no live session, or the toolbar): a program path (prefilled with the active `.py` file),
+  arguments (quotes group words), "Pause on the first line", or a `.vscode/launch.json` configuration (names read with
+  a small JSONC scanner; the server resolves the configuration). The active file is sent as `${file}`. Saved
+  breakpoints go along as absolute paths, and saved exception filters for the adapter the server will pick. A refusal
+  is shown as the server words it ("Developer Mode off — run sudo DevToolsSecurity -enable", missing debugpy, …) and
+  the dialog stays open. On success the bottom panel opens on the Debug Console.
+- **Breakpoints** are saved per workspace (project-relative paths). Edits sync to every running/paused session the
+  human drives (an idle session would be claimed, an agent's would refuse with 409); the adapter's `verified` comes back
+  per session and an unverified breakpoint is drawn hollow with its message. Conditions, hit counts and log messages are
+  edited inline; a field the selected session's adapter lacks (`supportsConditionalBreakpoints`,
+  `supportsHitConditionalBreakpoints`, `supportsLogPoints`) is disabled and says so. Exception filters are a static
+  per-adapter list (the session's capabilities hold only booleans): debugpy raised/uncaught/userUnhandled (server
+  default: uncaught), lldb-dap cpp/objc/swift throw/catch; changes are saved per adapter and pushed to the sessions of
+  that adapter the human drives.
+- **Watches** are saved per workspace and evaluate in the selected frame on each stop and frame change, but only while
+  the human drives the session (they run program code); otherwise they keep their last values (dimmed) and offer
+  "Evaluate now".
+- **Debug Console** (bottom tab, lazy `debug-console.tsx`): `GET /output?after=0` once per session merged with live
+  rows by `seq` (duplicates dropped, order kept), the server's truncation row, a client cap of 256 KB with its own
+  "… N earlier rows dropped (256 KB output cap)" row (the server's dropped count included), Output / Errors / Debugger
+  filters (stdout, stderr, adapter console; telemetry never reaches the client), attribution chips (you / agent /
+  program / debugger) where the author changes, stop and exception locations that open the file, and an input that
+  evaluates in the selected frame (disabled unless paused). Completions come from `GET /completions` (150 ms debounce,
+  only with `supportsCompletionsRequest`): Up/Down move, Tab/Enter accept, Escape closes. Up/Down otherwise walk the
+  saved history (50). Results with a `variablesReference` expand like variables while their pause is current.
+- **Run tab** (`debug-run.tsx`): the selected session's program PTY (`ptyID`) in the existing `Terminal` component; the
+  terminal context's remove-on-exit is not involved, so the terminal stays after the program exits with "Exited with
+  code N" from `pty.exited`. Switching tabs mounts it again with its saved buffer and reconnects. Without a PTY
+  (debugpy's default internal console) the tab says so and links to the Debug Console.
+- **Editor gutter** (`debug-file.tsx`, provided app-wide through `FileComponentProvider` in `app.tsx`): in the file
+  viewer (the `File` instance with line selection; timeline previews and diffs are untouched), red dots for breakpoints
+  (amber for conditions/log points, hollow when unverified), the selected frame's line tinted amber with an amber
+  gutter bar, and under the top frame's paused line a row with the values of the locals named on that line (shortened;
+  the Debug tab has them in full). Pierre renders lines in a shadow root, so these are inline styles on its
+  `[data-column-number]` / `[data-line]` nodes, reapplied by MutationObservers whenever it re-renders them; the values
+  row is a pierre annotation appended after the file view's own (comment) annotations.
+- **Keys** (Debug category, rebindable): F5 start/continue, Shift+F5 stop, F10 step over, F11 step into, Shift+F11 step
+  out, F9 toggle breakpoint, plus Pause and Show debugger in the palette. They fire while typing; the list lives in
+  `src/workbench/keys.ts` (`SPICY_EDITABLE_KEYBIND_IDS`), which `context/command.tsx` spreads into
+  `EDITABLE_KEYBIND_IDS`, so later fork keys are added there without touching `command.tsx` again. Inapplicable keys
+  are hidden from the palette but stay bound (a disabled command would let F5 reload the page). F9 toggles the line
+  the active viewer shows selected, else the paused line when that file is paused.
+- A stop the human drives opens its file scrolled to the paused line, unless the Debug tab is in front. Debug paths
+  open files without selecting the line: the file view keeps the first selection pierre reports (`note.selected` in
+  `file-tabs.tsx`), so a later programmatic selection in the same file would not show.
+
+### Files
+
+New (fork-owned): `packages/app/src/workbench/{debug,debug-context,debug-ui,debug-panel,debug-side,debug-start,
+debug-console,debug-run,debug-file,keys}.ts(x)`, `debug-side.css`; client routes added to `client.ts`; tests
+`src/workbench/debug.test.ts`, `test-browser/debug-store.test.ts`, `e2e/regression/debug-panel.spec.ts`.
+
+Upstream-owned files touched in wave 3 (each edit marked `spicy:`):
+
+| File                                                     | Change                                                                                                                                                                                                  | Why                                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `packages/app/src/pages/session/session-side-panel.tsx`  | import; `useDebugSideTab(() => tabs().active())`; v2 `Tabs` `value` / `onChange` / `data-workbench-side`; `<DebugSideTrigger />` after the Context trigger; `<DebugSideContent />` after the file browser | Debug tab in the side panel                                           |
+| `packages/app/src/app.tsx`                               | `File` import replaced by `DebugFile`; `FileComponentProvider component={DebugFile}`                                                                                                                     | Gutter marks in the file viewer                                       |
+| `packages/app/src/context/command.tsx`                   | import `SPICY_EDITABLE_KEYBIND_IDS` (`workbench/keys.ts`) and spread it into `EDITABLE_KEYBIND_IDS`                                                                                                     | Debugger keys fire while typing; the shared seam for later fork keys |
+| `packages/app/src/context/server-session.ts`             | `eventSessionID` skips `workbench.*` events                                                                                                                                                             | `workbench.debug.output` names a debug session `sessionID`; it was fetched as a chat session (`GET /session/dbg_…` → 500) on every output batch |
+| `packages/app/src/context/server-session.test.ts`        | one test for the change above                                                                                                                                                                           |                                                                       |
+
+### Assumptions about the backend
+
+- Completion items count `start` from 0 (debugpy computes `column - 1 - len(qualifier)`, like VS Code expects) even
+  though the session asks for 1-based columns; without `start` the identifier before the cursor is replaced.
+- Variable references die with their stop; evaluate results expand only while `row.at >= stop.at`.
+- Route replies (control, owner, stop) are applied unless an event already moved the session (a newer `stop.at` or an
+  end), so a slow reply never undoes a stop.
+- Every evaluate, watches included, is also a console row (`eval` + `result`), so watches show up in the console. A
+  watch flag on the evaluate route would let the console skip them.
+- Contract smell worth fixing upstream of the UI: `workbench.debug.output.sessionID` holds a debug session id; naming
+  it `debugSessionID` would keep generic `sessionID` handlers away.
+
+### Gaps
+
+- Legacy side panel (new layout designs off) has no Debug tab; the bottom tabs need the v2 terminal panel too.
+- Variables only for the top frame (the routes have no scopes for other frames); other frames get a note.
+- No gutter click to toggle a breakpoint: pierre's line-number click opens the file view's comment draft. F9 (on the
+  selected or paused line) and the breakpoint list cover it; clicking a line to select it also opens that draft.
+- The Debug tab and the file viewer share the side panel, so opening a frame's file leaves the Debug tab.
+- Exception filter checkboxes show the saved preference per adapter, not the filters an agent-started session uses;
+  breakpoints shown are the human's, not ones the agent set.
+- Function and data breakpoints, investigations, and "hand to agent" / "release" are not exposed yet.
+- The Run tab's exit code needs this window to see `pty.exited`; after a reload an ended program shows "Ended".
+- Paths are treated as POSIX (`relative`/`absolute` in `debug.ts`).
+
+### Wave 3 tests and verification
+
+- Unit: `src/workbench/debug.test.ts` (15: session order/adoption, frame reset and page pruning per stop, a control
+  reply never undoing a newer stop, list merge, console merge/cap/dropped counts/late backlog, history, completion
+  range, breakpoint save/sync/verified/refusal, start payload, exception defaults, watches, launch.json JSONC, args,
+  adapter guess); `test-browser/debug-store.test.ts` (loaders called from effects neither loop nor retry a failure,
+  and reload after a stop); `server-session.test.ts` (+1, workbench events are not chat sessions).
+- With bun 1.4.3 the tsx-importing unit and browser tests fail on `jsxDEV`; they run with
+  `bun --tsconfig-override=<tsconfig extending packages/app/tsconfig.json with "jsx": "react-jsx",
+  "jsxImportSource": "solid-js/h"> test …`: `src` 769/770 (the one failure is `i18n/desktop-native.test.ts`
+  "likely subtags", bun's ICU data, unrelated), `test-browser` 43/43. `bun run typecheck`: clean.
+- e2e `debug-panel.spec.ts` (mocked routes, injected events): side panel (start dialog with a verbatim refusal, stack,
+  lazy variables 50 + "Load more", watches per frame, stepping, agent ownership and Take over, F9, conditions per
+  capability, exception filters, hiding on another tab); Debug Console (backlog + live merge, truncation row, filters,
+  chips, completions, evaluate, expandable result, exception row, history, disabled while running); Run tab (PTY
+  terminal, exit code, remount, internal-console state); gutter (paused line, values row, dots, F9, frame selection).
+  Passes with the agenthq, review, file browser and terminal regression specs (one hover test in
+  `review-line-comment.spec.ts` flaked under parallel load and passed 15/15 with `--repeat-each=3`).
+- Real flow (isolated XDG dirs, real server from this branch, debugpy from VS Code's bundle on Homebrew Python 3.14,
+  Playwright Chromium against the Vite app; no Electron, no lldb): F5 → start `app.py` paused on entry; the file opened
+  with line 1 marked; clicked line 13 + F9 → `POST …/breakpoints` with the absolute path, debugpy verified it; F5 →
+  stopped at `main:13`, values row `items = […]`, Debug tab: stack `main app.py:13 < <module> app.py:21`, locals
+  items/name/total, `items` children 50 then 63 after "Load more"; watch `total + 100` = 100; F10 → 14, F11 → `helper:5`
+  (watch shows the NameError), Shift+F11 → back in `main`; console completions for `ite` (iter, items, item), Tab
+  accepted, `items[:3]` evaluated and expanded (6 children); Shift+F5 ended it ("program exited with code 247");
+  launch.json "App in terminal" (`console: integratedTerminal`) → `ptyID`, Run tab terminal printed the program's
+  output and showed "Exited with code 0". The final run had no 5xx responses and no console errors. It found and
+  fixed: the `GET /session/dbg_…` 500s, a variables retry loop after a 502 for a stale reference, console results
+  expanding with stale references, F9 using a selection the viewer did not show, and over-wide values rows.
+- Benchmarks (first navigation + session tab switching, production builds, 3 runs of `fe1c8528b` and 3 of this HEAD,
+  interleaved): within run-to-run noise, e.g. cold tab switch 25.0 → 22.1 ms (ranges 23.2–26.6 / 19.8–22.7), v2 open
+  hot stable 19.4 → 16.5 ms, v2 closed cold stable 34.5 → 35.5 ms (33.5–35.2 / 35.2–35.8), first navigation 22.9 →
+  23.1 ms. An earlier pass showed v2 open hot stable 16.8 → 19.3 ms; since then the File wrapper calls `File(props)`
+  directly for diffs and previews (no spread proxy per review diff), and the rerun above is with that change.

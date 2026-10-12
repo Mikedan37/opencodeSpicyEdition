@@ -3,7 +3,7 @@ import * as Sentry from "@sentry/solid"
 import { I18nProvider } from "@opencode-ai/ui/context"
 import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { FileComponentProvider } from "@opencode-ai/ui/context/file"
-import { File } from "@opencode-ai/session-ui/file"
+import { DebugFile } from "@/workbench/debug-file" // spicy: session-ui File plus debugger gutter marks
 import { Font } from "@opencode-ai/ui/font"
 import { Splash } from "@opencode-ai/ui/logo"
 import { ThemeProvider } from "@opencode-ai/ui/theme/context"
@@ -415,7 +415,7 @@ export function AppBaseProviders(
               <QueryProvider>
                 <WslServersProvider>
                   <DialogProvider>
-                    <FileComponentProvider component={File}>{props.children}</FileComponentProvider>
+                    <FileComponentProvider component={DebugFile}>{props.children}</FileComponentProvider>
                   </DialogProvider>
                 </WslServersProvider>
               </QueryProvider>

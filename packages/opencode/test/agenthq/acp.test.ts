@@ -1,20 +1,24 @@
 // AHQ-08: the ACP adapter against a real ACP agent, `opencode acp` from this tree, driven only through the
-// Agent HQ HTTP routes. The agent talks to the fake model server, so no tokens are spent, and runs with its
-// own HOME/XDG directories.
+// Agent HQ HTTP routes of a real listener with a password, the way the desktop app runs the server. The agent
+// talks to the fake model server, so no tokens are spent, and runs with its own HOME/XDG directories. Agent HQ
+// gives it the Workbench MCP server (`opencode workbench mcp` from this tree), which reaches the listener with
+// the credentials from its environment.
 import { describe, expect } from "bun:test"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Effect, Layer } from "effect"
 import fs from "fs/promises"
+import net from "node:net"
 import path from "path"
+import { Server } from "../../src/server/server"
 import { resetDatabase } from "../fixture/db"
-import { tmpdirScoped } from "../fixture/fixture"
+import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { reply, TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
-import { httpApiLayer, requestInDirectory } from "../server/httpapi-layer"
 
 const testStateLayer = Layer.effectDiscard(
   Effect.acquireRelease(
@@ -29,7 +33,6 @@ const it = testEffect(
     LayerNode.compile(FSUtil.node),
     LayerNode.compile(CrossSpawnSpawner.node),
     TestLLMServer.layer,
-    httpApiLayer,
   ),
 )
 
@@ -40,11 +43,46 @@ type EventOf<T extends AgentHQ.AgentEvent["type"]> = Extract<AgentHQ.AgentEvent,
 const ofType = <T extends AgentHQ.AgentEvent["type"]>(list: readonly Envelope[], type: T) =>
   list.flatMap((item) => (item.event.type === type ? [item.event as EventOf<T>] : []))
 
+const auth = { username: "opencode", password: "ahq-bridge-secret" }
+const TOOLS = ["workbench_problems", "workbench_check", "workbench_doctor"].map((name) => `opencode-workbench_${name}`)
+
+/** A real listener with a password; Agent HQ hands its URL to the Workbench bridge. */
+const listener = Effect.acquireRelease(
+  Effect.promise(async () => {
+    const saved = {
+      flag: [Flag.OPENCODE_SERVER_USERNAME, Flag.OPENCODE_SERVER_PASSWORD],
+      env: [process.env.OPENCODE_SERVER_USERNAME, process.env.OPENCODE_SERVER_PASSWORD],
+    }
+    Flag.OPENCODE_SERVER_USERNAME = process.env.OPENCODE_SERVER_USERNAME = auth.username
+    Flag.OPENCODE_SERVER_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD = auth.password
+    // An explicit free port: port 0 would try 4096 first, which a developer's own opencode may be using.
+    const port = await new Promise<number>((resolve) => {
+      const probe = net.createServer().listen(0, "127.0.0.1", () => {
+        const { port } = probe.address() as net.AddressInfo
+        probe.close(() => resolve(port))
+      })
+    })
+    return { saved, server: await Server.listen({ hostname: "127.0.0.1", port }) }
+  }),
+  ({ saved, server }) =>
+    Effect.promise(async () => {
+      await server.stop(true)
+      await disposeAllInstances()
+      ;[Flag.OPENCODE_SERVER_USERNAME, Flag.OPENCODE_SERVER_PASSWORD] = saved.flag
+      const [username, password] = saved.env
+      if (username === undefined) delete process.env.OPENCODE_SERVER_USERNAME
+      else process.env.OPENCODE_SERVER_USERNAME = username
+      if (password === undefined) delete process.env.OPENCODE_SERVER_PASSWORD
+      else process.env.OPENCODE_SERVER_PASSWORD = password
+    }),
+)
+
 /** A launcher script for `opencode acp` with isolated HOME/XDG dirs and the fake model as its only provider. */
 const launcher = (llmUrl: string) =>
   Effect.gen(function* () {
     const home = yield* tmpdirScoped()
-    const config = { ...testProviderConfig(llmUrl), model: "test/test-model", permission: { bash: "ask" } }
+    const permission = { bash: "ask", "opencode-workbench_*": "ask" }
+    const config = { ...testProviderConfig(llmUrl), model: "test/test-model", permission }
     const env = {
       HOME: home,
       OPENCODE_TEST_HOME: home,
@@ -78,16 +116,20 @@ const launcher = (llmUrl: string) =>
 
 describe("agenthq acp", () => {
   it.live(
-    "AHQ-08 ACP adapter against opencode acp: prompt, stream, permission via the route, cancel, process gone",
+    "AHQ-08 ACP adapter against opencode acp: prompt, stream, permission via the route, Workbench tools, cancel, process gone",
     () =>
       Effect.gen(function* () {
         const llm = yield* TestLLMServer
+        const { server } = yield* listener
         const dir = yield* tmpdirScoped({ git: true })
         const script = yield* launcher(llm.url)
-        const call = (route: string, init?: RequestInit) =>
-          Effect.gen(function* () {
-            const response = yield* requestInDirectory(route, dir, init)
-            return { status: response.status, body: JSON.parse(yield* response.text) as unknown }
+        const call = (route: string, init: RequestInit = {}) =>
+          Effect.promise(async () => {
+            const headers = new Headers(init.headers)
+            headers.set("authorization", `Basic ${btoa(`${auth.username}:${auth.password}`)}`)
+            headers.set("x-opencode-directory", dir)
+            const response = await fetch(new URL(route, server.url), { ...init, headers })
+            return { status: response.status, body: JSON.parse(await response.text()) as unknown }
           })
         const post = (route: string, body: unknown) =>
           call(route, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
@@ -102,6 +144,15 @@ describe("agenthq acp", () => {
           const found = Bun.spawnSync(["pgrep", "-f", `acp --cwd ${dir}`])
           return found.stdout.toString().trim()
         })
+        // The Workbench MCP server the agent started for this session, with its full command line.
+        const bridge = Effect.promise(async () => {
+          const found = Bun.spawnSync(["pgrep", "-lf", `workbench mcp --url ${server.url.origin} --directory ${dir}`])
+          return found.stdout.toString().trim()
+        })
+
+        // Positive control: the listener refuses a request without the password.
+        const anonymous = yield* Effect.promise(() => fetch(new URL("/agenthq/agents", server.url)))
+        expect(anonymous.status).toBe(401)
 
         const created = yield* post("/agenthq/agents", {
           name: "Relay",
@@ -120,6 +171,7 @@ describe("agenthq acp", () => {
         expect(yield* running).not.toBe("")
 
         // Prompt → streamed reply with a tool that the agent must ask about.
+        const before = (yield* llm.hits).length
         yield* llm.push(reply().tool("bash", { command: "echo acp-permission", description: "Echo a marker" }))
         yield* llm.push(reply().text("acp ").text("done").stop())
         expect((yield* post(`/agenthq/sessions/${session.id}/messages`, { text: "run the marker" })).body).toBe(true)
@@ -155,6 +207,40 @@ describe("agenthq acp", () => {
         expect(ofType(history, "turn.completed")).toEqual([{ type: "turn.completed", stopReason: "end_turn" }])
         expect((yield* detail(session.id)).session).toMatchObject({ status: "idle", pendingPermissions: 0 })
 
+        // The model was offered the three Workbench tools.
+        const asked = (yield* llm.hits)
+          .slice(before)
+          .find((hit) => !JSON.stringify(hit.body).includes("Generate a title"))
+        TOOLS.forEach((tool) => expect(JSON.stringify(asked?.body)).toContain(tool))
+
+        // A Workbench tool call asks the human first, then reaches the listener through the bridge.
+        yield* llm.push(reply().tool(TOOLS[0], {}))
+        yield* llm.push(reply().text("no problems").stop())
+        yield* post(`/agenthq/sessions/${session.id}/messages`, { text: "list the problems" })
+        const ask = yield* waitFor(
+          session.id,
+          (list) => ofType(list, "permission.requested").find((item) => item.requestID !== request.requestID),
+          "the Workbench tool call never asked for permission",
+        )
+        expect(
+          ofType((yield* detail(session.id)).history, "tool").filter((item) => item.state === "completed"),
+        ).toHaveLength(1)
+        yield* post(`/agenthq/sessions/${session.id}/permissions/${ask.requestID}`, {
+          optionID: ask.options.find((option) => option.kind === "allow_once")!.id,
+        })
+        const checked = yield* waitFor(
+          session.id,
+          (list) => (ofType(list, "turn.completed").length > 1 ? list : undefined),
+          "the Workbench turn never completed",
+        )
+        // The bridge's summary of the listener's problems: its URL and credentials worked.
+        const problems = ofType(checked, "tool").filter((item) => item.title === TOOLS[0])
+        expect(problems.at(-1)?.state).toBe("completed")
+        expect(problems.at(-1)?.output).toMatch(/^\d+ errors, \d+ warnings, \d+ info, \d+ hints/)
+        const command = yield* bridge
+        expect(command).toContain(`--directory ${dir}`)
+        expect(command).not.toContain(auth.password)
+
         // Cancel a turn that would never end on its own.
         const calls = (yield* llm.hits).length
         yield* llm.push(reply().hang())
@@ -175,13 +261,18 @@ describe("agenthq acp", () => {
         yield* Effect.sleep("500 millis")
         const after = yield* detail(session.id)
         expect(after.session.status).toBe("cancelled")
-        expect(ofType(after.history, "turn.completed")).toHaveLength(1)
+        expect(ofType(after.history, "turn.completed")).toHaveLength(2)
 
         // Removing the identity ends the agent's whole process group.
         expect((yield* call(`/agenthq/agents/${agentID}`, { method: "DELETE" })).body).toBe(true)
         yield* pollWithTimeout(
           running.pipe(Effect.map((pids) => (pids === "" ? true : undefined))),
           "the ACP agent process survived its identity",
+          "10 seconds",
+        )
+        yield* pollWithTimeout(
+          bridge.pipe(Effect.map((pids) => (pids === "" ? true : undefined))),
+          "the Workbench bridge survived its agent",
           "10 seconds",
         )
       }),

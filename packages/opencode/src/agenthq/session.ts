@@ -28,6 +28,7 @@ import { AcpProvider } from "./providers/acp"
 import { ClaudeCodeProvider } from "./providers/claude-code"
 import { AgentDetect } from "./providers/detect"
 import { OpenCodeProvider } from "./providers/opencode"
+import { AgentWorkbench } from "./workbench"
 import { ReviewChanges } from "@/review/changes" // spicy: review hook
 
 const ACTIVE = new Set<AgentHQ.AgentSessionStatus>(["starting", "thinking", "working", "needs_approval", "blocked"])
@@ -326,6 +327,7 @@ const layer = Layer.effect(
         agent: session.agent,
         providerSessionID: session.info.providerSessionID,
         emit: emitter(session),
+        workbench: yield* AgentWorkbench.server(session.agent.workingDirectory ?? session.agent.projectDirectory),
       })
       return session.handle
     })
@@ -435,6 +437,7 @@ const layer = Layer.effect(
         agent,
         ...(input?.title ? { title: input.title } : {}),
         emit: emitter(session),
+        workbench: yield* AgentWorkbench.server(agent.workingDirectory ?? agent.projectDirectory),
       })
       session.handle = handle
       session.info = { ...session.info, providerSessionID: handle.providerSessionID }

@@ -32,7 +32,7 @@ export const capabilities: AgentHQ.ProviderCapabilities = {
   cancel: true,
   resume: false,
   models: false,
-  mcpTools: false,
+  mcpTools: true,
   notes: ["Resumes only when the agent advertises session/resume or session/load"],
 }
 
@@ -212,7 +212,7 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
   const createSession = Effect.fn("AgentHQ.acp.createSession")(function* (session: AgentProvider.SessionInput) {
     const opened = yield* open(session.agent, session.emit)
     const created = yield* opened
-      .call("session/new", () => opened.connection.newSession({ cwd: opened.cwd, mcpServers: [] }))
+      .call("session/new", () => opened.connection.newSession({ cwd: opened.cwd, mcpServers: mcp(session.workbench) }))
       .pipe(Effect.tapError(() => opened.close))
     return handle(opened, created.sessionId)
   })
@@ -225,7 +225,9 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
     const advertised = opened.initialized.agentCapabilities
     if (advertised?.sessionCapabilities?.resume) {
       yield* opened
-        .call("session/resume", () => opened.connection.resumeSession({ sessionId, cwd: opened.cwd, mcpServers: [] }))
+        .call("session/resume", () =>
+          opened.connection.resumeSession({ sessionId, cwd: opened.cwd, mcpServers: mcp(session.workbench) }),
+        )
         .pipe(Effect.tapError(() => opened.close))
       return handle(opened, sessionId)
     }
@@ -233,7 +235,9 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
       // session/load replays the conversation as updates; the manager already holds that history.
       opened.state.replaying = true
       yield* opened
-        .call("session/load", () => opened.connection.loadSession({ sessionId, cwd: opened.cwd, mcpServers: [] }))
+        .call("session/load", () =>
+          opened.connection.loadSession({ sessionId, cwd: opened.cwd, mcpServers: mcp(session.workbench) }),
+        )
         .pipe(
           Effect.ensuring(Effect.sync(() => (opened.state.replaying = false))),
           Effect.tapError(() => opened.close),
@@ -250,6 +254,13 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
 
   return { id: input.id, status: input.status, createSession, resumeSession } satisfies AgentProvider.Interface
 })
+
+/** The Workbench MCP server as ACP's stdio server entry (credentials only in its environment). */
+function mcp(server: AgentProvider.McpServer | undefined) {
+  if (!server) return []
+  const env = Object.entries(server.env).map(([name, value]) => ({ name, value }))
+  return [{ name: server.name, command: server.command, args: [...server.args], env }]
+}
 
 /** Per-connection client state: maps ACP updates to AgentEvents and parks permission requests. */
 class ClientState {

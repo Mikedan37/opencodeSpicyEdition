@@ -351,6 +351,8 @@ export const dict = {
   "agenthq.task.status.failed": "Failed",
   "agenthq.task.status.blocked": "Blocked",
   "agenthq.task.status.cancelled": "Cancelled",
+  "agenthq.task.needsApproval": "Waiting for your approval",
+  "agenthq.task.needsApproval.detail": "The agent asked for a permission and waits for your answer in its session.",
   "agenthq.task.start": "Start",
   "agenthq.task.retry": "Start again",
   "agenthq.task.cancel": "Cancel task",

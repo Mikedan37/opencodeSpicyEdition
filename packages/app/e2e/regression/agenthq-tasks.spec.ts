@@ -82,11 +82,30 @@ test("tasks: create with dependencies, start, review gate, approve refusal and m
   await detail.locator('[data-action="task-start"]').click()
   await expect.poll(() => mock.posts.at(-1)?.path).toBe("/agenthq/tasks/tsk_1/start")
   await expect(detail).toContainText("task-calm-river-1a2b")
-  await detail.locator('[data-action="task-open-session"]').click()
+  // The task's agent asks for a permission: the task says so and its session opens from there; coming back keeps
+  // the task selected
+  mock.emit({
+    type: "agenthq.session.updated",
+    properties: {
+      session: {
+        id: "ags_task",
+        agentID: "agt_ada",
+        provider: "opencode",
+        taskID: "tsk_1",
+        status: "needs_approval",
+        pendingPermissions: 1,
+        createdAt: 2,
+        updatedAt: 3,
+      },
+    },
+  })
+  await expect(rows.nth(0).locator('[data-slot="task-approval"]')).toHaveText("Waiting for your approval")
+  await detail.locator('[data-slot="task-approval"] button').click()
   const workspace = page.locator('[data-component="agenthq-workspace"]')
   await expect(workspace.locator('[data-session="ags_task"]')).toHaveAttribute("aria-current", "true")
   await workspace.getByRole("button", { name: "Back to agents" }).click()
   await expect(view).toBeVisible()
+  await expect(detail).toHaveAttribute("data-task", "tsk_1")
 
   // Review: the dry run comes first; a dirty project disables Approve and says why
   mock.emit(

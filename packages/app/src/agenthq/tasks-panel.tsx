@@ -94,10 +94,9 @@ export function TasksView() {
   const language = useLanguage()
   const dialog = useDialog()
   const tasks = agenthq.tasks
-  const [selected, setSelected] = createSignal<string>()
-  const current = createMemo(() => tasks.find(selected()) ?? tasks.state.tasks[0])
+  const current = createMemo(() => tasks.find(agenthq.ui.taskID) ?? tasks.state.tasks[0])
   const openDialog = (task?: Task) =>
-    dialog.show(() => <TaskDialog task={task} onSaved={(saved) => setSelected(saved.id)} />)
+    dialog.show(() => <TaskDialog task={task} onSaved={(saved) => agenthq.selectTask(saved.id)} />)
 
   return (
     <div data-component="agenthq-tasks" class="flex min-h-0 flex-1 flex-col">
@@ -130,14 +129,14 @@ export function TasksView() {
                       task={item.task}
                       depth={item.depth}
                       selected={item.task.id === current()?.id}
-                      onSelect={() => setSelected(item.task.id)}
+                      onSelect={() => agenthq.selectTask(item.task.id)}
                     />
                   </li>
                 )}
               </For>
             </ul>
             <Show when={current()} keyed>
-              {(task) => <TaskDetail task={task} onEdit={() => openDialog(task)} onSelect={setSelected} />}
+              {(task) => <TaskDetail task={task} onEdit={() => openDialog(task)} onSelect={agenthq.selectTask} />}
             </Show>
           </div>
         }
@@ -170,6 +169,7 @@ export function TasksView() {
 
 function TaskRow(props: { task: Task; depth: number; selected: boolean; onSelect: () => void }) {
   const agenthq = useAgentHQ()
+  const language = useLanguage()
   const assignee = () => agenthq.state.agents.find((agent) => agent.id === props.task.assignee)
   const waitsOn = () => props.task.dependsOn.map((id) => agenthq.tasks.find(id)).filter((task) => !!task)
   return (
@@ -214,9 +214,20 @@ function TaskRow(props: { task: Task; depth: number; selected: boolean; onSelect
           {props.task.reason}
         </span>
       </Show>
+      <Show when={waitsForApproval(agenthq, props.task)}>
+        <span data-slot="task-approval" class="truncate text-[11px] text-v2-state-fg-warning">
+          {language.t("agenthq.task.needsApproval")}
+        </span>
+      </Show>
     </button>
   )
 }
+
+// A running task whose session asked for a permission: nothing moves until the user answers it in that session.
+const waitsForApproval = (agenthq: ReturnType<typeof useAgentHQ>, task: Task) =>
+  task.status === "running" &&
+  !!task.result?.sessionID &&
+  agenthq.state.sessions[task.result.sessionID]?.status === "needs_approval"
 
 function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: string) => void }) {
   const agenthq = useAgentHQ()
@@ -292,6 +303,23 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
           </ButtonV2>
         </Show>
       </div>
+      <Show when={waitsForApproval(agenthq, props.task) && props.task.result?.sessionID}>
+        {(session) => (
+          <p
+            data-slot="task-approval"
+            class="mt-2 flex items-center gap-2 rounded-[6px] bg-v2-state-bg-warning px-2 py-1 text-[12px] text-v2-state-fg-warning"
+          >
+            {language.t("agenthq.task.needsApproval.detail")}
+            <button
+              type="button"
+              class="ml-auto shrink-0 whitespace-nowrap font-[530] underline"
+              onClick={() => agenthq.openSession(props.task.assignee, session())}
+            >
+              {language.t("agenthq.task.openSession")}
+            </button>
+          </p>
+        )}
+      </Show>
       <Show when={props.task.reason}>
         <p
           data-slot="task-reason"

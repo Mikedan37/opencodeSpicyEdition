@@ -43,6 +43,8 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
     const tasks = createTasksState(client)
     const [ui, setUi] = createStore({
       view: "agents" as "agents" | "tasks",
+      // The task shown in the Tasks view; kept here so opening a task's session and coming back keeps it.
+      taskID: undefined as string | undefined,
       status: "loading" as "loading" | "ready" | "error",
       error: undefined as unknown,
       agentID: undefined as string | undefined,
@@ -112,6 +114,7 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
         return load()
       },
       setView: (view: "agents" | "tasks") => setUi({ view, agentID: undefined, sessionID: undefined }),
+      selectTask: (taskID?: string) => setUi("taskID", taskID),
       // Opens an agent's workspace on one of its sessions (a task's session, a message's delivery).
       openSession: (agentID: string, sessionID?: string) => setUi({ agentID, sessionID }),
       refreshProviders: () => client.providers().then(store.setProviders),

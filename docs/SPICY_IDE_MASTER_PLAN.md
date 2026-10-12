@@ -131,6 +131,11 @@ Agent HQ (`AgentHQApi`, owner: agenthq agent):
 6. Tests must not need a paid model: use `opencode/test/lib/llm-server.ts` or recorded cassettes. Real-provider
    tests are opt-in and skip with a stated reason.
 7. A skipped, timed-out, unavailable or cancelled check is never a pass. Report blocked work as blocked.
+9. Automated tests must never crash a process in a way macOS reports (`abort()`, segfault, trap, `fatalError`):
+   every crash writes `~/Library/Logs/DiagnosticReports/*.ips`, and crashing an app-bundled interpreter such as
+   Python.app pops a "quit unexpectedly" dialog on the owner's screen (this happened 11 times on 2026-10-12 from
+   an `os.abort()` fixture). Simulate abrupt exits with `_exit(1)`/`os._exit(1)` or SIGKILL. Real crash
+   signatures (SIGSEGV, SIGTRAP) were verified manually once and stay manual.
 8. Commit with conventional messages (`feat(opencode): …`). Do not push, merge into `dev`, or publish.
 
 ## Phases and ownership

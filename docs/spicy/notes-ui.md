@@ -187,3 +187,20 @@ real output is usually uncolored; colors are covered by unit tests and the e2e s
   the open project through its event, went `working` → `idle` live, showed the finished dot, kept it across a reload,
   lost it once opened, and its history rendered (Markdown included) through the open project's instance. The e2e spec
   covers the same with events from another directory and two reloads.
+
+### Wave 2 tests and performance
+
+- Unit (`bun test --conditions=solid … ./src/agenthq ./src/workbench ./src/i18n/parity.test.ts`): 35 pass (new: ANSI
+  segments/256-color/truecolor, file references and URL exclusion, path resolution, run streaming/gaps/history/detail/
+  unavailable routes/check, message finality, reasoning replace, persisted seen marks). Browser-condition streaming
+  test: pass. `bun run typecheck`: clean.
+- e2e `agenthq-panel.spec.ts`: 3 tests (Agent HQ + Markdown + Problems; Output tab; cross-project + persisted seen),
+  pass with `--repeat-each=2` and 4 workers, together with the terminal and review regressions (22 runs).
+- Real server (isolated XDG dirs, OpenAI-compatible stub model, `OPENCODE_DISABLE_MODELS_FETCH=1`): Markdown streaming,
+  the Output tab from the `check` tool, the runs/check routes (applied temporarily), cross-project events and the
+  persisted finished dot, as described above.
+- Benchmarks (first navigation + session tab switching, production builds, 3 runs of the wave 1 integration commit
+  `3a601fc50` and 3 of this HEAD, interleaved): medians within run-to-run noise with overlapping ranges, e.g. first
+  navigation 23.6 → 24.7 ms, cold tab switch 21.9 → 24.2 ms (ranges 20.6–22.4 / 22.3–27.3), v2 closed cold 17.3 → 18.3
+  ms, v2 open cold 9.8 → 13.4 ms (ranges 8.1–12.4 / 7.9–19.2). Nothing added in wave 2 runs on a session switch; the new
+  panels are lazy chunks.

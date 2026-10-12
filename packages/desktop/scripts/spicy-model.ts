@@ -8,6 +8,11 @@
 //
 // Replies: a prompt containing "slow" gets a long reply at 120 ms per word (time to cancel or quit mid-turn);
 // title requests get a short title; anything else gets the introduction below at 70 ms per word.
+//
+// Scripts (`scripts` option): a conversation whose latest user message contains a script's trigger gets the script's
+// reply for its step, the number of assistant messages after that user message. A reply is a text or one tool call,
+// so a turn can call tools (each answered by the real tool through opencode) and then finish with text. Stateless:
+// every conversation (an Agent HQ session, a task's brief) runs its own copy.
 
 export const INTRO =
   "Hi, I'm Felix, an OpenCode agent answering from the Spicy scripted demo model. " +
@@ -15,7 +20,7 @@ export const INTRO =
   "the same deltas, completion and history a real model would produce, without spending a single token. " +
   "Ask me for something slow to watch a turn get cancelled."
 
-const SLOW = Array.from(
+export const SLOW = Array.from(
   { length: 40 },
   (_, index) =>
     `Paragraph ${index + 1}: this deliberately slow answer keeps streaming so the turn can be cancelled or the app quit while it runs.`,
@@ -25,12 +30,17 @@ export type ScriptedRequest = {
   id: number
   kind: "title" | "chat"
   prompt: string
+  tool?: string // the tool this reply called
   startedAt: number
   finishedAt?: number
   aborted: boolean
 }
 
-export function serveScriptedModel(options: { port?: number; wordDelayMs?: number; slowWordDelayMs?: number } = {}) {
+export type Reply = { text: string } | { tool: string; input: Record<string, unknown> }
+
+export function serveScriptedModel(
+  options: { port?: number; wordDelayMs?: number; slowWordDelayMs?: number; scripts?: Record<string, Reply[]> } = {},
+) {
   const requests: ScriptedRequest[] = []
   const server = Bun.serve({
     port: options.port ?? 0,
@@ -46,18 +56,37 @@ export function serveScriptedModel(options: { port?: number; wordDelayMs?: numbe
       const body = (await req.json()) as { messages?: Message[]; stream?: boolean }
       const messages = body.messages ?? []
       const title = messages.some((item) => item.role === "system" && text(item).includes("title generator"))
-      const prompt = text(messages.findLast((item) => item.role === "user"))
+      const last = messages.findLastIndex((item) => item.role === "user")
+      const prompt = text(messages[last])
+      const script = title
+        ? undefined
+        : Object.entries(options.scripts ?? {}).find(([trigger]) => prompt.includes(trigger))?.[1]
+      const step = messages.slice(last + 1).filter((item) => item.role === "assistant").length
+      const slow = !title && !script && /\bslow\b/i.test(prompt)
+      const answer: Reply = title
+        ? { text: "Felix demo" }
+        : script
+          ? (script[step] ?? { text: "Done." })
+          : { text: slow ? SLOW : INTRO }
       const record: ScriptedRequest = {
         id: requests.length + 1,
         kind: title ? "title" : "chat",
         prompt,
+        ...("tool" in answer ? { tool: answer.tool } : {}),
         startedAt: Date.now(),
         aborted: false,
       }
       requests.push(record)
-      const slow = !title && /\bslow\b/i.test(prompt)
-      const reply = title ? "Felix demo" : slow ? SLOW : INTRO
-      const delay = title ? 0 : slow ? (options.slowWordDelayMs ?? 120) : (options.wordDelayMs ?? 70)
+      const call =
+        "tool" in answer
+          ? {
+              id: `call_${record.id}`,
+              type: "function",
+              function: { name: answer.tool, arguments: JSON.stringify(answer.input) },
+            }
+          : undefined
+      const reply = "text" in answer ? answer.text : ""
+      const delay = title || script ? 0 : slow ? (options.slowWordDelayMs ?? 120) : (options.wordDelayMs ?? 70)
 
       if (!body.stream) {
         record.finishedAt = Date.now()
@@ -66,8 +95,14 @@ export function serveScriptedModel(options: { port?: number; wordDelayMs?: numbe
           object: "chat.completion",
           created: Math.floor(Date.now() / 1000),
           model: "scripted",
-          choices: [{ index: 0, message: { role: "assistant", content: reply }, finish_reason: "stop" }],
-          usage: usage(prompt, reply),
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: call ? null : reply, ...(call ? { tool_calls: [call] } : {}) },
+              finish_reason: call ? "tool_calls" : "stop",
+            },
+          ],
+          usage: usage(prompt, call?.function.arguments ?? reply),
         })
       }
 
@@ -92,7 +127,21 @@ export function serveScriptedModel(options: { port?: number; wordDelayMs?: numbe
       return new Response(
         new ReadableStream<Uint8Array>({
           async start(controller) {
-            controller.enqueue(chunk({ role: "assistant", content: "" }))
+            controller.enqueue(chunk(call ? { role: "assistant" } : { role: "assistant", content: "" }))
+            if (call) {
+              // The name first, then the arguments, as OpenAI streams a tool call.
+              controller.enqueue(
+                chunk({ tool_calls: [{ index: 0, ...call, function: { ...call.function, arguments: "" } }] }),
+              )
+              controller.enqueue(
+                chunk({ tool_calls: [{ index: 0, function: { arguments: call.function.arguments } }] }),
+              )
+              controller.enqueue(chunk({}, "tool_calls", { usage: usage(prompt, call.function.arguments) }))
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+              record.finishedAt = Date.now()
+              controller.close()
+              return
+            }
             for (const word of words) {
               if (cancelled) return
               if (delay) await Bun.sleep(delay)

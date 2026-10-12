@@ -5,24 +5,86 @@
 //
 //   bun scripts/spicy-smoke.ts [--mode built|dev] [--out DIR] [--root DIR]
 //
-// Milestone covered: isolated launch, sidecar reachable, Dock icon loaded, open a project, bottom panel Agents tab,
-// create "Felix" on the OpenCode provider, start a session, send a message, the reply streams into the workspace
-// (screenshots mid-stream and after, plus the agenthq.session.event stream from the server), cancel a running turn,
-// close and reopen the panel with the conversation kept, quit mid-turn and restart with the history recovered and
-// the session interrupted, and no process of the app left behind after each quit.
+// One isolated root, one fixture project (a git repo), every step through the UI:
+// - Launch: isolated launch, sidecar reachable, Dock icon loaded, open the project, bottom panel Agents tab.
+// - Agents: create "Felix" on the OpenCode provider, start a session, the reply streams (screenshots mid-stream and
+//   after, plus the agenthq.session.event stream from the server), the session gets its generated title, cancel a
+//   running turn with nothing recorded after it, close and reopen the panel with the conversation kept.
+// - Tasks: an isolated task for Felix (and a second one that waits on it) from the Tasks view; started, its write
+//   asks first and is answered "Allow once" in the task's session, the review gate's dry run, Approve (a click)
+//   merges it and removes its worktree and branch.
+// - Review: Felix edits two files, each write answered in the UI; Review > Agent changes: accept one hunk, reject the
+//   other, reject the second file from the file view; the files on disk match.
+// - Problems and Output: Run checks fails on the fixture's type error (tsc from this tree), Output shows the run,
+//   Problems lists the error.
+// - Debug: debugpy (VS Code's bundled copy, on Homebrew Python) runs app.py from launch.json in a terminal: paused on
+//   entry, F9 on a line clicked in the viewer, F5 to that breakpoint, the stack and variables, a Debug Console
+//   evaluation, F5 to the end, the Run tab's exit code.
+// - Activity: the tab renders (no investigations yet).
+// - Quit mid-turn and restart on the same root: history recovered and the session interrupted; no process of the app
+//   left after each quit. Afterwards the throwaway keychain is deleted, and the real keychain and the crash reports
+//   folder are unchanged.
 //
-// Opening a project: the app adds projects through the native folder picker, which CDP cannot drive. The smoke
-// creates the project's first session through the server API (what the app does on the first prompt) and opens it
-// through the app's own restore of the window's last URL. Everything after that goes through the UI.
+// A section that fails is recorded and the run goes on with the next one. Opening the project: the app adds projects
+// through the native folder picker, which CDP cannot drive, so the smoke creates the project's first session through
+// the server API (what the app does on the first prompt) and opens it through the app's own restore of the window's
+// last URL. Apart from that the API and the disk are only read, to check what the UI did.
 import { spawnSync } from "node:child_process"
-import { existsSync, realpathSync } from "node:fs"
-import { userInfo } from "node:os"
-import { mkdir, readdir, readFile } from "node:fs/promises"
+import { existsSync, readdirSync, realpathSync } from "node:fs"
+import { mkdir, mkdtemp, readdir, readFile, symlink } from "node:fs/promises"
+import { tmpdir, userInfo } from "node:os"
 import path from "node:path"
 import { $ } from "bun"
 import { alive, cleanup, DESKTOP_DIR, launch, processTree, type Launched, type Mode } from "./spicy-launch"
-import { connectRenderer, CTRL, type Renderer } from "./spicy-cdp"
-import { demoConfig, INTRO, serveScriptedModel } from "./spicy-model"
+import { connectRenderer, CTRL, query, type Renderer } from "./spicy-cdp"
+import { demoConfig, INTRO, serveScriptedModel, SLOW, type Reply } from "./spicy-model"
+
+// ---------------------------------------------------------------- fixture
+
+const TEN = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"].map((word) => `${word}\n`)
+const A = TEN.join("")
+const A_EDITED = A.replace("two\n", "TWO\n").replace("nine\n", "NINE\n")
+const A_REVIEWED = A.replace("two\n", "TWO\n") // first hunk accepted, second rejected
+const B = "alpha\nbeta\ngamma\n"
+const B_EDITED = B.replace("beta", "BETA")
+const TASK = {
+  title: "Write the task note",
+  description: "WRITE notes/task.txt",
+  file: "notes/task.txt",
+  content: "A note from Felix's task.\n",
+}
+// Ends normally: nothing here aborts or crashes under the debugger.
+const APP = [
+  "def total(items):",
+  "    result = 0",
+  "    for item in items:",
+  "        result += item",
+  "    return result",
+  "",
+  "",
+  "def main():",
+  "    numbers = [3, 4, 5]",
+  "    answer = total(numbers)",
+  '    print(f"answer = {answer}")',
+  "",
+  "",
+  "main()",
+  "",
+].join("\n")
+const BREAKPOINT = APP.split("\n").findIndex((line) => line.includes("print(")) + 1
+const SCRIPTS: Record<string, Reply[]> = {
+  "Edit a.txt and b.txt": [
+    { tool: "write", input: { filePath: "a.txt", content: A_EDITED } },
+    { tool: "write", input: { filePath: "b.txt", content: B_EDITED } },
+    { text: "Edited a.txt and b.txt." },
+  ],
+  [TASK.description]: [
+    { tool: "write", input: { filePath: TASK.file, content: TASK.content } },
+    { text: `Wrote ${TASK.file}.` },
+  ],
+}
+
+// ---------------------------------------------------------------- run
 
 const arg = (name: string) => {
   const index = process.argv.indexOf(name)
@@ -33,13 +95,31 @@ const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")
 const out = path.resolve(arg("--out") ?? path.join(import.meta.dir, "../../../docs/spicy/desktop-smoke", stamp))
 await mkdir(out, { recursive: true })
 
-type Check = { name: string; ok: boolean; ms: number; detail?: string }
-// Assistant message texts in the Agents workspace, with typographic quotes and whitespace normalized (replies render
-// as Markdown).
-const ASSISTANT = `[...document.querySelectorAll('[data-row="message"][data-role="assistant"]')].map((row) => row.textContent.replace(/[\u2018\u2019]/g, "'").replace(/\\s+/g, " ").trim())`
+type Check = { name: string; ok: boolean; ms: number; detail?: string; skipped?: true }
+type Task = {
+  id: string
+  title: string
+  status: string
+  assignee: string
+  isolated: boolean
+  reason?: string
+  worktree?: { path: string; branch: string }
+  result?: { sessionID?: string }
+}
+type DebugSession = {
+  id: string
+  adapter: string
+  state: string
+  ptyID?: string
+  error?: string
+  stop?: { reason: string; frames: { name: string; line?: number }[] }
+}
+// Assistant message texts in the Agents workspace (the Markdown body, without the author label), with typographic
+// quotes and whitespace normalized.
+const ASSISTANT = `[...document.querySelectorAll('[data-row="message"][data-role="assistant"]')].map((row) => (row.querySelector(':scope > [data-component="markdown"]') ?? row).textContent.replace(/[‘’]/g, "'").replace(/\\s+/g, " ").trim())`
 const checks: Check[] = []
 const shots: string[] = []
-const model = serveScriptedModel()
+const model = serveScriptedModel({ scripts: SCRIPTS })
 const config = demoConfig(model.url)
 let app: Launched | undefined
 let renderer: Renderer | undefined
@@ -59,6 +139,16 @@ async function step<T>(name: string, run: () => Promise<T>, detail?: (value: T) 
   }
 }
 
+function skip(name: string, reason: string) {
+  checks.push({ name, ok: true, ms: 0, detail: reason, skipped: true })
+  console.log(`skip  ${name}: ${reason}`)
+}
+
+// A failed section is already recorded by its failing step; close whatever dialog it left open and go on.
+async function section(run: () => Promise<unknown>) {
+  await run().catch(() => renderer?.press("Escape", { code: "Escape", keyCode: 27 }).catch(() => {}))
+}
+
 async function shot(name: string) {
   const file = await renderer!.screenshot(path.join(out, `${String(shots.length + 1).padStart(2, "0")}-${name}.png`))
   shots.push(file)
@@ -66,22 +156,27 @@ async function shot(name: string) {
 }
 
 const lines: string[] = []
-// Read-only snapshot of the owner's real keychain setup, compared after the run.
+// Read-only snapshots of the owner's real keychain setup and crash reports, compared after the run.
 const keychainBefore = realKeychain()
-const project = await createProject()
-const slug = btoa(String.fromCharCode(...new TextEncoder().encode(project)))
-  .replace(/\+/g, "-")
-  .replace(/\//g, "_")
-  .replace(/=/g, "")
+const reportsBefore = crashReports()
+if (arg("--root")) await mkdir(arg("--root")!, { recursive: true })
+const root = realpathSync(arg("--root") ?? (await mkdtemp(path.join(tmpdir(), "spicy-desktop-"))))
+// Fixture git runs as the app's does: the fake home, no system config, so no owner hooks, signing or identity.
+const gitEnv = { ...process.env, HOME: path.join(root, "home"), GIT_CONFIG_NOSYSTEM: "1" }
+const project = await createProject(path.join(root, "felix-demo"))
+const dir = `?directory=${encodeURIComponent(project)}`
+const tscMissing = await provideTsc(project)
+const debugpyMissing = await provideDebugpy(path.join(root, "home"))
+const read = (file: string) => readFile(path.join(project, file), "utf8").catch(() => "")
+const git = (...args: string[]) => spawnSync("git", args, { cwd: project, env: gitEnv, encoding: "utf8" }).stdout.trim()
 
 try {
   // ---------------------------------------------------------------- launch
   app = await step(
     "launch isolated",
-    () => launch({ mode, root: arg("--root"), config, log: (line) => lines.push(line) }),
+    () => launch({ mode, root, config, log: (line) => lines.push(line) }),
     (value) => `root ${value.root}, DevTools port ${value.port}`,
   )
-  const root = app.root
   renderer = await step("renderer over CDP", () => connectRenderer(app!.port))
   const server = await step(
     "sidecar ready",
@@ -115,13 +210,11 @@ try {
     (value) => value,
   )
 
-  // ---------------------------------------------------------------- project and Agents tab
+  // ---------------------------------------------------------------- project, Agents tab, Felix
   await step(
     "open project",
     async () => {
-      const session = await api<{ id: string }>(server, "POST", `/session?directory=${encodeURIComponent(project)}`, {
-        title: "Felix demo",
-      })
+      const session = await api<{ id: string }>(server, "POST", `/session${dir}`, { title: "Felix demo" })
       await openUrl(renderer!, `/server/${btoa("sidecar").replace(/=/g, "")}/session/${session.id}`)
       await renderer!.waitFor(
         `document.querySelector('[data-component="session-prompt-dock"]')`,
@@ -134,9 +227,7 @@ try {
   )
   await openAgentsTab(renderer)
   await shot("agents-empty")
-
-  // ---------------------------------------------------------------- Felix
-  await step(
+  const felix = await step(
     "create Felix on the OpenCode provider",
     async () => {
       await renderer!.click('[data-action="agenthq-new"]')
@@ -151,7 +242,7 @@ try {
       const agents = await api<{ id: string; name: string; provider: string; projectDirectory: string }[]>(
         server,
         "GET",
-        `/agenthq/agents?directory=${encodeURIComponent(project)}`,
+        `/agenthq/agents${dir}`,
       )
       const felix = agents.find((agent) => agent.name === "Felix")
       if (!felix || felix.provider !== "opencode" || felix.projectDirectory !== project)
@@ -163,7 +254,7 @@ try {
   const sessionID = await step(
     "start a session",
     async () => {
-      if (!(await renderer!.evaluate(`!!document.querySelector('[data-component="agenthq-workspace"]')`)))
+      if (!(await renderer!.evaluate(exists('[data-component="agenthq-workspace"]'))))
         await renderer!.click('[data-component="agenthq-card"]')
       await renderer!.click('[data-action="agenthq-start-session"]')
       await renderer!.waitFor(`document.querySelector('[data-component="agenthq-composer"] textarea')`, "composer")
@@ -175,132 +266,571 @@ try {
     (id) => id,
   )
 
-  // ---------------------------------------------------------------- streamed reply
-  const events = listen(server, project, sessionID)
-  await step("send a message", () => send(renderer!, "Hi Felix, introduce yourself."))
-  await step("reply streams into the workspace", () =>
-    renderer!.waitFor(
-      `(() => { const text = ${ASSISTANT}.at(-1) ?? ""; return text.length > 15 && text.length < ${INTRO.length} && ${statusIs("working")} })()`,
-      "partial assistant text while working",
-    ),
-  )
-  await shot("streaming")
-  await step("turn completes with the scripted reply", async () => {
-    await renderer!.waitFor(statusIs("idle"), "idle after the turn", 30_000)
-    // The finished message is re-rendered as Markdown off the main thread, so wait for its text to settle.
-    await renderer!
-      .waitFor(`${ASSISTANT}.at(-1)?.includes(${JSON.stringify(INTRO)})`, "the full scripted reply")
-      .catch(async () => {
-        throw new Error(`assistant text was: ${await renderer!.evaluate<string>(`${ASSISTANT}.at(-1) ?? ""`)}`)
-      })
-  })
-  await shot("reply")
-  await step(
-    "server streamed agenthq.session.event envelopes",
-    async () => {
-      await Bun.sleep(300)
-      const types = events.envelopes.map((item) => item.event.type)
-      const seqs = events.envelopes.map((item) => item.seq)
-      if (!types.includes("message.delta") || !types.includes("turn.completed"))
-        throw new Error(`event types: ${types.join(", ")}`)
-      if (seqs.some((seq, index) => index > 0 && seq !== seqs[index - 1] + 1))
-        throw new Error(`seq gap: ${seqs.join(",")}`)
-      const deltas = types.filter((type) => type === "message.delta").length
-      events.stop()
-      return `${events.envelopes.length} envelopes, ${deltas} deltas, seq ${seqs[0]}..${seqs.at(-1)}`
-    },
-    (value) => value,
-  )
-
-  // ---------------------------------------------------------------- cancel
-  await step("cancel a running turn", async () => {
-    await send(renderer!, "Please give me a slow, very long answer.")
-    await renderer!.waitFor(
-      `document.querySelector('[data-action="agenthq-cancel"]') && ${ASSISTANT}.at(-1)?.includes("Paragraph 1")`,
-      "slow reply streaming",
+  // ---------------------------------------------------------------- agents: streamed reply, title, cancel
+  await section(async () => {
+    const events = listen(server, project, sessionID)
+    await step("send a message", () => send(renderer!, "Hi Felix, introduce yourself."))
+    await step("reply streams into the workspace", () =>
+      renderer!.waitFor(
+        `(() => { const text = ${ASSISTANT}.at(-1) ?? ""; return text.length > 15 && text.length < ${INTRO.length} && ${statusIs("working")} })()`,
+        "partial assistant text while working",
+      ),
     )
-    await renderer!.click('[data-action="agenthq-cancel"]')
-    await renderer!.waitFor(statusIs("cancelled"), "cancelled")
-    const request = model.requests.findLast((item) => item.kind === "chat" && item.prompt.includes("slow"))
-    await waitUntil(() => request?.aborted === true, "the model request to be aborted")
-  })
-  await shot("cancelled")
-
-  // ---------------------------------------------------------------- panel close and reopen
-  await step("close and reopen the panel keeps the conversation", async () => {
-    await renderer!.press("`", { code: "Backquote", keyCode: 192, modifiers: CTRL })
-    await renderer!.waitFor(`!document.querySelector('#terminal-panel')`, "panel closed")
-    await openAgentsTab(renderer!)
-    if (!(await renderer!.evaluate(`!!document.querySelector('[data-component="agenthq-workspace"]')`)))
-      await renderer!.click('[data-component="agenthq-card"]')
-    await renderer!.waitFor(
-      `${ASSISTANT}.some((text) => text.includes(${JSON.stringify(INTRO.slice(0, 40))}))`,
-      "conversation after reopening",
+    await shot("streaming")
+    await step("turn completes with the scripted reply", async () => {
+      await renderer!.waitFor(statusIs("idle"), "idle after the turn", 30_000)
+      // The finished message is re-rendered as Markdown off the main thread, so wait for its text to settle.
+      await renderer!
+        .waitFor(`${ASSISTANT}.at(-1)?.includes(${JSON.stringify(INTRO)})`, "the full scripted reply")
+        .catch(async () => {
+          throw new Error(`assistant text was: ${await renderer!.evaluate<string>(`${ASSISTANT}.at(-1) ?? ""`)}`)
+        })
+    })
+    await shot("reply")
+    await step(
+      "server streamed agenthq.session.event envelopes",
+      async () => {
+        await Bun.sleep(300)
+        const types = events.envelopes.map((item) => item.event.type)
+        const seqs = events.envelopes.map((item) => item.seq)
+        if (!types.includes("message.delta") || !types.includes("turn.completed"))
+          throw new Error(`event types: ${types.join(", ")}`)
+        if (seqs.some((seq, index) => index > 0 && seq !== seqs[index - 1] + 1))
+          throw new Error(`seq gap: ${seqs.join(",")}`)
+        const deltas = types.filter((type) => type === "message.delta").length
+        events.stop()
+        return `${events.envelopes.length} envelopes, ${deltas} deltas, seq ${seqs[0]}..${seqs.at(-1)}`
+      },
+      (value) => value,
     )
-  })
-  await shot("reopened")
-
-  // ---------------------------------------------------------------- quit mid-turn, restart, recover
-  await step("send a turn and quit while it streams", async () => {
-    await send(renderer!, "One more slow story, please.")
-    await renderer!.waitFor(statusIs("working"), "working")
-    await renderer!.waitFor(`${ASSISTANT}.at(-1)?.includes("Paragraph 1")`, "streaming before quit")
-  })
-  await step(
-    "no processes left after quitting",
-    () => quitAndCheck(),
-    (value) => value,
-  )
-  renderer.close()
-  renderer = undefined
-
-  app = await step("restart on the same state", () => launch({ mode, root, config, log: (line) => lines.push(line) }))
-  renderer = await step("renderer over CDP after restart", () => connectRenderer(app!.port))
-  const restarted = await step(
-    "sidecar ready after restart",
-    () => sidecar(renderer!),
-    (value) => value.url,
-  )
-  await step("app restores the project session", () =>
-    renderer!.waitFor(
-      `document.querySelector('[data-component="session-prompt-dock"]')`,
-      "restored session page",
-      40_000,
-    ),
-  )
-  await step(
-    "session history recovered as interrupted",
-    async () => {
-      if (!(await renderer!.evaluate(`!!document.querySelector('[data-component="agenthq-panel"]')`)))
-        await openAgentsTab(renderer!)
-      if (!(await renderer!.evaluate(`!!document.querySelector('[data-component="agenthq-workspace"]')`)))
-        await renderer!.click('[data-component="agenthq-card"]')
+    await step(
+      "the session has its generated title, not Untitled session",
+      async () => {
+        await renderer!.waitFor(
+          `${textOf(`[data-component="agenthq-workspace"] [data-session="${sessionID}"]`)}.includes("Felix demo")`,
+          "the title in the session list",
+        )
+        const detail = await api<{ session: { title?: string } }>(server, "GET", `/agenthq/sessions/${sessionID}${dir}`)
+        if (detail.session.title !== "Felix demo") throw new Error(`title ${JSON.stringify(detail.session.title)}`)
+        return detail.session.title
+      },
+      (title) => title,
+    )
+    await step("cancel a running turn", async () => {
+      await send(renderer!, "Please give me a slow, very long answer.")
       await renderer!.waitFor(
-        `document.querySelector('[data-session=${JSON.stringify(sessionID)}] [data-status="interrupted"]')`,
-        "interrupted status in the session list",
+        `document.querySelector('[data-action="agenthq-cancel"]') && ${ASSISTANT}.at(-1)?.includes("Paragraph 1")`,
+        "slow reply streaming",
       )
+      await renderer!.click('[data-action="agenthq-cancel"]')
+      await renderer!.waitFor(statusIs("cancelled"), "cancelled")
+      const request = model.requests.findLast((item) => item.kind === "chat" && item.prompt.includes("slow"))
+      await until(() => request?.aborted === true, "the model request to be aborted")
+    })
+    await shot("cancelled")
+    await step(
+      "nothing arrives after the cancel (no repeated text)",
+      async () => {
+        await Bun.sleep(500) // a late delta would land in this window
+        const text = await renderer!.evaluate<string>(`${ASSISTANT}.at(-1) ?? ""`)
+        if (!text.startsWith("Paragraph 1") || !SLOW.startsWith(text))
+          throw new Error(`the cancelled reply is not a prefix of the scripted text: "…${text.slice(-160)}"`)
+        const detail = await api<{ history: { event: { type: string; status?: string } }[] }>(
+          server,
+          "GET",
+          `/agenthq/sessions/${sessionID}${dir}`,
+        )
+        const at = detail.history.findLastIndex(
+          (item) => item.event.type === "status" && item.event.status === "cancelled",
+        )
+        const late = detail.history.slice(at + 1).map((item) => item.event.type)
+        if (at < 0 || late.length) throw new Error(`after "cancelled": ${late.join(", ") || "no cancelled status"}`)
+        return `${text.length} characters shown, a prefix of the scripted reply; nothing recorded after "cancelled"`
+      },
+      (value) => value,
+    )
+    await step("close and reopen the panel keeps the conversation", async () => {
+      await renderer!.press("`", { code: "Backquote", keyCode: 192, modifiers: CTRL })
+      await renderer!.waitFor(`!document.querySelector('#terminal-panel')`, "panel closed")
+      await openAgentsTab(renderer!)
+      await openSession(renderer!, sessionID)
       await renderer!.waitFor(
         `${ASSISTANT}.some((text) => text.includes(${JSON.stringify(INTRO.slice(0, 40))}))`,
-        "first reply in the recovered history",
+        "conversation after reopening",
       )
-      const detail = await api<{
-        session: { status: string }
-        history: { event: { type: string; status?: string } }[]
-      }>(restarted, "GET", `/agenthq/sessions/${sessionID}?directory=${encodeURIComponent(project)}`)
-      const statuses = detail.history.flatMap((item) => (item.event.type === "status" ? [item.event.status] : []))
-      if (detail.session.status !== "interrupted") throw new Error(`status ${detail.session.status}`)
-      if (!statuses.includes("cancelled") || !statuses.includes("interrupted"))
-        throw new Error(`history statuses ${statuses.join(",")}`)
-      return `${detail.history.length} history entries, statuses ${[...new Set(statuses)].join(" > ")}`
-    },
-    (value) => value,
+    })
+    await shot("reopened")
+  })
+
+  // ---------------------------------------------------------------- tasks
+  await section(async () => {
+    await step("Tasks view", async () => {
+      await backToList(renderer!)
+      await renderer!.click('[data-agenthq-view="tasks"]')
+      await renderer!.waitFor(exists('[data-component="agenthq-tasks"] [data-action="task-new"]'), "Tasks view")
+    })
+    const task = await step(
+      "create an isolated task for Felix",
+      async () => {
+        await renderer!.click('[data-action="task-new"]')
+        await renderer!.type('[data-component="task-dialog"] input[name="title"]', TASK.title)
+        await renderer!.type('[data-component="task-dialog"] textarea[name="description"]', TASK.description)
+        const form = await renderer!.evaluate<{ assignee: string; isolated: boolean }>(
+          `(() => { const form = document.querySelector('[data-component="task-dialog"]'); return { assignee: form.querySelector('select[name="assignee"]').value, isolated: form.querySelector('input[name="isolated"]').checked } })()`,
+        )
+        if (form.assignee !== felix.id || !form.isolated) throw new Error(`dialog defaults ${JSON.stringify(form)}`)
+        await shot("task-dialog")
+        await renderer!.click('[data-component="task-dialog"] button[type="submit"]')
+        await renderer!.waitFor(`!document.querySelector('[data-component="task-dialog"]')`, "the dialog to close")
+        const tasks = await api<Task[]>(server, "GET", `/agenthq/tasks${dir}`)
+        const created = tasks.find((item) => item.title === TASK.title)
+        if (!created || created.status !== "ready" || !created.isolated || created.assignee !== felix.id)
+          throw new Error(`tasks ${JSON.stringify(tasks)}`)
+        return created
+      },
+      (value) => value.id,
+    )
+    const waiting = await step(
+      "a second task that depends on it waits",
+      async () => {
+        await renderer!.click('[data-action="task-new"]')
+        await renderer!.type('[data-component="task-dialog"] input[name="title"]', "Read the task note")
+        await renderer!.click(`[data-component="task-dialog"] [data-depends-on="${task.id}"]`)
+        await renderer!.click('[data-component="task-dialog"] button[type="submit"]')
+        await renderer!.waitFor(`!document.querySelector('[data-component="task-dialog"]')`, "the dialog to close")
+        return renderer!.waitFor<string>(
+          `(() => { const row = [...document.querySelectorAll('button[data-task]')].find((el) => el.textContent.includes("Read the task note")); return row?.querySelector('[data-slot="task-reason"]')?.textContent.includes(${JSON.stringify(`Waiting on "${TASK.title}"`)}) && row.dataset.task })()`,
+          "its waiting reason",
+        )
+      },
+      (id) => id,
+    ).catch(() => undefined)
+    const started = await step(
+      "start the task: a worktree and a session",
+      async () => {
+        await renderer!.click(`button[data-task="${task.id}"]`)
+        await renderer!.click(`[data-component="agenthq-task"][data-task="${task.id}"] [data-action="task-start"]`)
+        return pollTask(server, task.id, (item) => item.status === "running" && !!item.worktree, "running")
+      },
+      (value) => `${value.worktree!.branch} at ${value.worktree!.path}`,
+    )
+    await step("its write waits for approval; Allow once in the task's session", async () => {
+      await renderer!.click(
+        `[data-component="agenthq-task"][data-task="${task.id}"] [data-slot="task-approval"] button`,
+      )
+      await renderer!.waitFor(
+        `document.querySelector('[data-component="agenthq-workspace"] [data-session="${started.result?.sessionID}"]')?.getAttribute("aria-current") === "true"`,
+        "the task's session",
+      )
+      await renderer!.waitFor(exists('[data-row="permission"] [data-option="once"]'), "the permission request")
+      await shot("task-permission")
+      await renderer!.click('[data-row="permission"] [data-option="once"]')
+      await pollTask(server, task.id, (item) => item.status === "review", "review")
+    })
+    const gate = `[data-component="agenthq-task"][data-task="${task.id}"] [data-component="agenthq-review"]`
+    await step(
+      "review gate: the dry run shows the branch, commit and file",
+      async () => {
+        await renderer!.click('[data-component="agenthq-workspace"] button[aria-label="Back to agents"]')
+        await renderer!.waitFor(
+          `${textOf(`${gate} [data-slot="review-files"]`)}.includes(${JSON.stringify(TASK.file)})`,
+          "the dry run",
+        )
+        if (await renderer!.evaluate(`!!${query(`${gate} [data-action="task-approve"]`)}?.disabled`))
+          throw new Error(
+            `Approve is disabled: ${await renderer!.evaluate(textOf(`${gate} [data-slot="review-refusal"]`))}`,
+          )
+        await shot("task-review")
+        return `${await renderer!.evaluate(textOf(`${gate} [data-slot="review-merge"]`))} ${await renderer!.evaluate(textOf(`${gate} [data-slot="review-commits"]`))}`
+      },
+      (value) => value,
+    )
+    await step("Approve (a click) merges the task", async () => {
+      await renderer!.click(`${gate} [data-action="task-approve"]`)
+      await renderer!.waitFor(
+        `${query(`button[data-task="${task.id}"] [data-task-status]`)}?.getAttribute("data-task-status") === "done"`,
+        "done",
+      )
+      await shot("task-done")
+    })
+    await step(
+      "the project has the merge; no worktree or task branch is left",
+      async () => {
+        if ((await read(TASK.file)) !== TASK.content) throw new Error(`${TASK.file}: ${await read(TASK.file)}`)
+        const subject = git("log", "-1", "--format=%s")
+        const worktrees = git("worktree", "list", "--porcelain")
+          .split("\n")
+          .filter((line) => line.startsWith("worktree ")).length
+        const branches = git("branch", "--list", "task-*")
+        if (
+          subject !== `Merge task: ${TASK.title}` ||
+          worktrees !== 1 ||
+          branches ||
+          existsSync(started.worktree!.path)
+        )
+          throw new Error(`last commit "${subject}", ${worktrees} worktrees, branches "${branches}"`)
+        return `"${subject}", 1 worktree, no task branch, ${started.worktree!.path} gone`
+      },
+      (value) => value,
+    )
+    if (waiting)
+      await step("the dependent task is ready", () =>
+        pollTask(server, waiting, (item) => item.status === "ready", "ready"),
+      ).catch(() => {})
+  })
+
+  // ---------------------------------------------------------------- review: agent changes
+  await section(async () => {
+    await step("Felix edits a.txt and b.txt; each write is answered in the UI", async () => {
+      await openSession(renderer!, sessionID)
+      await send(renderer!, "Edit a.txt and b.txt, please.")
+      for (const [file, content] of [
+        ["a.txt", A_EDITED],
+        ["b.txt", B_EDITED],
+      ]) {
+        await renderer!.click('[data-row="permission"] [data-option="once"]')
+        await until(async () => (await read(file)) === content, `${file} written`)
+      }
+      await renderer!.waitFor(statusIs("idle"), "the turn to end")
+    })
+    await step("Review panel, Agent changes: Felix's changeset with both files pending", async () => {
+      if (await renderer!.evaluate(exists('[aria-controls="review-panel"][aria-expanded="false"]')))
+        await renderer!.click('[aria-controls="review-panel"][aria-expanded="false"]')
+      await renderer!.click("#session-side-panel-review-tab")
+      await renderer!.click('#review-panel [data-component="select-v2"]')
+      await renderer!.click('[data-component="menu-v2-item"]', "Agent changes")
+      await renderer!.waitFor(
+        `${textOf('[data-component="review-changeset"] [data-component="review-agent"]')}.includes("Felix")`,
+        "Felix's changeset",
+      )
+      for (const file of ["a.txt", "b.txt"])
+        await renderer!.waitFor(`${stateOf(file)} === "pending"`, `${file} pending`)
+    })
+    await step("a.txt: accept one hunk, reject the other", async () => {
+      await renderer!.click('[data-component="review-file-row"][data-path="a.txt"]')
+      await renderer!.waitFor(`${count('[data-component="review-hunk"]')} === 2`, "two hunks")
+      await shot("review-hunks")
+      await renderer!.click('[data-component="review-hunk"] [data-action="accept"]')
+      await renderer!.waitFor(`${count('[data-component="review-hunk"]')} === 1`, "one hunk left")
+      if ((await read("a.txt")) !== A_EDITED) throw new Error("accepting a hunk changed a.txt")
+      await renderer!.click('[data-component="review-hunk"] [data-action="reject"]')
+      await until(async () => (await read("a.txt")) === A_REVIEWED, "a.txt to keep only the accepted hunk")
+      await renderer!.waitFor(`${stateOf("a.txt")} === "accepted"`, "a.txt reviewed")
+      await shot("review-a")
+    })
+    await step("b.txt: reject the file from the file view", async () => {
+      await renderer!.click('[data-component="review-file-row"][data-path="b.txt"]')
+      await renderer!.click('[data-action="open-file"]')
+      await renderer!.waitFor(
+        exists('[data-component="review-file"][data-path="b.txt"] [data-component="review-bar"]'),
+        "the review bar in the file view",
+      )
+      await shot("review-file-view")
+      await renderer!.click('[data-component="review-file"][data-path="b.txt"] [data-action="reject-file"]')
+      await until(async () => (await read("b.txt")) === B, "b.txt restored")
+      await renderer!.click("#session-side-panel-review-tab")
+      await renderer!.waitFor(`${stateOf("b.txt")} === "rejected"`, "b.txt rejected")
+      await shot("review-done")
+    })
+    await step(
+      "the files on disk and the changeset agree",
+      async () => {
+        if ((await read("a.txt")) !== A_REVIEWED || (await read("b.txt")) !== B) throw new Error("files changed since")
+        const changesets = await api<{ counts: Record<string, number> }[]>(server, "GET", `/review/changesets${dir}`)
+        const counts = changesets.map((item) => item.counts)
+        if (counts.length !== 1 || counts[0].pending !== 0 || counts[0].accepted !== 1 || counts[0].rejected !== 2)
+          throw new Error(JSON.stringify(counts))
+        return `a.txt keeps TWO only, b.txt as committed; ${JSON.stringify(counts[0])}`
+      },
+      (value) => value,
+    )
+  })
+
+  // ---------------------------------------------------------------- problems and output
+  if (tscMissing) skip("problems and output", tscMissing)
+  else
+    await section(async () => {
+      await step(
+        "Output: Run checks fails on the type error",
+        async () => {
+          await panelTab(renderer!, "output")
+          await renderer!.click('[data-component="workbench-output"] button', "Run checks")
+          const id = await renderer!.waitFor<string>(
+            `[...document.querySelectorAll('[data-component="workbench-output"] section[data-run][data-status="failed"]')].find((el) => el.querySelector("button")?.textContent.includes("tsc"))?.dataset.run`,
+            "a failed tsc run",
+            90_000,
+          )
+          if (
+            await renderer!.evaluate(
+              `${query(`section[data-run="${id}"] > button`)}?.getAttribute("aria-expanded") === "false"`,
+            )
+          )
+            await renderer!.click(`section[data-run="${id}"] > button`)
+          await renderer!.waitFor(`${textOf(`section[data-run="${id}"]`)}.includes("broken.ts")`, "the run's output")
+          await renderer!.waitFor(exists('[data-component="workbench-output"] [data-slot="report"]'), "the summary")
+          await shot("output")
+          return `${id}; ${await renderer!.evaluate(textOf('[data-component="workbench-output"] [data-slot="report"]'))}`
+        },
+        (value) => value,
+      )
+      await step(
+        "Problems lists the error",
+        async () => {
+          await panelTab(renderer!, "problems")
+          await renderer!.waitFor(
+            `[...document.querySelectorAll('[data-component="workbench-problems"] [data-row="problem"]')].some((row) => row.textContent.includes("not assignable"))`,
+            "the tsc problem",
+          )
+          const snapshot = await api<{
+            problems: { file?: string; severity: string; message: string; source: { tool: string } }[]
+          }>(server, "GET", `/workbench/problems${dir}`)
+          const problem = snapshot.problems.find(
+            (item) => item.source.tool === "tsc" && !!item.file?.endsWith("/src/broken.ts"),
+          )
+          if (problem?.severity !== "error") throw new Error(JSON.stringify(snapshot.problems))
+          await shot("problems")
+          return `${problem.severity}: ${problem.message}`
+        },
+        (value) => value,
+      )
+    })
+
+  // ---------------------------------------------------------------- debug
+  if (debugpyMissing) skip("debug", debugpyMissing)
+  else
+    await section(async () => {
+      const dialog = '[data-component="debug-start-dialog"]'
+      await step(
+        "F5: app.py from launch.json, paused on entry",
+        async () => {
+          await renderer!.press("F5", { code: "F5", keyCode: 116 })
+          await renderer!.waitFor(
+            `${query(`${dialog} select[name="configuration"]`)}?.value === "App in terminal"`,
+            "the launch.json configuration",
+          )
+          await renderer!.click(`${dialog} [data-slot="checkbox-v2-control"]`)
+          await renderer!.waitFor(
+            exists(`${dialog} [data-slot="checkbox-v2"][data-checked]`),
+            "Pause on the first line",
+          )
+          await shot("debug-start")
+          await renderer!.click(`${dialog} button[type="submit"]`)
+          const outcome = await renderer!.waitFor<string>(
+            `(() => { const error = ${query(`${dialog} [data-slot="debug-start-error"]`)}; if (error) return "refused: " + error.textContent; return !${query(dialog)} && "started" })()`,
+            "the debugger to start",
+            60_000,
+          )
+          if (outcome !== "started") throw new Error(outcome)
+          return pollDebug(
+            server,
+            (item) => item.state === "stopped" && item.stop?.reason === "entry",
+            "paused on entry",
+          )
+        },
+        (value) => `${value.id} (${value.adapter}), program in pty ${value.ptyID ?? "none"}`,
+      )
+      // The viewer that shows the paused line; pierre renders the lines in its shadow root.
+      const viewer = `[...document.querySelectorAll("#review-panel diffs-container")].find((el) => el.shadowRoot?.querySelector("[data-line][data-spicy-exec]"))`
+      await step(
+        `F9 on line ${BREAKPOINT} clicked in the viewer`,
+        async () => {
+          // The stop opens app.py in the side panel; a human brings its tab to the front if it is not there.
+          const tab = '#review-panel [role="tab"]'
+          await renderer!.waitFor(exists(tab, "app.py"), "the app.py tab")
+          const front = await renderer!.evaluate<boolean>(`!!${query(tab, "app.py")}?.hasAttribute("data-selected")`)
+          if (!front) await renderer!.click(tab, "app.py")
+          await renderer!.waitFor(`!!${viewer}`, "app.py open at the paused line")
+          await shot("debug-entry")
+          await renderer!.clickOn(
+            `${viewer}?.shadowRoot.querySelector('[data-column-number="${BREAKPOINT}"]') ?? null`,
+            `line ${BREAKPOINT}'s number`,
+          )
+          await renderer!.waitFor(
+            `!!${viewer}?.shadowRoot.querySelector('[data-line="${BREAKPOINT}"][data-selected-line]')`,
+            `line ${BREAKPOINT} selected`,
+          )
+          await renderer!.press("F9", { code: "F9", keyCode: 120 })
+          await renderer!.waitFor(
+            `!!${viewer}?.shadowRoot.querySelector('[data-column-number="${BREAKPOINT}"][data-spicy-breakpoint="line"]')`,
+            "the breakpoint dot",
+          )
+          return front
+            ? "the stop brought app.py to the front"
+            : "the stop opened app.py behind the Review tab; clicked it"
+        },
+        (value) => value,
+      )
+      await step(
+        "F5 runs to the breakpoint",
+        async () => {
+          await Bun.sleep(1_500) // ponytail: the breakpoint request shows no pending state; a missed stop fails below
+          await renderer!.press("F5", { code: "F5", keyCode: 116 })
+          const session = await pollDebug(
+            server,
+            (item) => item.stop?.reason === "breakpoint" || item.state === "terminated" || item.state === "failed",
+            "a breakpoint stop",
+          )
+          const frame = session.stop?.frames[0]
+          if (session.state !== "stopped" || frame?.line !== BREAKPOINT)
+            throw new Error(`${session.state} ${session.error ?? ""} at ${JSON.stringify(frame)}`)
+          return `${frame.name} app.py:${frame.line}`
+        },
+        (value) => value,
+      )
+      const side = '#review-panel [data-component="workbench-debug"]'
+      await step(
+        "Debug tab: stack and variables",
+        async () => {
+          await renderer!.click('#review-panel [data-workbench-side-tab="debug"]')
+          await renderer!.waitFor(
+            `${textOf(`${side} [data-slot="debug-status"]`)} === "Paused: breakpoint"`,
+            "the status",
+          )
+          await renderer!.waitFor(`${count(`${side} [data-frame]`)} >= 2`, "the call stack")
+          await renderer!.waitFor(`${textOf(`${side} [data-variable="answer"]`)}.includes("12")`, "answer = 12")
+          await shot("debug-breakpoint")
+          return renderer!.evaluate<string>(
+            `[...document.querySelectorAll('${side} [data-frame] [data-slot="frame"]')].map((el) => el.textContent.trim()).join(" < ")`,
+          )
+        },
+        (value) => value,
+      )
+      const debugConsole = '[data-component="workbench-debug-console"]'
+      await step("Debug Console evaluates in the paused frame", async () => {
+        await panelTab(renderer!, "debug")
+        await renderer!.waitFor(
+          `${query(`${debugConsole} [data-slot="debug-console-input"]`)}?.disabled === false`,
+          "input",
+        )
+        await renderer!.type(`${debugConsole} [data-slot="debug-console-input"]`, "answer * 2")
+        await Bun.sleep(500) // completions are debounced; an open list would take the Enter
+        if (await renderer!.evaluate(exists(`${debugConsole} [data-slot="debug-console-input"][aria-controls]`)))
+          await renderer!.press("Escape", { code: "Escape", keyCode: 27 })
+        await renderer!.press("Enter", { code: "Enter", keyCode: 13 })
+        await renderer!.waitFor(
+          `[...document.querySelectorAll('${debugConsole} [data-console-row][data-kind="result"]')].some((row) => row.textContent.includes("24"))`,
+          "the result 24",
+        )
+        await shot("debug-console")
+      })
+      await step(
+        "F5 to the end: Run tab shows the exit code, output in the console",
+        async () => {
+          await renderer!.press("F5", { code: "F5", keyCode: 116 })
+          const session = await pollDebug(
+            server,
+            (item) => item.state === "terminated" || item.state === "failed",
+            "the end",
+          )
+          if (session.state !== "terminated") throw new Error(`${session.state}: ${session.error}`)
+          await panelTab(renderer!, "run")
+          await renderer!.waitFor(
+            `${textOf('[data-component="workbench-run"] [data-slot="run-status"]')} === "Exited with code 0"`,
+            "Exited with code 0",
+          )
+          await shot("debug-run")
+          const rows = await api<{ kind: string; text: string }[]>(
+            server,
+            "GET",
+            `/workbench/debug/sessions/${session.id}/output${dir}&after=0`,
+          )
+          if (!rows.some((row) => row.kind === "stdout" && row.text.includes("answer = 12")))
+            throw new Error(`no "answer = 12" in ${JSON.stringify(rows.map((row) => `${row.kind}: ${row.text}`))}`)
+          const left = (await processTree(app!.child.pid!)).filter((item) => /debugpy|app\.py/.test(item.command))
+          if (left.length) throw new Error(`still running: ${left.map((item) => item.command).join("; ")}`)
+          return `${rows.length} console rows; no debugpy process left`
+        },
+        (value) => value,
+      )
+    })
+
+  // ---------------------------------------------------------------- activity
+  await section(() =>
+    step("Activity tab renders (no investigations yet)", async () => {
+      await panelTab(renderer!, "activity")
+      await renderer!.waitFor(
+        `${textOf('[data-component="workbench-activity"]')}.includes("No investigations yet")`,
+        "the empty state",
+      )
+      const list = await api<unknown[]>(server, "GET", `/workbench/investigations${dir}`)
+      if (list.length) throw new Error(`${list.length} investigations`)
+      await shot("activity")
+    }),
   )
-  await shot("restored")
-  await step(
-    "no processes left after the final quit",
-    () => quitAndCheck(),
-    (value) => value,
-  )
+
+  // ---------------------------------------------------------------- quit mid-turn, restart, recover
+  await section(async () => {
+    await step("send a turn and quit while it streams", async () => {
+      await openSession(renderer!, sessionID)
+      await send(renderer!, "One more slow story, please.")
+      await renderer!.waitFor(statusIs("working"), "working")
+      await renderer!.waitFor(`${ASSISTANT}.at(-1)?.includes("Paragraph 1")`, "streaming before quit")
+    })
+    await step(
+      "no processes left after quitting",
+      () => quitAndCheck(),
+      (value) => value,
+    )
+    await step(
+      "the session's history is on disk after the quit",
+      () => persisted(sessionID),
+      (value) => value,
+    )
+    renderer!.close()
+    renderer = undefined
+
+    app = await step("restart on the same state", () => launch({ mode, root, config, log: (line) => lines.push(line) }))
+    renderer = await step("renderer over CDP after restart", () => connectRenderer(app!.port))
+    const restarted = await step(
+      "sidecar ready after restart",
+      () => sidecar(renderer!),
+      (value) => value.url,
+    )
+    await step("app restores the project session", () =>
+      renderer!.waitFor(
+        `document.querySelector('[data-component="session-prompt-dock"]')`,
+        "restored session page",
+        40_000,
+      ),
+    )
+    await step(
+      "session history recovered as interrupted",
+      async () => {
+        await openSession(renderer!, sessionID)
+        await renderer!.waitFor(
+          exists(`[data-session="${sessionID}"] [data-status="interrupted"]`),
+          "interrupted status in the session list",
+        )
+        // The conversation is a virtual list that follows its end: scroll to its start, as a human would (again on
+        // each poll, since it follows the end while the history loads).
+        await renderer!.waitFor(
+          `(() => { const list = ${query('[data-component="agenthq-workspace"] [role="region"][aria-label="Conversation"]')}; if (list) list.scrollTop = 0; return ${ASSISTANT}.some((text) => text.includes(${JSON.stringify(INTRO.slice(0, 40))})) })()`,
+          "first reply in the recovered history",
+        )
+        const detail = await api<{
+          session: { status: string }
+          history: { event: { type: string; status?: string } }[]
+        }>(restarted, "GET", `/agenthq/sessions/${sessionID}${dir}`)
+        const statuses = detail.history.flatMap((item) => (item.event.type === "status" ? [item.event.status] : []))
+        if (detail.session.status !== "interrupted") throw new Error(`status ${detail.session.status}`)
+        if (!statuses.includes("cancelled") || !statuses.includes("interrupted"))
+          throw new Error(`history statuses ${statuses.join(",")}`)
+        return `${detail.history.length} history entries, statuses ${[...new Set(statuses)].join(" > ")}`
+      },
+      (value) => value,
+    )
+    await shot("restored")
+    await step(
+      "the session's history is on disk after the restart",
+      () => persisted(sessionID),
+      (value) => value,
+    ).catch(() => {})
+    await step(
+      "no processes left after the final quit",
+      () => quitAndCheck(),
+      (value) => value,
+    )
+  })
 } catch {
   // the failing step is recorded; fall through to cleanup and the summary
 } finally {
@@ -332,6 +862,30 @@ await step("real keychain untouched", async () => {
   if (JSON.stringify(keychainBefore) !== JSON.stringify(keychainAfter))
     throw new Error(`before ${JSON.stringify(keychainBefore)} after ${JSON.stringify(keychainAfter)}`)
 }).catch(() => {})
+await step(
+  "no process left with the isolated root on its command line",
+  async () => {
+    const found = (await $`pgrep -fl ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`.nothrow().text())
+      .trim()
+      .split("\n")
+      .filter((line) => line && !line.startsWith(`${process.pid} `))
+    if (found.length) throw new Error(found.join("; "))
+    return "none"
+  },
+  (value) => value,
+).catch(() => {})
+await Bun.sleep(2_000) // crash reports are written asynchronously
+const reportsAfter = crashReports()
+const newReports = reportsAfter.filter((name) => !reportsBefore.includes(name))
+await step(
+  "no crash report from the run",
+  async () => {
+    const ours = newReports.filter((name) => /electron|opencode|python|node|bun|git|tsc|mypy|ruff|debugpy/i.test(name))
+    if (ours.length) throw new Error(ours.join(", "))
+    return `${reportsBefore.length} before, ${reportsAfter.length} after${newReports.length ? ` (unrelated: ${newReports.join(", ")})` : ""}`
+  },
+  (value) => value,
+).catch(() => {})
 
 const failed = checks.filter((item) => !item.ok)
 console.log(
@@ -339,13 +893,21 @@ console.log(
     {
       ok: failed.length === 0,
       mode,
-      root: app?.root,
+      root,
       project,
       keychain: { before: keychainBefore, after: keychainAfter },
+      crashReports: { before: reportsBefore.length, after: reportsAfter.length, new: newReports },
       screenshots: shots,
-      modelRequests: model.requests.map((item) => ({ kind: item.kind, prompt: item.prompt, aborted: item.aborted })),
+      modelRequests: model.requests.map((item) => ({
+        kind: item.kind,
+        tool: item.tool,
+        prompt: item.prompt.slice(0, 80),
+        aborted: item.aborted,
+      })),
+      skipped: checks.filter((item) => item.skipped).map((item) => `${item.name}: ${item.detail}`),
+      failed: failed.map((item) => `${item.name}: ${item.detail}`),
       checks,
-      appLogTail: failed.length ? lines.slice(-40) : undefined,
+      appLogTail: failed.length ? lines.slice(-60) : undefined,
     },
     null,
     2,
@@ -354,6 +916,35 @@ console.log(
 process.exit(failed.length ? 1 : 0)
 
 // ---------------------------------------------------------------- helpers
+
+// Page expressions over the first visible match of a selector (see query in spicy-cdp.ts).
+function exists(selector: string, text?: string) {
+  return `!!${query(selector, text)}`
+}
+
+function textOf(selector: string) {
+  return `(${query(selector)}?.textContent ?? "")`
+}
+
+function count(selector: string) {
+  return `[...document.querySelectorAll(${JSON.stringify(selector)})].filter((el) => el.getClientRects().length > 0).length`
+}
+
+function stateOf(file: string) {
+  return `${query(`[data-component="review-file-row"][data-path="${file}"]`)}?.getAttribute("data-state")`
+}
+
+// An Agent HQ session as the server stored it: its record's status and its history file (the restart recovers from
+// these). Fails when the history file is unreadable.
+async function persisted(id: string) {
+  const store = path.join(root, "xdg", "data", "opencode", "storage", "agenthq")
+  const info = JSON.parse(await readFile(path.join(store, "session", `${id}.json`), "utf8")) as { status: string }
+  const text = await readFile(path.join(store, "events", `${id}.json`), "utf8")
+  const history = JSON.parse(text) as { seq: number; event: { type: string; status?: string } }[]
+  const statuses = history.flatMap((item) => (item.event.type === "status" ? [item.event.status] : []))
+  if (!history.length) throw new Error(`empty history file (${text.length} bytes), record ${info.status}`)
+  return `record ${info.status}; history ${history.length} entries (${text.length} bytes), seq ${history[0].seq}..${history.at(-1)!.seq}, statuses ${statuses.join(" > ")}`
+}
 
 // The owner's keychain setup as the real HOME sees it: attributes only, never secrets.
 function realKeychain() {
@@ -374,18 +965,75 @@ function realKeychain() {
   }
 }
 
-async function createProject() {
-  const dir = path.join(
-    arg("--root") ??
-      (await $`mktemp -d ${path.join(process.env.TMPDIR ?? "/tmp", "spicy-project-XXXXXX")}`.text()).trim(),
-    "felix-demo",
+// Names in the owner's crash reports folder (read only).
+function crashReports() {
+  return readdirSync(path.join(userInfo().homedir, "Library", "Logs", "DiagnosticReports")).filter(
+    (name) => !name.startsWith("."),
   )
-  await mkdir(dir, { recursive: true })
-  await Bun.write(path.join(dir, "README.md"), "# Felix demo\n\nA scratch project for the Spicy desktop smoke run.\n")
-  await $`git init -q && git add README.md && git -c user.email=smoke@spicy.local -c user.name=spicy-smoke commit -qm init`.cwd(
-    dir,
-  )
+}
+
+// A git repo: two text files for the review, app.py with a launch.json for the debugger, one TypeScript type error.
+async function createProject(dir: string) {
+  const files = {
+    "README.md": "# Felix demo\n\nA scratch project for the Spicy desktop smoke run.\n",
+    "a.txt": A,
+    "b.txt": B,
+    "app.py": APP,
+    "src/broken.ts": 'export const answer: number = "forty-two"\n',
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, noEmit: true, types: [] }, include: ["src"] }),
+    ".vscode/launch.json": JSON.stringify({
+      version: "0.2.0",
+      configurations: [
+        {
+          name: "App in terminal",
+          type: "debugpy",
+          request: "launch",
+          program: "${workspaceFolder}/app.py",
+          console: "integratedTerminal",
+        },
+      ],
+    }),
+    ".gitignore": "node_modules/\n.mypy_cache/\n",
+  }
+  for (const [name, content] of Object.entries(files)) await Bun.write(path.join(dir, name), content)
+  for (const args of [
+    ["init", "-q", "-b", "main"],
+    ["config", "user.name", "Spicy Smoke"],
+    ["config", "user.email", "smoke@spicy.local"],
+    ["add", "-A"],
+    ["commit", "-qm", "init"],
+  ]) {
+    const result = spawnSync("git", args, { cwd: dir, env: gitEnv, encoding: "utf8" })
+    if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`)
+  }
   return realpathSync(dir)
+}
+
+// tsc from this tree as the project's own (the checker prefers node_modules/.bin/tsc); the reason to skip otherwise.
+async function provideTsc(project: string) {
+  const tsc = path.resolve(DESKTOP_DIR, "../../node_modules/typescript/bin/tsc")
+  if (!existsSync(tsc)) return `no TypeScript in this tree (${tsc})`
+  await mkdir(path.join(project, "node_modules", ".bin"), { recursive: true })
+  await symlink(realpathSync(tsc), path.join(project, "node_modules", ".bin", "tsc"))
+}
+
+// VS Code's bundled debugpy, cloned (APFS clonefile) into the fake home, where the server looks
+// (~/.vscode/extensions), so nothing is written into the owner's extension; the reason to skip otherwise. The server
+// picks Homebrew's Python first and never Apple's.
+async function provideDebugpy(home: string) {
+  if (!existsSync("/opt/homebrew/bin/python3")) return "no Homebrew Python at /opt/homebrew/bin/python3"
+  const extensions = path.join(userInfo().homedir, ".vscode", "extensions")
+  const name = (await readdir(extensions).catch(() => [] as string[]))
+    .filter((item) => item.startsWith("ms-python.debugpy-"))
+    .sort()
+    .at(-1)
+  const libs = name ? path.join(extensions, name, "bundled", "libs") : ""
+  if (!name || !existsSync(path.join(libs, "debugpy")))
+    return "no VS Code Python Debugger extension (ms-python.debugpy) under ~/.vscode/extensions"
+  const target = path.join(home, ".vscode", "extensions", name, "bundled")
+  await mkdir(target, { recursive: true })
+  const copied = spawnSync("cp", ["-cR", libs, target], { encoding: "utf8" })
+  if (copied.status !== 0) return `could not clone ${libs}: ${copied.stderr.trim()}`
 }
 
 async function sidecar(renderer: Renderer) {
@@ -405,6 +1053,25 @@ async function api<T>(server: { url: string; auth: string }, method: string, rou
   })
   if (!res.ok) throw new Error(`${method} ${route} -> ${res.status} ${await res.text()}`)
   return (await res.json()) as T
+}
+
+function pollTask(server: { url: string; auth: string }, id: string, ok: (task: Task) => boolean, label: string) {
+  return until(
+    async () => {
+      const task = await api<Task>(server, "GET", `/agenthq/tasks/${id}${dir}`)
+      return ok(task) ? task : undefined
+    },
+    `task ${id} ${label}`,
+    60_000,
+  )
+}
+
+function pollDebug(server: { url: string; auth: string }, ok: (session: DebugSession) => boolean, label: string) {
+  return until(
+    async () => (await api<DebugSession[]>(server, "GET", `/workbench/debug/sessions${dir}`)).find(ok),
+    label,
+    60_000,
+  )
 }
 
 // The server's directory-scoped event stream, filtered to one Agent HQ session.
@@ -451,18 +1118,25 @@ async function openUrl(renderer: Renderer, url: string) {
   )
 }
 
-async function openAgentsTab(renderer: Renderer) {
-  await step("open the bottom panel (ctrl+`)", async () => {
-    // A restarted app restores the panel (and its tab) by itself.
-    if (await renderer.evaluate(`!!document.querySelector('#terminal-panel')`)) return
+// A tab of the bottom panel, opening the panel first (ctrl+`) when it is closed.
+async function panelTab(renderer: Renderer, tab: string) {
+  if (!(await renderer.evaluate(exists("#terminal-panel")))) {
     await renderer.press("`", { code: "Backquote", keyCode: 192, modifiers: CTRL })
     await renderer.waitFor(`document.querySelector('#terminal-panel [data-workbench-tab="agents"]')`, "workbench tabs")
     // Opening the panel starts a terminal whose focus request hands the tab bar back to the terminals; let it settle.
     await renderer.waitFor(`document.querySelector('#terminal-panel [data-component="terminal"]')`, "terminal")
     await Bun.sleep(1_500)
-  })
+  }
+  await renderer.click(`[data-workbench-tab="${tab}"]`)
+  await renderer.waitFor(
+    `document.querySelector('[data-workbench-tab="${tab}"]')?.getAttribute("aria-selected") === "true"`,
+    `the ${tab} tab`,
+  )
+}
+
+async function openAgentsTab(renderer: Renderer) {
   await step("Agents tab", async () => {
-    await renderer.click('[data-workbench-tab="agents"]')
+    await panelTab(renderer, "agents")
     await renderer.waitFor(
       `document.querySelector('[data-component="workbench-panel"][data-tab="agents"] [data-component="agenthq-panel"]')`,
       "Agents panel",
@@ -472,6 +1146,27 @@ async function openAgentsTab(renderer: Renderer) {
       "roster or workspace",
     )
   })
+}
+
+// Leave an agent's workspace for the roster or the Tasks view.
+async function backToList(renderer: Renderer) {
+  if (await renderer.evaluate(exists('[data-component="agenthq-workspace"]')))
+    await renderer.click('[data-component="agenthq-workspace"] button[aria-label="Back to agents"]')
+}
+
+// Felix's workspace on one of his sessions.
+async function openSession(renderer: Renderer, id: string) {
+  if (!(await renderer.evaluate(exists('[data-component="agenthq-panel"]')))) await openAgentsTab(renderer)
+  if (!(await renderer.evaluate(exists('[data-component="agenthq-workspace"]')))) {
+    if (await renderer.evaluate(`${query('[data-agenthq-view="agents"]')}?.getAttribute("aria-selected") === "false"`))
+      await renderer.click('[data-agenthq-view="agents"]')
+    await renderer.click('[data-component="agenthq-card"]')
+  }
+  await renderer.click(`[data-component="agenthq-workspace"] [data-session="${id}"]`)
+  await renderer.waitFor(
+    `document.querySelector('[data-session="${id}"]')?.getAttribute("aria-current") === "true"`,
+    "the session selected",
+  )
 }
 
 async function send(renderer: Renderer, text: string) {
@@ -510,17 +1205,20 @@ async function quitAndCheck() {
   const shells = tree.filter((item) => sidecarPid && item.ppid === sidecarPid)
   const code = await app!.stop()
   if (code === "killed") throw new Error("the app did not quit within 20 s and was killed")
-  await waitUntil(() => tree.every((item) => !alive(item.pid)), "the app's processes to exit", 10_000)
+  await until(() => tree.every((item) => !alive(item.pid)), "the app's processes to exit", 10_000)
   const after = await running()
   if (after.length) throw new Error(`still running: ${after.join("; ")}`)
-  return `${tree.length + 1} processes gone (sidecar pid ${sidecarPid ?? "?"}, ${shells.length} terminal shell(s)); pgrep matched ${before.length} before, 0 after`
+  return `${tree.length + 1} processes gone (sidecar pid ${sidecarPid ?? "?"}, ${shells.length} child process(es) of it); pgrep matched ${before.length} before, 0 after`
 }
 
-async function waitUntil(condition: () => boolean, label: string, timeoutMs = 15_000) {
+// The first truthy value of `probe`, polled until the timeout.
+async function until<T>(probe: () => T | Promise<T>, label: string, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
-  while (!condition()) {
+  while (true) {
+    const value = await probe()
+    if (value) return value as NonNullable<T>
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`)
-    await Bun.sleep(100)
+    await Bun.sleep(150)
   }
 }
 

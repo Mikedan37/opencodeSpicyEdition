@@ -42,7 +42,7 @@ describe("runs", () => {
         Promise.resolve([run("run_old", "passed", 1), run("run_live", "running", 3), run("run_mid", "failed", 2)]),
       run: (id) => {
         details.push(id)
-        return Promise.resolve({ run: { ...run(id, "passed", 1), exitCode: 0 }, output: "all good\n" })
+        return Promise.resolve({ run: { ...run(id, "passed", 1), exitCode: 0 }, output: "all good\n", truncated: true })
       },
       check: missing,
     })
@@ -56,7 +56,12 @@ describe("runs", () => {
     expect(needsDetail(runs.state.runs[2]!)).toBe(true)
     await runs.detail("run_old")
     expect(details).toEqual(["run_old"])
-    expect(runs.state.runs[2]).toMatchObject({ output: "all good\n", detail: "loaded", info: { exitCode: 0 } })
+    expect(runs.state.runs[2]).toMatchObject({
+      output: "all good\n",
+      detail: "loaded",
+      truncated: true,
+      info: { exitCode: 0 },
+    })
   })
 
   test("without the runs routes the tab still works from events", async () => {

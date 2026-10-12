@@ -23,6 +23,7 @@ export const dict = {
   "workbench.output.loading": "Loading output",
   "workbench.output.loadFailed": "Output could not be loaded",
   "workbench.output.noOutput": "No output",
+  "workbench.output.truncated": "The server kept only the start of this output",
   "workbench.output.exit": "exit {{code}}",
   "workbench.output.label": "Output of {{checker}}",
   "workbench.run.status.queued": "Queued",

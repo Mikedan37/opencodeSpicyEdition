@@ -11,6 +11,8 @@ export type RunEntry = {
   next: number
   gap: boolean
   detail: "none" | "loading" | "loaded" | "failed"
+  // The server's copy hit its output cap.
+  truncated?: boolean
 }
 
 const MAX_RUNS = 100
@@ -96,7 +98,14 @@ export function createRunsState(client: Pick<WorkbenchClient, "runs" | "run" | "
     return client.run(id).then(
       (result) => {
         const at = find(id)
-        if (at !== -1) setState("runs", at, { info: result.run, output: result.output, gap: false, detail: "loaded" })
+        if (at !== -1)
+          setState("runs", at, {
+            info: result.run,
+            output: result.output,
+            truncated: result.truncated,
+            gap: false,
+            detail: "loaded",
+          })
       },
       (error: unknown) => {
         const at = find(id)

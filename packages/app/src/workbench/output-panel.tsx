@@ -54,7 +54,8 @@ export default function OutputPanel() {
   })
 
   const check = () =>
-    runs.check().catch((error: unknown) =>
+    // The whole project as one folder unit; the server checks up to 200 of its source files (gitignore-aware).
+    runs.check({ unit: workbench.directory }).catch((error: unknown) =>
       showToast({
         variant: "error",
         title: language.t("workbench.output.failed"),
@@ -215,6 +216,9 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
               </div>
             </Match>
           </Switch>
+          <Show when={props.entry.truncated}>
+            <div class="px-3 pt-1 text-[11px] text-v2-text-text-faint">{language.t("workbench.output.truncated")}</div>
+          </Show>
         </div>
       </Show>
     </section>

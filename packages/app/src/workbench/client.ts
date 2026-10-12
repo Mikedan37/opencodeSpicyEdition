@@ -36,10 +36,15 @@ const SessionDetail = Schema.Struct({
   history: Schema.Array(AgentHQ.AgentEventEnvelope),
 })
 
-// GET /workbench/runs/:runID: the run plus its capped output. Assumed shape until spicy-problems lands the route.
-const RunDetail = Schema.Struct({ run: Workbench.RunInfo, output: Schema.String })
+// GET /workbench/runs/:runID (`RunRecord` in groups/workbench.ts on spicy-problems): output capped at 256 KB.
+const RunDetail = Schema.Struct({
+  run: Workbench.RunInfo,
+  output: Schema.String,
+  truncated: Schema.optional(Schema.Boolean),
+})
 
-export type CheckInput = { files?: string[]; units?: string[] }
+// POST /workbench/check (`CheckPayload`): files, or a folder/file as `unit` (its source files, at most 200).
+export type CheckInput = { files?: string[]; unit?: string; tests?: boolean }
 
 const decoders = {
   providers: Schema.decodeUnknownOption(Schema.Array(AgentHQ.ProviderStatus)),

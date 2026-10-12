@@ -114,7 +114,7 @@ New code in `packages/opencode/src/workbench/investigation/`:
 
 Event sources wired in this branch: every debug session launched for an investigation reports through an observer (`WorkbenchDebug.start(..., { observe })`): started, processes (pid + `ps lstart`), steps, stops/exceptions, exit code, adapter crash (a failure after the program ran). File edits (`file.edited` from the edit/write/apply_patch tools, filtered to the instance directory) are patches of the open attempt for every active investigation in that directory. Permission denials in the `debug` tool record S7. Agent evaluations become `console-eval` evidence.
 
-Not wired here (integration API for the problems/check branch): check and test runs. Call `WorkbenchInvestigation.Service.record(id, { type: "check", passed, runIDs, problems: [{ tool, code?, file?, message }], unverified? })` and `{ type: "repro", passed, summary, runID? }`; `current(sessionID)` finds the agent session's open investigation. Until then S1, S2 and S4 fire only from those calls (covered by unit tests).
+Check and test runs: see wave 2 below (wired through the verification engine).
 
 Recovery: when an instance's investigation state loads (first route or tool use per project directory; there is no bootstrap hook because `project/bootstrap.ts` is not in this branch's ownership), every active record whose owner is gone becomes `interrupted` with checkpoint "the app restarted; killed …". The owner is `{ pid, ps lstart, token }`: another live opencode process (pid and start time match) or another live service instance in this process (token) keeps its records. Recorded processes are killed only when pid and start time still match; reused pids are left alone. Nothing is relaunched.
 
@@ -157,7 +157,39 @@ Runs (P5 commit): `test/workbench` + debug HTTP test 66 pass, 1 skip (DAP-18, De
 
 ### Blockers and limits (P5)
 
-- Check/test runs and turn-end verification belong to the problems branch; they reach investigations only once that code calls `record(...)` (see above).
 - Recovery is lazy per project directory (first investigation access), not at server boot.
 - Patch attribution is by directory: an edit counts for every active investigation in that directory, whichever agent session made it.
 - `current()`/edit handling list the project's records from the JSON store on each call (fine for tens of records).
+
+## Wave 2
+
+### 1. Verification runs feed investigations
+
+Every `WorkbenchVerify.run` with a `sessionID` (the `check` tool and the turn-end gate; there is no
+`POST /workbench/check` route) ends with `WorkbenchInvestigation.Service.verified(sessionID, report, problems)`:
+
+- No open (non-terminal) investigation for that agent session: nothing happens.
+- Otherwise one `check` event: `passed` only when the report has runs and every run passed (skipped, timed out,
+  unavailable and cancelled are never a pass); `problems` are the errors in changed files (or without a file), the
+  ones the gate repairs; `runIDs` and `unverifiedFiles` as reported. The check closes the open attempt, so S1, S2 and
+  S4 fire on real runs. Evidence class: `verified` for a passing check after the last patch, else `observed`.
+- When the report includes test runs (`run.kind === "test"`, e.g. `check` with `tests: true`), also one `repro` event
+  (passed when every test run passed): a failing test is the reproduction, so a passing test run after the last patch
+  plus passing checks resolves the investigation.
+- Failures are logged, never fail the verification run.
+
+Turn-end gate: after its run, `WorkbenchInvestigation.Service.halted(sessionID)` returns a reason while the session's
+investigation is `blocked` or `needs_human`; the gate then breaks instead of adding a repair message. Example
+(`test/workbench/investigation/verification.test.ts`): the same error after two patches → S2 blocks the investigation
+on the second failed gate check, and the gate stops with one repair message instead of two (stand-in checker and real
+`go build`).
+
+Edits are recorded inside the edit tool's `file.edited` publish (EventV2 listeners run inline), so a patch is always
+recorded before the turn-end check that follows it.
+
+Fork files touched (verification engine, owned by the problems branch; each edit marked `spicy:`):
+
+| File                                               | Change                                                                                                                                                         |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/opencode/src/workbench/verify/verify.ts` | Import; yield `WorkbenchInvestigation.Service`; `verified(...)` after the report is built (problems list computed once); `WorkbenchInvestigation.node` in deps |
+| `packages/opencode/src/workbench/verify/gate.ts`   | Import; yield the service; `halted(sessionID)` check after the report-only check; `WorkbenchInvestigation.node` in deps                                        |

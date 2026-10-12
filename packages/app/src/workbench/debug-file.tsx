@@ -17,12 +17,14 @@ const STYLES = ["background-image", "background-repeat", "background-color", "bo
 // Inline, so it also wins over the viewer's selection color on the same line.
 const PAUSED = "rgb(from var(--v2-state-fg-warning) r g b / 0.18)"
 
-// The app-wide File component with the debugger's marks in the read-only viewer: breakpoint dots in the gutter, the
+// The app-wide File component with the debugger's marks in the read-only file viewer: breakpoint dots in the gutter, the
 // selected frame's line, and the top frame's values under it. Pierre renders lines into a shadow root, so the marks
 // are inline styles on its [data-column-number] / [data-line] nodes, reapplied whenever it re-renders them.
 export function DebugFile<T>(props: FileProps<T>) {
   const debug = useDebugOptional()
-  if (!debug || props.mode !== "text") return <File {...props} />
+  // Only the file viewer (the one with line selection); tool output previews in the timeline show file contents
+  // that may predate the program being debugged.
+  if (!debug || props.mode !== "text" || !props.enableLineSelection) return <File {...props} />
   const text = props as TextFileProps<T>
   let host!: HTMLDivElement
 

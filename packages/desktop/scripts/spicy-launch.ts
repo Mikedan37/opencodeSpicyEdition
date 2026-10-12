@@ -27,6 +27,10 @@
 // - Seeded on a fresh root: onboarding done (it can create ~/Documents/Default Project), new layout, and
 //   notifications and sounds off, so nothing pops up or plays while the app runs unattended. --mute-audio as well.
 // - The app skips registering itself as the opencode:// handler when CFFIXED_USER_HOME is set (src/main/index.ts).
+// - A window with unsaved editor edits asks with a native dialog before it unloads (src/main/unsaved.ts);
+//   OPENCODE_SPICY_UNSAVED_ANSWER answers it instead ("cancel" unless the caller says "discard"), so none ever shows.
+// - The main process gets a Node inspector (`inspect` port, loopback) so a script can quit the app the way the menu
+//   does (app.quit()), which a renderer cannot.
 // Not isolated: AppKit still writes its own defaults for the bundle id (~/Library/Preferences/com.github.Electron).
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
@@ -85,6 +89,7 @@ export async function launch(options: LaunchOptions = {}) {
   })
 
   const port = options.port || (await freePort())
+  const inspect = await freePort()
   const env: Record<string, string> = {
     ...Object.fromEntries(KEEP_ENV.flatMap((key) => (process.env[key] ? [[key, process.env[key]!]] : []))),
     PATH,
@@ -102,9 +107,10 @@ export async function launch(options: LaunchOptions = {}) {
     OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
     npm_config_offline: "true",
     npm_config_cache: path.join(root, "npm-cache"),
+    OPENCODE_SPICY_UNSAVED_ANSWER: "cancel",
     ...options.env,
   }
-  const switches = [`--remote-debugging-port=${port}`, ...SWITCHES]
+  const switches = [`--remote-debugging-port=${port}`, `--inspect=127.0.0.1:${inspect}`, ...SWITCHES]
   // electron-vite always replaces ELECTRON_CLI_ARGS with whatever follows "--", so the switches go there.
   const command =
     mode === "dev"
@@ -131,6 +137,7 @@ export async function launch(options: LaunchOptions = {}) {
     userData,
     keychain,
     port,
+    inspect,
     env,
     child,
     exited,

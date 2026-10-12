@@ -22,6 +22,43 @@ export function query(selector: string, text?: string) {
   })(${JSON.stringify(selector)}, ${JSON.stringify(text)})`
 }
 
+// One expression in the Electron main process over its Node inspector (spicy-launch's `inspect` port), with the
+// console's command line API, so `require("electron")` works: e.g. `require("electron").app.quit()`, the menu's quit.
+export async function evaluateMain<T = unknown>(port: number, expression: string): Promise<T> {
+  const targets = (await fetch(`http://127.0.0.1:${port}/json/list`).then((res) => res.json())) as {
+    webSocketDebuggerUrl: string
+  }[]
+  const ws = new WebSocket(targets[0]!.webSocketDebuggerUrl)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve()
+      ws.onerror = () => reject(new Error(`cannot open the main process inspector on port ${port}`))
+    })
+    const reply = await new Promise<{
+      result?: { result: { value?: T }; exceptionDetails?: { exception?: { description?: string } } }
+      error?: { message: string }
+    }>((resolve, reject) => {
+      ws.onmessage = (event) => {
+        const message = JSON.parse(String(event.data))
+        if (message.id === 1) resolve(message)
+      }
+      ws.onclose = () => reject(new Error("the main process inspector closed"))
+      ws.send(
+        JSON.stringify({
+          id: 1,
+          method: "Runtime.evaluate",
+          params: { expression, includeCommandLineAPI: true, returnByValue: true, awaitPromise: true },
+        }),
+      )
+    })
+    const failure = reply.error?.message ?? reply.result?.exceptionDetails?.exception?.description
+    if (failure) throw new Error(failure)
+    return reply.result!.result.value as T
+  } finally {
+    ws.close()
+  }
+}
+
 export async function connectRenderer(port: number, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs
   while (true) {
@@ -59,6 +96,8 @@ async function connect(url: string) {
 
   const send = <T = unknown>(method: string, params: Record<string, unknown> = {}) =>
     new Promise<T>((resolve, reject) => {
+      // A page that went away (the app quit) must fail the call, not leave it waiting forever.
+      if (ws.readyState !== WebSocket.OPEN) return reject(new Error(`DevTools connection closed (${method})`))
       const id = ++next
       pending.set(id, { resolve: resolve as (value: unknown) => void, reject })
       ws.send(JSON.stringify({ id, method, params }))

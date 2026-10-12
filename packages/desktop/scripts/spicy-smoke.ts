@@ -15,15 +15,19 @@
 //   merges it and removes its worktree and branch.
 // - Review: Felix edits two files, each write answered in the UI; Review > Agent changes: accept one hunk, reject the
 //   other, reject the second file from the file view; the files on disk match.
+// - Editor: README.md from the file tree; typing marks the tab unsaved and Cmd+S writes it; a save over a change on
+//   disk shows the conflict bar and Reload from disk shows the disk; closing the window with an unsaved edit, answered
+//   Cancel (OPENCODE_SPICY_UNSAVED_ANSWER), keeps the window, the text and the sidecar.
 // - Problems and Output: Run checks fails on the fixture's type error (tsc from this tree), Output shows the run,
 //   Problems lists the error.
 // - Debug: debugpy (VS Code's bundled copy, on Homebrew Python) runs app.py from launch.json in a terminal: paused on
-//   entry, F9 on a line clicked in the viewer, F5 to that breakpoint, the stack and variables, a Debug Console
-//   evaluation, F5 to the end, the Run tab's exit code.
+//   entry, the stop brings app.py forward, a click in the editor's gutter sets a breakpoint, F5 to it, the stack and
+//   variables, a Debug Console evaluation, F5 to the end, the Run tab's exit code and output.
 // - Activity: the tab renders (no investigations yet).
-// - Quit mid-turn and restart on the same root: history recovered and the session interrupted; no process of the app
-//   left after each quit. Afterwards the throwaway keychain is deleted, and the real keychain and the crash reports
-//   folder are unchanged.
+// - Quit mid-turn the way the menu does (app.quit()) and restart on the same root: the record says interrupted right
+//   after the quit, history recovered. After the restart (answer: discard), an unsaved edit does not stop the quit.
+//   No process of the app is left after each quit. Afterwards the throwaway keychain is deleted, and the real
+//   keychain and the crash reports folder are unchanged.
 //
 // A section that fails is recorded and the run goes on with the next one. Opening the project: the app adds projects
 // through the native folder picker, which CDP cannot drive, so the smoke creates the project's first session through
@@ -36,7 +40,7 @@ import { tmpdir, userInfo } from "node:os"
 import path from "node:path"
 import { $ } from "bun"
 import { alive, cleanup, DESKTOP_DIR, launch, processTree, type Launched, type Mode } from "./spicy-launch"
-import { connectRenderer, CTRL, query, type Renderer } from "./spicy-cdp"
+import { connectRenderer, CTRL, evaluateMain, META, query, type Renderer } from "./spicy-cdp"
 import { demoConfig, INTRO, serveScriptedModel, SLOW, type Reply } from "./spicy-model"
 
 // ---------------------------------------------------------------- fixture
@@ -46,6 +50,12 @@ const A = TEN.join("")
 const A_EDITED = A.replace("two\n", "TWO\n").replace("nine\n", "NINE\n")
 const A_REVIEWED = A.replace("two\n", "TWO\n") // first hunk accepted, second rejected
 const B = "alpha\nbeta\ngamma\n"
+// The editor's file: saved once, changed on disk under an unsaved edit (conflict, reload), then kept through a
+// cancelled window close and saved; after the restart an unsaved edit is discarded by the quit.
+const README = "# Felix demo\n\nA scratch project for the Spicy desktop smoke run.\n"
+const README_SAVED = README.replace("# Felix demo", "# Felix demo (edited)")
+const THEIRS = "# Changed on disk\n\nBy the human.\n"
+const README_KEPT = THEIRS.replace("# Changed on disk", "# Changed on disk (kept)")
 const B_EDITED = B.replace("beta", "BETA")
 const TASK = {
   title: "Write the task note",
@@ -117,6 +127,8 @@ type DebugSession = {
 // Assistant message texts in the Agents workspace (the Markdown body, without the author label), with typographic
 // quotes and whitespace normalized.
 const ASSISTANT = `[...document.querySelectorAll('[data-row="message"][data-role="assistant"]')].map((row) => (row.querySelector(':scope > [data-component="markdown"]') ?? row).textContent.replace(/[‘’]/g, "'").replace(/\\s+/g, " ").trim())`
+// The unsaved-changes dot of a side-panel tab.
+const DIRTY = '#review-panel [data-slot="tab-unsaved"]'
 const checks: Check[] = []
 const shots: string[] = []
 const model = serveScriptedModel({ scripts: SCRIPTS })
@@ -548,6 +560,71 @@ try {
     )
   })
 
+  // ---------------------------------------------------------------- editor: save, conflict, unsaved close
+  await section(async () => {
+    const editor = '#review-panel [data-component="workbench-editor"][data-path="README.md"]'
+    await step("README.md opens from the file tree in the editor", async () => {
+      await openInEditor(renderer!, "README.md")
+      if (await renderer!.evaluate(exists(DIRTY))) throw new Error("a fresh buffer is marked unsaved")
+      if ((await renderer!.evaluate<string>(editorText(editor))) !== README)
+        throw new Error("the editor text differs from disk")
+    })
+    await step("typing marks the tab unsaved; Cmd+S writes the file", async () => {
+      await typeAtEnd(renderer!, editor, " (edited)")
+      await renderer!.waitFor(exists(DIRTY), "the unsaved dot")
+      await shot("editor-unsaved")
+      await renderer!.press("s", { code: "KeyS", keyCode: 83, modifiers: META })
+      await renderer!.waitFor(`!${exists(DIRTY)}`, "the dot to go")
+      await until(async () => (await read("README.md")) === README_SAVED, "README.md on disk")
+    })
+    await step(
+      "an unsaved edit over a change on disk: Cmd+S shows the conflict, Reload from disk shows the disk",
+      async () => {
+        await typeAtEnd(renderer!, editor, "!")
+        await renderer!.waitFor(exists(DIRTY), "the unsaved dot")
+        await Bun.write(path.join(project, "README.md"), THEIRS) // the human changes the file outside the app
+        await renderer!.press("s", { code: "KeyS", keyCode: 83, modifiers: META })
+        await renderer!.waitFor(exists(`${editor} [data-slot="editor-conflict"]`), "the conflict bar")
+        if ((await read("README.md")) !== THEIRS) throw new Error("the refused save wrote the file")
+        await shot("editor-conflict")
+        await renderer!.click(`${editor} [data-slot="editor-conflict"] [data-action="reload"]`)
+        await renderer!.waitFor(`!${exists(`${editor} [data-slot="editor-conflict"]`)}`, "the conflict bar to go")
+        await renderer!.waitFor(`${editorText(editor)} === ${JSON.stringify(THEIRS)}`, "the editor to show the disk")
+        if (await renderer!.evaluate(exists(DIRTY))) throw new Error("still unsaved after the reload")
+      },
+    )
+    await step(
+      "closing the window with an unsaved edit, answered Cancel, keeps it",
+      async () => {
+        await typeAtEnd(renderer!, editor, " (kept)")
+        await renderer!.waitFor(exists(DIRTY), "the unsaved dot")
+        await evaluateMain(
+          app!.inspect,
+          `require("electron").BrowserWindow.getAllWindows().find((win) => win.isVisible())?.close()`,
+        )
+        await Bun.sleep(1_000)
+        const windows = await evaluateMain<number>(
+          app!.inspect,
+          `require("electron").BrowserWindow.getAllWindows().length`,
+        )
+        if (windows !== 1) throw new Error(`${windows} windows after the cancelled close`)
+        if (!(await renderer!.evaluate(exists(DIRTY)))) throw new Error("the unsaved dot is gone")
+        if (!(await renderer!.evaluate<string>(editorText(editor))).startsWith("# Changed on disk (kept)"))
+          throw new Error("the unsaved text is gone")
+        const health = await renderer!.evaluate<number>(
+          `window.api.awaitInitialization().then((s) => fetch(s.url + "/global/health", { headers: { authorization: "Basic " + btoa(s.username + ":" + s.password) } })).then((r) => r.status)`,
+        )
+        if (health !== 200) throw new Error(`sidecar health ${health}`)
+        await shot("editor-close-cancelled")
+        await renderer!.press("s", { code: "KeyS", keyCode: 83, modifiers: META })
+        await renderer!.waitFor(`!${exists(DIRTY)}`, "the dot to go")
+        await until(async () => (await read("README.md")) === README_KEPT, "README.md saved after the cancel")
+        return "1 window, text and dot kept, sidecar health 200; then saved"
+      },
+      (value) => value,
+    )
+  })
+
   // ---------------------------------------------------------------- problems and output
   if (tscMissing) skip("problems and output", tscMissing)
   else
@@ -631,32 +708,23 @@ try {
         },
         (value) => `${value.id} (${value.adapter}), program in pty ${value.ptyID ?? "none"}`,
       )
-      // The viewer that shows the paused line; pierre renders the lines in its shadow root.
-      const viewer = `[...document.querySelectorAll("#review-panel diffs-container")].find((el) => el.shadowRoot?.querySelector("[data-line][data-spicy-exec]"))`
+      const appEditor = '#review-panel [data-component="workbench-editor"][data-path="app.py"]'
       const tab = '#review-panel [role="tab"]'
-      const front = await step("the stop brings app.py forward over Files Changed", () =>
+      const front = await step("the stop brings app.py forward", () =>
         renderer!.waitFor(`!!${query(tab, "app.py")}?.hasAttribute("data-selected")`, "app.py's tab in front", 10_000),
       ).then(
         () => true,
         () => false,
       )
       await step(
-        `F9 on line ${BREAKPOINT} clicked in the viewer`,
+        `a click in the editor's gutter sets a breakpoint on line ${BREAKPOINT}`,
         async () => {
           if (!front) await renderer!.click(tab, "app.py")
-          await renderer!.waitFor(`!!${viewer}`, "app.py open at the paused line")
+          await renderer!.waitFor(exists(`${appEditor} .cm-line[data-spicy-exec]`), "app.py at the paused line")
           await shot("debug-entry")
-          await renderer!.clickOn(
-            `${viewer}?.shadowRoot.querySelector('[data-column-number="${BREAKPOINT}"]') ?? null`,
-            `line ${BREAKPOINT}'s number`,
-          )
+          await renderer!.click(`${appEditor} .cm-lineNumbers .cm-gutterElement`, String(BREAKPOINT))
           await renderer!.waitFor(
-            `!!${viewer}?.shadowRoot.querySelector('[data-line="${BREAKPOINT}"][data-selected-line]')`,
-            `line ${BREAKPOINT} selected`,
-          )
-          await renderer!.press("F9", { code: "F9", keyCode: 120 })
-          await renderer!.waitFor(
-            `!!${viewer}?.shadowRoot.querySelector('[data-column-number="${BREAKPOINT}"][data-spicy-breakpoint="line"]')`,
+            exists(`${appEditor} [data-spicy-glyph][data-line="${BREAKPOINT}"][data-spicy-breakpoint="line"]`),
             "the breakpoint dot",
           )
           return front ? "app.py came forward by itself" : "after clicking app.py's tab"
@@ -773,11 +841,12 @@ try {
       await renderer!.waitFor(statusIs("working"), "working")
       await renderer!.waitFor(`${ASSISTANT}.at(-1)?.includes("Paragraph 1")`, "streaming before quit")
     })
+    // A quit failure is recorded; the app is stopped either way, so the restart still runs.
     await step(
       "no processes left after quitting",
       () => quitAndCheck(),
       (value) => value,
-    )
+    ).catch(() => {})
     await step(
       "the session's history is on disk after the quit",
       () => persisted(sessionID),
@@ -786,7 +855,15 @@ try {
     renderer!.close()
     renderer = undefined
 
-    app = await step("restart on the same state", () => launch({ mode, root, config, log: (line) => lines.push(line) }))
+    app = await step("restart on the same state (unsaved-edits answer: discard)", () =>
+      launch({
+        mode,
+        root,
+        config,
+        env: { OPENCODE_SPICY_UNSAVED_ANSWER: "discard" },
+        log: (line) => lines.push(line),
+      }),
+    )
     renderer = await step("renderer over CDP after restart", () => connectRenderer(app!.port))
     const restarted = await step(
       "sidecar ready after restart",
@@ -833,8 +910,16 @@ try {
       (value) => value,
     ).catch(() => {})
     await step(
-      "no processes left after the final quit",
-      () => quitAndCheck(),
+      "an unsaved edit, then quit (answer: discard): the quit goes through, no processes left",
+      async () => {
+        const editor = '#review-panel [data-component="workbench-editor"][data-path="README.md"]'
+        await openInEditor(renderer!, "README.md")
+        await typeAtEnd(renderer!, editor, " (discarded)")
+        await renderer!.waitFor(exists(DIRTY), "the unsaved dot")
+        const result = await quitAndCheck()
+        if ((await read("README.md")) !== README_KEPT) throw new Error("the discarded edit reached the disk")
+        return `${result}; README.md unchanged`
+      },
       (value) => value,
     )
   })
@@ -924,6 +1009,31 @@ process.exit(failed.length ? 1 : 0)
 
 // ---------------------------------------------------------------- helpers
 
+// A file in a side-panel editor tab: its tab if open, else from the file tree ("Open file").
+async function openInEditor(renderer: Renderer, file: string) {
+  const editor = `#review-panel [data-component="workbench-editor"][data-path="${file}"]`
+  if (await renderer.evaluate(exists(`${editor} .cm-content`))) return
+  if (await renderer.evaluate(exists('#review-panel [role="tab"]', file)))
+    await renderer.click('#review-panel [role="tab"]', file)
+  else {
+    await renderer.click('#review-panel button[aria-label="Open file"]')
+    await renderer.click(`#review-panel [data-slot="file-tree-v2-row"][data-path="${file}"]`)
+  }
+  await renderer.waitFor(exists(`${editor} .cm-content`), `${file} in the editor`)
+}
+
+// Click the editor's first line, go to its end and type there, as the keyboard does.
+async function typeAtEnd(renderer: Renderer, editor: string, text: string) {
+  await renderer.click(`${editor} .cm-line`)
+  await renderer.press("End", { code: "End", keyCode: 35 })
+  await renderer.send("Input.insertText", { text })
+}
+
+// The editor's text: its lines joined (a short file is rendered whole).
+function editorText(editor: string) {
+  return `[...document.querySelectorAll(${JSON.stringify(`${editor} .cm-line`)})].map((line) => line.textContent).join("\\n")`
+}
+
 // Page expressions over the first visible match of a selector (see query in spicy-cdp.ts).
 function exists(selector: string, text?: string) {
   return `!!${query(selector, text)}`
@@ -999,7 +1109,7 @@ function crashReports() {
 // A git repo: two text files for the review, app.py with a launch.json for the debugger, one TypeScript type error.
 async function createProject(dir: string) {
   const files = {
-    "README.md": "# Felix demo\n\nA scratch project for the Spicy desktop smoke run.\n",
+    "README.md": README,
     "a.txt": A,
     "b.txt": B,
     "app.py": APP,
@@ -1212,9 +1322,10 @@ async function dockIconLog(userData: string) {
   return `loaded ${match[1]}`
 }
 
-// Quit through the app's own SIGTERM handler, then prove that every process of the app is gone: the recorded tree
-// (renderer, GPU, network, the "opencode server" sidecar and the terminal shells it spawned) and anything still
-// running from this checkout's Electron binary.
+// Quit the way the menu does, app.quit() in the main process: the windows close first (unsaved edits are answered by
+// OPENCODE_SPICY_UNSAVED_ANSWER), then will-quit waits for the sidecar to stop. Then prove that every process of the app
+// is gone: the recorded tree (renderer, GPU, network, the "opencode server" sidecar and the terminal shells it spawned)
+// and anything still running from this checkout's Electron binary.
 async function quitAndCheck() {
   // This checkout's Electron, never another install's processes. pgrep takes a regex and the path holds "+"
   // (electron@42.3.3+...), so it is escaped.
@@ -1227,12 +1338,22 @@ async function quitAndCheck() {
   const tree = await processTree(app!.child.pid!)
   const sidecarPid = tree.find((item) => item.command.includes("node.mojom.NodeService"))?.pid
   const shells = tree.filter((item) => sidecarPid && item.ppid === sidecarPid)
-  const code = await app!.stop()
-  if (code === "killed") throw new Error("the app did not quit within 20 s and was killed")
+  const asked = await evaluateMain(app!.inspect, `require("electron").app.quit()`).then(
+    () => "",
+    (error) => `: ${error}`,
+  )
+  const code = await Promise.race([app!.exited, Bun.sleep(20_000).then(() => "timeout" as const)])
+  // A quit that hangs is a failure, but the app is stopped (SIGTERM, then SIGKILL) and checked all the same.
+  const hung =
+    code === "timeout"
+      ? `the app did not quit within 20 s of app.quit()${asked}; SIGTERM: ${(await app!.stop()) === "killed" ? "no exit within 20 s either, SIGKILL" : "exited"}`
+      : ""
   await until(() => tree.every((item) => !alive(item.pid)), "the app's processes to exit", 10_000)
   const after = await running()
-  if (after.length) throw new Error(`still running: ${after.join("; ")}`)
-  return `${tree.length + 1} processes gone (sidecar pid ${sidecarPid ?? "?"}, ${shells.length} child process(es) of it); pgrep matched ${before.length} before, 0 after`
+  if (after.length) throw new Error(`${hung ? `${hung}; ` : ""}still running: ${after.join("; ")}`)
+  const gone = `${tree.length + 1} processes gone (sidecar pid ${sidecarPid ?? "?"}, ${shells.length} child process(es) of it); pgrep matched ${before.length} before, 0 after`
+  if (hung) throw new Error(`${hung} (${gone})`)
+  return gone
 }
 
 // The first truthy value of `probe`, polled until the timeout.

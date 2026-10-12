@@ -283,3 +283,35 @@ crash reports folder went 91 → 92, but the new report is not from the smoke: `
 a binary under `/private/tmp/*`, responsible process Terminal, with an exited parent. The same binary also crashed at
 15:06:56, before the run started.
 Screenshots: `docs/spicy/desktop-smoke/20261012T220724/`.
+
+## Editor and unsaved-edit run on `spicy-ide` d24f2cbce (55b1189cb)
+
+New steps:
+
+- **Editor.** README.md opens from the file tree; typing shows the unsaved dot and Cmd+S writes it. An unsaved edit
+  over a change on disk gets the conflict bar on Cmd+S, and Reload from disk shows the disk. Closing the window with an
+  unsaved edit, answered Cancel by the hook, keeps the window, the text and a healthy sidecar.
+- **Debug.** A click in the CodeMirror gutter sets the breakpoint.
+- **Quit.** The app now quits the way the menu does, `app.quit()` in the main process through `--inspect`, instead of
+  SIGTERM, which stops the sidecar first.
+- **Restart.** The restart runs with the answer `discard`, and an unsaved edit must not stop the final quit.
+- **Hook.** `spicy-launch.ts` sets `OPENCODE_SPICY_UNSAVED_ANSWER=cancel` on every launch, so the native dialog can
+  never show.
+
+Result: 62 of 64 checks. Both failures are the same product bug: **after `will-quit` waits for the sidecar, the app
+does not exit.**
+
+- `main.log` shows "sidecar stopped before quit" (62–133 ms), then nothing.
+- The `app.quit()` called after that wait does not terminate the app. Neither does a SIGTERM 20 s later, whose
+  handler also calls `app.quit()`. SIGKILL was needed, in both launches and in the earlier attempt.
+- Everything before that worked:
+  - the Agent HQ record said `interrupted` right after the quit;
+  - the history was recovered (26 entries);
+  - the discard answer let the window close;
+  - the discarded edit never reached disk.
+- For a user this means Cmd+Q leaves the app running with no window and no sidecar.
+- Proposed fix (not applied, waiting for the go-ahead): call `app.exit(0)` instead of `app.quit()` after the sidecar
+  stop in `will-quit`. All windows are closed by then and every `will-quit` listener has run.
+
+Keychain unchanged, crash reports 92 → 92, no process left, no dialog. Screenshots:
+`docs/spicy/desktop-smoke/20261012T234857/`.

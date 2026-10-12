@@ -175,6 +175,8 @@ export const AgentEvent = Schema.Union([
     ),
   }),
   Schema.Struct({ type: Schema.Literal("error"), message: Schema.String }),
+  // The provider named or renamed the session (for example from its generated title).
+  Schema.Struct({ type: Schema.Literal("title"), title: Schema.String }),
 ]).annotate({ identifier: "AgentHQEvent" })
 export type AgentEvent = typeof AgentEvent.Type
 

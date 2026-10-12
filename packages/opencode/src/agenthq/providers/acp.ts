@@ -32,7 +32,7 @@ export const capabilities: AgentHQ.ProviderCapabilities = {
   cancel: true,
   resume: false,
   models: false,
-  mcpTools: false,
+  mcpTools: true,
   notes: ["Resumes only when the agent advertises session/resume or session/load"],
 }
 
@@ -70,6 +70,9 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
       .spawn(
         ChildProcess.make(launch.command, [...launch.args], {
           cwd,
+          // Never this server's credentials. An agent that is opencode itself (`opencode acp`) runs a listener of
+          // its own, which keeps a password that way; other agents ignore it.
+          env: { ...AgentProvider.agentEnv(), OPENCODE_SERVER_PASSWORD: crypto.randomUUID() },
           stdin: { stream: Stream.fromQueue(stdin) },
           forceKillAfter: "3 seconds",
         }),
@@ -212,7 +215,7 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
   const createSession = Effect.fn("AgentHQ.acp.createSession")(function* (session: AgentProvider.SessionInput) {
     const opened = yield* open(session.agent, session.emit)
     const created = yield* opened
-      .call("session/new", () => opened.connection.newSession({ cwd: opened.cwd, mcpServers: [] }))
+      .call("session/new", () => opened.connection.newSession({ cwd: opened.cwd, mcpServers: mcp(session.workbench) }))
       .pipe(Effect.tapError(() => opened.close))
     return handle(opened, created.sessionId)
   })
@@ -225,7 +228,9 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
     const advertised = opened.initialized.agentCapabilities
     if (advertised?.sessionCapabilities?.resume) {
       yield* opened
-        .call("session/resume", () => opened.connection.resumeSession({ sessionId, cwd: opened.cwd, mcpServers: [] }))
+        .call("session/resume", () =>
+          opened.connection.resumeSession({ sessionId, cwd: opened.cwd, mcpServers: mcp(session.workbench) }),
+        )
         .pipe(Effect.tapError(() => opened.close))
       return handle(opened, sessionId)
     }
@@ -233,7 +238,9 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
       // session/load replays the conversation as updates; the manager already holds that history.
       opened.state.replaying = true
       yield* opened
-        .call("session/load", () => opened.connection.loadSession({ sessionId, cwd: opened.cwd, mcpServers: [] }))
+        .call("session/load", () =>
+          opened.connection.loadSession({ sessionId, cwd: opened.cwd, mcpServers: mcp(session.workbench) }),
+        )
         .pipe(
           Effect.ensuring(Effect.sync(() => (opened.state.replaying = false))),
           Effect.tapError(() => opened.close),
@@ -251,6 +258,13 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
   return { id: input.id, status: input.status, createSession, resumeSession } satisfies AgentProvider.Interface
 })
 
+/** The Workbench MCP server as ACP's stdio server entry (credentials only in its environment). */
+function mcp(server: AgentProvider.McpServer | undefined) {
+  if (!server) return []
+  const env = Object.entries(server.env).map(([name, value]) => ({ name, value }))
+  return [{ name: server.name, command: server.command, args: [...server.args], env }]
+}
+
 /** Per-connection client state: maps ACP updates to AgentEvents and parks permission requests. */
 class ClientState {
   sessionID: string | undefined
@@ -262,7 +276,10 @@ class ClientState {
     string,
     { readonly options: readonly PermissionOption[]; readonly resolve: (value: RequestPermissionResponse) => void }
   >()
-  private readonly text = new Map<string, { kind: "message" | "reasoning"; value: string }>()
+  private readonly text = new Map<string, { kind: "message" | "reasoning"; id: string; value: string }>()
+  // Text that resumes under an ACP messageId whose text was already completed gets a new segment id, so each
+  // completed message keeps its own text.
+  private readonly segments = new Map<string, number>()
   private readonly tools = new Map<string, { tool: string; title?: string; state?: string }>()
   private block: string | undefined
   private requests = 0
@@ -310,9 +327,11 @@ class ClientState {
       case "agent_thought_chunk": {
         if (update.content.type !== "text") return
         const kind = update.sessionUpdate === "agent_message_chunk" ? "message" : "reasoning"
-        const id = update.messageId ?? (this.block ??= crypto.randomUUID())
-        const key = `${kind}:${id}`
-        this.text.set(key, { kind, value: (this.text.get(key)?.value ?? "") + update.content.text })
+        const base = update.messageId ?? (this.block ??= crypto.randomUUID())
+        const segment = this.segments.get(`${kind}:${base}`) ?? 0
+        const id = segment === 0 ? base : `${base}-${segment}`
+        const key = `${kind}:${base}`
+        this.text.set(key, { kind, id, value: (this.text.get(key)?.value ?? "") + update.content.text })
         if (kind === "message") this.emit({ type: "message.delta", messageID: id, text: update.content.text })
         return
       }
@@ -340,6 +359,9 @@ class ClientState {
         })
         return
       }
+      case "session_info_update":
+        if (update.title) this.emit({ type: "title", title: update.title })
+        return
       case "plan":
         this.flush()
         this.emit({
@@ -378,9 +400,10 @@ class ClientState {
   // Text accumulated since the last non-text update becomes complete messages and reasoning.
   private flush() {
     this.text.forEach((item, key) => {
-      const id = key.slice(key.indexOf(":") + 1)
-      if (item.kind === "message") this.emit({ type: "message", messageID: id, role: "assistant", text: item.value })
-      if (item.kind === "reasoning") this.emit({ type: "reasoning", messageID: id, text: item.value })
+      this.segments.set(key, (this.segments.get(key) ?? 0) + 1)
+      if (item.kind === "message")
+        this.emit({ type: "message", messageID: item.id, role: "assistant", text: item.value })
+      if (item.kind === "reasoning") this.emit({ type: "reasoning", messageID: item.id, text: item.value })
     })
     this.text.clear()
     this.block = undefined

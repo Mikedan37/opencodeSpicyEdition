@@ -2,8 +2,9 @@
 // session, so a single Claude Code process serves every turn of the session.
 //
 // Isolation: the installed `claude` binary (and so the owner's existing login) is used, but none of the owner's
-// settings, hooks or MCP servers are loaded (`settingSources: []`, `strictMcpConfig`). Permissions stay manual
-// (`permissionMode: "default"`): every prompt Claude Code raises waits for the human through Agent HQ.
+// settings, hooks or MCP servers are loaded (`settingSources: []`, `strictMcpConfig`); the only MCP server is the
+// Workbench bridge. Permissions stay manual (`permissionMode: "default"`): every prompt Claude Code raises,
+// Workbench tool calls included, waits for the human through Agent HQ.
 import type {
   CanUseTool,
   Options,
@@ -18,6 +19,7 @@ import { Cause, Effect, Exit, Queue, Scope, Stream } from "effect"
 import { AgentProvider } from "../provider"
 
 const PREVIEW_LIMIT = 2_000
+const MCP_TIMEOUT = "15 seconds"
 
 export const capabilities: AgentHQ.ProviderCapabilities = {
   streaming: true,
@@ -26,7 +28,7 @@ export const capabilities: AgentHQ.ProviderCapabilities = {
   cancel: true,
   resume: true,
   models: true,
-  mcpTools: false,
+  mcpTools: true,
   notes: ["Uses the installed claude binary and its login; ~/.claude settings, hooks and MCP servers are not loaded"],
 }
 
@@ -34,7 +36,7 @@ export const capabilities: AgentHQ.ProviderCapabilities = {
 export type Run = (params: {
   prompt: AsyncIterable<SDKUserMessage>
   options: Options
-}) => AsyncIterable<SDKMessage> & Pick<Query, "interrupt" | "close">
+}) => AsyncIterable<SDKMessage> & Pick<Query, "interrupt" | "close" | "setMcpServers">
 
 // Tools whose input names the file they change.
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"])
@@ -50,11 +52,8 @@ export const make = Effect.fn("AgentHQ.claudeCode.make")(function* (input: {
   const parent = yield* Scope.Scope
   const failure = (message: string) => new AgentProvider.ProviderError({ provider: "claude-code", message })
 
-  const open = Effect.fnUntraced(function* (
-    agent: AgentHQ.AgentIdentity,
-    emit: AgentProvider.Emit,
-    resume: string | undefined,
-  ) {
+  const open = Effect.fnUntraced(function* (session: AgentProvider.SessionInput, resume: string | undefined) {
+    const { agent, emit } = session
     const status = yield* input.status
     const binary = input.binary()
     if (!status.available || !binary)
@@ -73,13 +72,12 @@ export const make = Effect.fn("AgentHQ.claudeCode.make")(function* (input: {
       prompt: Stream.toAsyncIterable(Stream.fromQueue(inbox)),
       options: {
         cwd: agent.workingDirectory ?? agent.projectDirectory,
+        env: AgentProvider.agentEnv(),
         pathToClaudeCodeExecutable: binary,
         ...(resume ? { resume } : { sessionId: sessionID }),
         ...(agent.model ? { model: agent.model } : {}),
         settingSources: [],
         strictMcpConfig: true,
-        // Hook for the Workbench MCP bridge once it exists.
-        mcpServers: {},
         permissionMode: "default",
         includePartialMessages: true,
         canUseTool: (tool, toolInput, options) => state.ask(tool, toolInput, options),
@@ -105,6 +103,9 @@ export const make = Effect.fn("AgentHQ.claudeCode.make")(function* (input: {
       ),
       Effect.forkIn(scope),
     )
+    // Over the SDK's control channel rather than `options.mcpServers`: the SDK puts those on the claude command
+    // line, where the server password would be visible to every process. Connected before the first message.
+    if (session.workbench) yield* connect(query, session.workbench, emit)
 
     const close = Effect.suspend(() => {
       state.closing = true
@@ -166,10 +167,30 @@ export const make = Effect.fn("AgentHQ.claudeCode.make")(function* (input: {
   return {
     id: "claude-code",
     status: input.status,
-    createSession: (session) => open(session.agent, session.emit, undefined),
-    resumeSession: (session) => open(session.agent, session.emit, session.providerSessionID),
+    createSession: (session) => open(session, undefined),
+    resumeSession: (session) => open(session, session.providerSessionID),
   } satisfies AgentProvider.Interface
 })
+
+/** Gives the session the Workbench MCP server; a failure is reported and the session goes on without it. */
+const connect = (query: ReturnType<Run>, server: AgentProvider.McpServer, emit: AgentProvider.Emit) =>
+  Effect.tryPromise(() =>
+    query.setMcpServers({
+      [server.name]: { type: "stdio", command: server.command, args: [...server.args], env: { ...server.env } },
+    }),
+  ).pipe(
+    Effect.timeout(MCP_TIMEOUT),
+    Effect.match({
+      onFailure: (error) => String(error.cause ?? error),
+      onSuccess: (result) => result.errors[server.name],
+    }),
+    Effect.map((reason) => {
+      if (!reason) return
+      const secret = server.env.OPENCODE_SERVER_PASSWORD
+      const message = `Workbench tools unavailable: ${secret ? reason.replaceAll(secret, "***") : reason}`
+      emit({ type: "error", message: message.slice(0, PREVIEW_LIMIT) })
+    }),
+  )
 
 /** Maps SDK messages to AgentEvents and parks permission requests until the human answers. */
 class ClaudeState {

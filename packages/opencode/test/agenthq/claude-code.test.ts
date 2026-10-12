@@ -1,11 +1,12 @@
 import { describe, expect } from "bun:test"
-import type { Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
+import type { McpServerConfig, Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppProcess } from "@opencode-ai/core/process"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Effect } from "effect"
+import type { AgentProvider } from "../../src/agenthq/provider"
 import { ClaudeCodeProvider } from "../../src/agenthq/providers/claude-code"
 import { AgentDetect } from "../../src/agenthq/providers/detect"
 import { tmpdirScoped } from "../fixture/fixture"
@@ -26,12 +27,13 @@ const available: AgentHQ.ProviderStatus = {
 const sdk = (value: object) => value as SDKMessage
 
 /** A scripted stand-in for the SDK's `query()`: the user message text picks the script. */
-function scripted() {
+function scripted(mcpErrors: Record<string, string> = {}) {
   const seen = {
     options: undefined as Options | undefined,
     closed: false,
     interrupts: 0,
     decisions: [] as PermissionResult[],
+    mcp: [] as Record<string, McpServerConfig>[],
   }
   const run: ClaudeCodeProvider.Run = (params) => {
     seen.options = params.options
@@ -126,6 +128,10 @@ function scripted() {
       close: () => {
         seen.closed = true
       },
+      setMcpServers: async (servers: Record<string, McpServerConfig>) => {
+        seen.mcp.push(servers)
+        return { added: Object.keys(servers), removed: [], errors: mcpErrors }
+      },
     })
   }
   return { run, seen }
@@ -147,6 +153,7 @@ const start = (input: {
   status?: AgentHQ.ProviderStatus
   resume?: string
   model?: string
+  workbench?: AgentProvider.McpServer
 }) =>
   Effect.gen(function* () {
     const dir = yield* tmpdirScoped()
@@ -157,12 +164,20 @@ const start = (input: {
       ...(input.run ? { run: input.run } : {}),
     })
     const emit = (event: AgentHQ.AgentEvent) => void events.push(event)
+    const base = { agent: agent(dir, input.model), emit, ...(input.workbench ? { workbench: input.workbench } : {}) }
     const session = input.resume
-      ? yield* provider.resumeSession({ agent: agent(dir, input.model), emit, providerSessionID: input.resume })
-      : yield* provider.createSession({ agent: agent(dir, input.model), emit })
+      ? yield* provider.resumeSession({ ...base, providerSessionID: input.resume })
+      : yield* provider.createSession(base)
     yield* Effect.addFinalizer(() => session.close)
     return { dir, events, session }
   })
+
+const bridge = (directory: string): AgentProvider.McpServer => ({
+  name: "opencode-workbench",
+  command: "/opt/opencode",
+  args: ["workbench", "mcp", "--url", "http://127.0.0.1:4096", "--directory", directory],
+  env: { OPENCODE_SERVER_USERNAME: "opencode", OPENCODE_SERVER_PASSWORD: "s3cret" },
+})
 
 const waitFor = <A>(
   events: AgentHQ.AgentEvent[],
@@ -191,13 +206,76 @@ describe("agenthq claude code adapter (scripted SDK)", () => {
         model: "haiku",
         settingSources: [],
         strictMcpConfig: true,
-        mcpServers: {},
         permissionMode: "default",
         includePartialMessages: true,
       })
+      // No MCP server at all without a Workbench bridge.
+      expect(options.mcpServers).toBeUndefined()
+      expect(fake.seen.mcp).toEqual([])
       expect(options.resume).toBeUndefined()
       expect(options.allowDangerouslySkipPermissions).toBeUndefined()
       expect(typeof options.canUseTool).toBe("function")
+    }),
+  )
+
+  it.live("gets the Workbench MCP server over the control channel, never on the claude command line", () =>
+    Effect.gen(function* () {
+      const fake = scripted()
+      const workbench = bridge("/projects/app")
+      const started = yield* start({ run: fake.run, workbench })
+      // Connected before createSession returns, so the first message already has the tools.
+      expect(fake.seen.mcp).toEqual([
+        {
+          "opencode-workbench": {
+            type: "stdio",
+            command: "/opt/opencode",
+            args: ["workbench", "mcp", "--url", "http://127.0.0.1:4096", "--directory", "/projects/app"],
+            env: { OPENCODE_SERVER_USERNAME: "opencode", OPENCODE_SERVER_PASSWORD: "s3cret" },
+          },
+        },
+      ])
+      // `options` become the claude command line: no MCP config and no secret there.
+      expect(fake.seen.options!.mcpServers).toBeUndefined()
+      expect(JSON.stringify(fake.seen.options)).not.toContain("s3cret")
+      expect(started.events).toEqual([])
+
+      // Resuming gives the resumed session the same server.
+      yield* start({ run: fake.run, workbench, resume: started.session.providerSessionID })
+      expect(fake.seen.mcp).toHaveLength(2)
+    }),
+  )
+
+  it.live("the claude process does not inherit the opencode server's credentials; only the bridge gets them", () =>
+    Effect.gen(function* () {
+      const saved = [process.env.OPENCODE_SERVER_USERNAME, process.env.OPENCODE_SERVER_PASSWORD] as const
+      process.env.OPENCODE_SERVER_USERNAME = "opencode"
+      process.env.OPENCODE_SERVER_PASSWORD = "parent-secret"
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (saved[0] === undefined) delete process.env.OPENCODE_SERVER_USERNAME
+          else process.env.OPENCODE_SERVER_USERNAME = saved[0]
+          if (saved[1] === undefined) delete process.env.OPENCODE_SERVER_PASSWORD
+          else process.env.OPENCODE_SERVER_PASSWORD = saved[1]
+        }),
+      )
+      const fake = scripted()
+      yield* start({ run: fake.run, workbench: bridge("/projects/app") })
+      // `env` replaces the claude process's whole environment: everything else is still there.
+      const env = fake.seen.options!.env!
+      expect(Object.keys(env)).not.toContain("OPENCODE_SERVER_USERNAME")
+      expect(Object.keys(env)).not.toContain("OPENCODE_SERVER_PASSWORD")
+      expect(env.PATH).toBe(process.env.PATH)
+      expect(fake.seen.mcp[0]?.["opencode-workbench"]).toMatchObject({ env: { OPENCODE_SERVER_PASSWORD: "s3cret" } })
+    }),
+  )
+
+  it.live("a Workbench server that fails to connect is reported without its secret", () =>
+    Effect.gen(function* () {
+      const fake = scripted({ "opencode-workbench": "MCP error: auth s3cret rejected" })
+      const started = yield* start({ run: fake.run, workbench: bridge("/projects/app") })
+      expect(started.events).toEqual([
+        { type: "error", message: "Workbench tools unavailable: MCP error: auth *** rejected" },
+      ])
     }),
   )
 

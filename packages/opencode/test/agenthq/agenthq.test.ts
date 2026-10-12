@@ -7,7 +7,8 @@ import { Database } from "@opencode-ai/core/database/database"
 import { AppProcess } from "@opencode-ai/core/process"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
-import { Effect, Exit, Layer, Schema, Scope } from "effect"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { Deferred, Effect, Exit, Layer, Schema, Scope } from "effect"
 import fs from "fs/promises"
 import path from "path"
 import { AgentDetect } from "../../src/agenthq/providers/detect"
@@ -162,6 +163,22 @@ const modelCalls = (llm: TestLLMServer["Service"]) =>
     Effect.map((inputs) => inputs.filter((input) => !JSON.stringify(input).includes("Generate a title")).length),
   )
 
+/** The assistant texts a client rebuilds from envelopes: deltas append, a final `message` replaces. */
+const rendered = (list: readonly Envelope[]) => {
+  const texts = new Map<string, string>()
+  list.forEach((item) => {
+    if (item.event.type === "message.delta")
+      texts.set(item.event.messageID, (texts.get(item.event.messageID) ?? "") + item.event.text)
+    if (item.event.type === "message" && item.event.role === "assistant")
+      texts.set(item.event.messageID, item.event.text)
+  })
+  return [...texts.values()]
+}
+
+function is<D extends EventV2.Definition>(definition: D, event: EventV2.Payload): event is EventV2.Payload<D> {
+  return event.type === definition.type
+}
+
 const contiguous = (list: readonly Envelope[]) => list.every((item, index) => item.seq === list[0].seq + index)
 
 describe("agenthq", () => {
@@ -301,6 +318,23 @@ describe("agenthq", () => {
 
       const detail = yield* sessions.get(started.id)
       expect(detail.session).toMatchObject({ status: "idle", pendingPermissions: 0 })
+
+      // Some models number tool calls per turn: the next turn's call reuses the id and is still recorded.
+      const callID = tools.at(-1)!.callID
+      yield* llm.push(reply().tool("glob", { pattern: "*.txt" }))
+      yield* llm.push(reply().text("again").stop())
+      yield* sessions.send(started.id, "list the text files")
+      const next = (yield* turnCompleted(started.id, 2)).slice(history.length)
+      const repeated = ofType(next, "tool").filter((event) => event.tool === "glob")
+      expect(repeated.map((event) => event.callID)).toContain(callID)
+      expect(repeated.at(-1)).toMatchObject({ state: "completed" })
+      expect(ofType(next, "message").map((event) => event.text)).toEqual(["list the text files", "again"])
+      // Compaction keeps one entry per tool per turn: the first turn's tool stays.
+      const kept = ofType((yield* sessions.get(started.id)).history, "tool").filter((event) => event.tool === "glob")
+      expect(kept.map((event) => [event.callID, event.state])).toEqual([
+        [callID, "completed"],
+        [callID, "completed"],
+      ])
     }),
   )
 
@@ -623,6 +657,101 @@ describe("agenthq", () => {
         expect(texts).not.toContain("old reply")
         expect(texts).not.toContain("old question")
       }),
+  )
+
+  it.live("AHQ-11 a cancel racing a streamed delta never leaves turn output after the final text", () =>
+    Effect.gen(function* () {
+      const { llm, dir } = yield* project
+      const seen = yield* capture
+      const events = yield* EventV2.Service
+      const sessions = yield* AgentSessions.Service
+      const agent = yield* createAgent(dir)
+      const started = yield* sessions.start(agent.id)
+      // The provider's second delta opens the race: the manager has taken it from its queue and is waiting to
+      // coalesce more when the cancel arrives and the provider reports the aborted text part as final.
+      const second = yield* Deferred.make<void>()
+      const off = yield* events.listen((event) =>
+        Effect.sync(() => {
+          if (is(SessionV1.Event.PartDelta, event) && event.data.delta === "this ")
+            Deferred.doneUnsafe(second, Exit.void)
+        }),
+      )
+      yield* Effect.addFinalizer(() => off)
+      yield* llm.push(reply().text("Paragraph 1: ").text("this ").hang())
+      yield* sessions.send(started.id, "write three paragraphs")
+      yield* Deferred.await(second).pipe(Effect.timeout("20 seconds"))
+      // Inside the manager's 40 ms coalescing window; this sleep is the race being reproduced.
+      yield* Effect.sleep("5 millis")
+      yield* sessions.cancel(started.id)
+      yield* Effect.sleep("300 millis")
+
+      const turn = new Set(["message.delta", "message", "reasoning", "tool", "plan", "file.changed", "turn.completed"])
+      for (const list of [envelopes(seen, started.id), [...(yield* sessions.get(started.id)).history]]) {
+        const cancelled = list.findIndex((item) => item.event.type === "status" && item.event.status === "cancelled")
+        expect(cancelled).toBeGreaterThan(-1)
+        expect(
+          list.slice(cancelled + 1).filter((item) => turn.has(item.event.type) && item.event.type !== "message"),
+        ).toEqual([])
+        const final = list.findIndex((item) => item.event.type === "message" && item.event.role === "assistant")
+        if (final === -1) continue
+        const id = (list[final]!.event as EventOf<"message">).messageID
+        expect(
+          list.slice(final + 1).filter((item) => item.event.type === "message.delta" && item.event.messageID === id),
+        ).toEqual([])
+      }
+      // What a client rebuilds from the stream (deltas append, a final message replaces) is exactly the text.
+      expect(rendered(envelopes(seen, started.id))).toEqual(["Paragraph 1: this "])
+    }),
+  )
+
+  it.live("AHQ-11b late output for a finished message or tool is dropped for any provider (scripted ACP)", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const seen = yield* capture
+      const registry = yield* AgentRegistry.Service
+      const sessions = yield* AgentSessions.Service
+      const agent = yield* registry.create({
+        name: "Late",
+        avatar: { kind: "initials", value: "L" },
+        provider: "acp",
+        projectDirectory: dir,
+        launch: {
+          command: process.execPath,
+          args: [path.join(import.meta.dir, "../fixture/agenthq/fake-acp-agent.ts")],
+        },
+      })
+      const started = yield* sessions.start(agent.id)
+      yield* sessions.send(started.id, "late")
+      yield* turnCompleted(started.id)
+      // The agent's late updates arrive 30 ms after its answer.
+      yield* Effect.sleep("300 millis")
+      const published = envelopes(seen, started.id)
+      const final = published.findIndex((item) => item.event.type === "message" && item.event.role === "assistant")
+      expect((published[final]!.event as EventOf<"message">).text).toBe("first")
+      expect(published.slice(final + 1).filter((item) => item.event.type === "message.delta")).toEqual([])
+      expect(ofType(published, "tool").map((event) => event.state)).toEqual(["completed"])
+      expect(rendered(published)).toEqual(["first"])
+    }),
+  )
+
+  it.live("AHQ-12 the provider's generated session title reaches the Agent HQ session", () =>
+    Effect.gen(function* () {
+      const { llm, dir } = yield* project
+      const sessions = yield* AgentSessions.Service
+      const agent = yield* createAgent(dir)
+      const started = yield* sessions.start(agent.id)
+      expect(started.title).toBeUndefined()
+      yield* llm.text("hello back")
+      yield* sessions.send(started.id, "hello")
+      // The fake model answers opencode's title request with "E2E Title".
+      const titled = yield* waitHistory(
+        started.id,
+        (_, session) => (session.title === "E2E Title" ? session : undefined),
+        "the session title never arrived",
+      )
+      expect(titled.title).toBe("E2E Title")
+      expect((yield* sessions.list(agent.id)).find((item) => item.id === started.id)?.title).toBe("E2E Title")
+    }),
   )
 
   it.effect("guard turns allow into ask except for read-only tools and keeps deny", () =>

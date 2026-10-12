@@ -109,6 +109,7 @@ export const make = Effect.gen(function* () {
     // `turn` changes on cancel/close so a finishing prompt fiber from before stays silent.
     let turn = 0
     let inflight = 0
+    let title: string | undefined
 
     const part = (input: EventV2.Data<typeof SessionV1.Event.PartUpdated>["part"]) => {
       if (input.sessionID !== sessionID || !assistant.has(input.messageID)) return
@@ -146,6 +147,14 @@ export const make = Effect.gen(function* () {
     }
 
     const observe = (event: EventV2.Payload) => {
+      // opencode names the session once its title request is answered; default titles are placeholders.
+      if (is(SessionV1.Event.Updated, event)) {
+        const named = event.data.info.title
+        if (event.data.sessionID !== sessionID || named === title || Session.isDefaultTitle(named)) return
+        title = named
+        emit({ type: "title", title: named })
+        return
+      }
       if (is(SessionV1.Event.Created, event)) {
         if (event.data.info.parentID && watched.has(event.data.info.parentID)) watched.add(event.data.info.id)
         return

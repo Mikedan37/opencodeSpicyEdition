@@ -1,6 +1,7 @@
 // A scripted ACP agent for Agent HQ contract tests. The prompt text picks the script:
 //   "plan"  → plan, thought, text, an edit tool with a diff, end_turn
 //   "ask"   → asks permission (allow_once / reject_always) and reports the answer
+//   "late"  → a message and a finished tool, then after its answer a late chunk and tool update for them
 //   "crash" → writes to stderr and exits with code 3
 //   other   → echoes the text
 // session/load replays one old exchange, which the client must not record again.
@@ -82,6 +83,32 @@ new AgentSideConnection(
               ],
             },
           })
+          return { stopReason: "end_turn" }
+        }
+        if (text === "late") {
+          await client.sessionUpdate({
+            sessionId,
+            update: { sessionUpdate: "agent_message_chunk", messageId: "m1", content: { type: "text", text: "first" } },
+          })
+          await client.sessionUpdate({
+            sessionId,
+            update: { sessionUpdate: "tool_call", toolCallId: "t9", title: "Read", kind: "read", status: "completed" },
+          })
+          // Out of protocol on purpose: updates for a finished message and tool after the turn's answer.
+          setTimeout(() => {
+            void client.sessionUpdate({
+              sessionId,
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                messageId: "m1",
+                content: { type: "text", text: " late" },
+              },
+            })
+            void client.sessionUpdate({
+              sessionId,
+              update: { sessionUpdate: "tool_call_update", toolCallId: "t9", status: "in_progress" },
+            })
+          }, 30)
           return { stopReason: "end_turn" }
         }
         if (text === "ask") {

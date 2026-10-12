@@ -4,15 +4,16 @@
 // the directory a client happens to be routed to, and must stay reachable from any instance while the
 // provider runs in its own project's instance. Records live in the global JSON store.
 //
-// Every provider event goes through one queue per session. A single consumer fiber drains it in
-// batches, coalesces text deltas, assigns gap-free `seq`, keeps a capped compacted history,
-// persists, and publishes. Manager-side events (user message, cancel) are recorded under the same
-// per-session lock, so ordering and seq stay consistent.
+// Every event, from the provider or from the manager itself (user message, cancel), goes through one
+// queue per session, and a single consumer fiber is the only writer: it drains the queue in batches,
+// coalesces text deltas, assigns gap-free `seq`, keeps a capped compacted history, persists, and
+// publishes. Events are therefore recorded in the order they were emitted; nothing taken from the
+// queue can be overtaken by a later event.
 import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppProcess } from "@opencode-ai/core/process"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
-import { Cause, Context, Effect, Fiber, Layer, Option, Queue, Schema, Scope } from "effect"
+import { Cause, Context, Deferred, Effect, Fiber, Layer, Option, Queue, Schema, Scope } from "effect"
 import { Agent } from "@/agent/agent"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Permission } from "@/permission"
@@ -27,9 +28,20 @@ import { AcpProvider } from "./providers/acp"
 import { ClaudeCodeProvider } from "./providers/claude-code"
 import { AgentDetect } from "./providers/detect"
 import { OpenCodeProvider } from "./providers/opencode"
+import { AgentWorkbench } from "./workbench"
 import { ReviewChanges } from "@/review/changes" // spicy: review hook
 
 const ACTIVE = new Set<AgentHQ.AgentSessionStatus>(["starting", "thinking", "working", "needs_approval", "blocked"])
+// What a turn produces. It is recorded only while the provider owes the session a turn.
+const TURN = new Set<AgentHQ.AgentEvent["type"]>([
+  "message.delta",
+  "message",
+  "reasoning",
+  "tool",
+  "plan",
+  "file.changed",
+  "turn.completed",
+])
 const HISTORY_LIMIT = 2_000
 // Wait this long after a delta-only batch so a streaming reply is published in fewer, larger deltas.
 const DELTA_LINGER = "40 millis"
@@ -43,6 +55,12 @@ type Stored = typeof Stored.Type
 const decodeStored = Schema.decodeUnknownOption(Stored)
 const decodeHistory = Schema.decodeUnknownOption(Schema.Array(AgentHQ.AgentEventEnvelope))
 
+/** A queued event; manager events carry `done` so the caller can wait until they are recorded. */
+interface Entry {
+  readonly event: AgentHQ.AgentEvent
+  readonly done?: Deferred.Deferred<void>
+}
+
 interface Live {
   info: AgentHQ.AgentSessionInfo
   readonly agent: AgentHQ.AgentIdentity
@@ -50,7 +68,15 @@ interface Live {
   history: AgentHQ.AgentEventEnvelope[]
   persisted: number
   readonly pending: Set<string>
-  readonly queue: Queue.Queue<AgentHQ.AgentEvent>
+  readonly queue: Queue.Queue<Entry>
+  /**
+   * Messages of this turn that have their final text, and tools of this turn that reached a final state: later
+   * output for them is stale. Per turn, because some models number tool calls per turn.
+   */
+  readonly final: Set<string>
+  readonly tools: Set<string>
+  /** Turns the provider still owes: one per user message, closed by its end, all closed by a cancel. */
+  owed: number
   consumer?: Fiber.Fiber<unknown>
   handle?: AgentProvider.Session
 }
@@ -136,27 +162,43 @@ const layer = Layer.effect(
       }),
     }
     const live = new Map<string, Live>()
+    // `locks` serializes operations on a session (load, attach, provider calls); `writes` lets a reader see a
+    // session between recorded batches, never in the middle of one.
     const locks = KeyedMutex.makeUnsafe<string>()
     const lock = (id: string) => locks.withLock(id)
+    const writes = KeyedMutex.makeUnsafe<string>()
 
     // ---------------------------------------------------------------- recording
 
+    // Only the session's consumer (and the shutdown finalizer, once consumers are gone) calls this.
     const record = Effect.fnUntraced(function* (session: Live, input: readonly AgentHQ.AgentEvent[]) {
       const before = session.info
       const published: AgentHQ.AgentEventEnvelope[] = []
-      for (const event of coalesce(input)) {
-        const info = apply(session, event)
-        // A status that changes nothing (repeated busy, progress while a permission waits) is not news.
-        if (event.type === "status" && info === session.info) continue
-        session.info = info
-        // A provider that lost its process or instance is detached; the next message attaches again.
-        if (event.type === "status" && event.status === "disconnected" && session.handle) {
-          yield* session.handle.close
-          session.handle = undefined
+      for (const next of coalesce(input)) {
+        if (stale(session, next)) continue
+        // A turn that ends answers its open permission requests, so nothing is left waiting.
+        const ending = next.type === "turn.completed" || (next.type === "status" && !ACTIVE.has(next.status))
+        const closing = ending
+          ? [...session.pending].map(
+              (requestID): AgentHQ.AgentEvent => ({ type: "permission.resolved", requestID, outcome: "cancelled" }),
+            )
+          : []
+        for (const event of [...closing, next]) {
+          account(session, event)
+          const info = apply(session, event)
+          // A status that changes nothing (repeated busy, progress while a permission waits) is not news.
+          if (event.type === "status" && info === session.info) continue
+          session.info = info
+          track(session, event)
+          // A provider that lost its process or instance is detached; the next message attaches again.
+          if (event.type === "status" && event.status === "disconnected" && session.handle) {
+            yield* session.handle.close
+            session.handle = undefined
+          }
+          const envelope = { sessionID: session.info.id, seq: session.seq++, at: Date.now(), event }
+          append(session, envelope)
+          published.push(envelope)
         }
-        const envelope = { sessionID: session.info.id, seq: session.seq++, at: Date.now(), event }
-        append(session, envelope)
-        published.push(envelope)
       }
       if (published.length === 0) return
       const now = Date.now()
@@ -182,17 +224,39 @@ const layer = Layer.effect(
     const emitter =
       (session: Live): AgentProvider.Emit =>
       (event) => {
-        Queue.offerUnsafe(session.queue, event)
+        Queue.offerUnsafe(session.queue, { event })
       }
 
-    // One consumer per session: the only path from a provider to history and the event bus.
+    /** Queue manager events behind everything already emitted and wait until they are recorded. */
+    const submit = Effect.fnUntraced(function* (session: Live, events: readonly AgentHQ.AgentEvent[]) {
+      const done = yield* Deferred.make<void>()
+      events.forEach((event, index) =>
+        Queue.offerUnsafe(session.queue, index === events.length - 1 ? { event, done } : { event }),
+      )
+      if (events.length > 0) yield* Deferred.await(done)
+    })
+
+    // One consumer per session: the only writer of its history and the only path to the event bus.
     const consume = (session: Live) =>
       Effect.gen(function* () {
         const first = yield* Queue.takeAll(session.queue)
-        const batch = first.every((event) => event.type === "message.delta")
+        const batch = first.every((entry) => entry.event.type === "message.delta")
           ? [...first, ...(yield* Effect.sleep(DELTA_LINGER).pipe(Effect.andThen(Queue.clear(session.queue))))]
           : first
-        yield* lock(session.info.id)(record(session, batch))
+        yield* writes
+          .withLock(session.info.id)(
+            record(
+              session,
+              batch.map((entry) => entry.event),
+            ),
+          )
+          .pipe(
+            Effect.ensuring(
+              Effect.forEach(batch, (entry) => (entry.done ? Deferred.succeed(entry.done, undefined) : Effect.void), {
+                discard: true,
+              }),
+            ),
+          )
       }).pipe(
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterrupts(cause),
@@ -243,7 +307,10 @@ const layer = Layer.effect(
         history,
         persisted: Date.now(),
         pending: new Set(),
-        queue: yield* Queue.unbounded<AgentHQ.AgentEvent>(),
+        queue: yield* Queue.unbounded<Entry>(),
+        final: new Set(),
+        tools: new Set(),
+        owed: 0,
       })
     })
 
@@ -260,6 +327,7 @@ const layer = Layer.effect(
         agent: session.agent,
         providerSessionID: session.info.providerSessionID,
         emit: emitter(session),
+        workbench: yield* AgentWorkbench.server(session.agent.workingDirectory ?? session.agent.projectDirectory),
       })
       return session.handle
     })
@@ -279,7 +347,7 @@ const layer = Layer.effect(
           (item) =>
             lock(item.id)(
               load(item.id).pipe(
-                Effect.flatMap((session) => record(session, [{ type: "status", status: "interrupted" }])),
+                Effect.flatMap((session) => submit(session, [{ type: "status", status: "interrupted" }])),
               ),
             ).pipe(Effect.catchCause((cause) => Effect.logWarning("agenthq recovery skipped", { id: item.id, cause }))),
           { discard: true },
@@ -295,7 +363,9 @@ const layer = Layer.effect(
           Effect.gen(function* () {
             if (session.handle) yield* session.handle.close
             if (!ACTIVE.has(session.info.status)) return
-            yield* record(session, [...(yield* Queue.clear(session.queue)), { type: "status", status: "interrupted" }])
+            // The consumers are already stopped, so this is the only writer left.
+            const queued = (yield* Queue.clear(session.queue)).map((entry) => entry.event)
+            yield* record(session, [...queued, { type: "status", status: "interrupted" }])
           }).pipe(Effect.ignoreCause),
         { discard: true },
       ),
@@ -357,20 +427,24 @@ const layer = Layer.effect(
         history: [],
         persisted: now,
         pending: new Set(),
-        queue: yield* Queue.unbounded<AgentHQ.AgentEvent>(),
+        queue: yield* Queue.unbounded<Entry>(),
+        final: new Set(),
+        tools: new Set(),
+        owed: 0,
       }
       // Ask the provider first: an unsupported or failing provider leaves no record behind.
       const handle = yield* providers[agent.provider].createSession({
         agent,
         ...(input?.title ? { title: input.title } : {}),
         emit: emitter(session),
+        workbench: yield* AgentWorkbench.server(agent.workingDirectory ?? agent.projectDirectory),
       })
       session.handle = handle
       session.info = { ...session.info, providerSessionID: handle.providerSessionID }
       return yield* lock(session.info.id)(
         Effect.gen(function* () {
           yield* register(session)
-          yield* record(session, [{ type: "status", status: "idle" }])
+          yield* submit(session, [{ type: "status", status: "idle" }])
           return session.info
         }),
       )
@@ -379,9 +453,11 @@ const layer = Layer.effect(
     const get = Effect.fn("AgentHQSessions.get")(function* (sessionID: AgentHQ.AgentSessionID) {
       yield* ready
       const current = live.get(sessionID)
-      // Under the lock, so a reader never sees an envelope before it was persisted and published.
+      // Between recorded batches, so a reader never sees an envelope before it was persisted and published.
       if (current)
-        return yield* lock(sessionID)(Effect.sync(() => ({ session: current.info, history: [...current.history] })))
+        return yield* writes.withLock(sessionID)(
+          Effect.sync(() => ({ session: current.info, history: [...current.history] })),
+        )
       const stored = yield* readStored(sessionID)
       if (Option.isNone(stored)) return yield* missing(sessionID)
       return { session: strip(stored.value), history: yield* readHistory(sessionID) }
@@ -394,13 +470,13 @@ const layer = Layer.effect(
         Effect.gen(function* () {
           const session = yield* load(sessionID)
           const handle = yield* attach(session)
-          yield* record(session, [
+          yield* submit(session, [
             { type: "message", messageID: crypto.randomUUID(), role: "user", text },
             { type: "status", status: "working" },
           ])
           yield* handle.send(text).pipe(
             Effect.tapError((error) =>
-              record(session, [
+              submit(session, [
                 { type: "error", message: error.message },
                 { type: "status", status: "failed" },
               ]),
@@ -416,15 +492,9 @@ const layer = Layer.effect(
         Effect.gen(function* () {
           const session = yield* load(sessionID)
           if (session.handle) yield* session.handle.cancel
-          if (!ACTIVE.has(session.info.status)) return session.info
-          // Events the provider queued before the cancel stay ahead of it.
-          yield* record(session, [
-            ...(yield* Queue.clear(session.queue)),
-            ...[...session.pending].map(
-              (requestID): AgentHQ.AgentEvent => ({ type: "permission.resolved", requestID, outcome: "cancelled" }),
-            ),
-            { type: "status", status: "cancelled" },
-          ])
+          // Queued behind whatever the provider emitted while cancelling; a session with no active turn stays as
+          // it is, and open permission requests are answered `cancelled` when the status is recorded.
+          yield* submit(session, [{ type: "status", status: "cancelled" }])
           return session.info
         }),
       )
@@ -516,12 +586,42 @@ function coalesce(events: readonly AgentHQ.AgentEvent[]) {
   }, [])
 }
 
+/**
+ * Output that can no longer be right, whichever provider sends it: anything more for a message that already has
+ * its final text, a tool update after the tool finished, or turn output when no turn is owed (after the turn
+ * ended or was cancelled, until the next user message).
+ */
+function stale(session: Live, event: AgentHQ.AgentEvent) {
+  if (event.type === "message" && event.role === "user") return false
+  if ((event.type === "message" || event.type === "message.delta") && session.final.has(event.messageID)) return true
+  if (event.type === "tool" && session.tools.has(event.callID)) return true
+  return session.owed === 0 && TURN.has(event.type)
+}
+
+/** Turn bookkeeping for `stale`; runs for every recorded event, before a no-op status is skipped. */
+function account(session: Live, event: AgentHQ.AgentEvent) {
+  if (event.type === "message" && event.role === "user") {
+    session.owed++
+    session.final.clear()
+    session.tools.clear()
+  }
+  if (event.type === "turn.completed" || (event.type === "status" && event.status === "failed"))
+    session.owed = Math.max(0, session.owed - 1)
+  if (event.type === "status" && ["cancelled", "disconnected", "interrupted"].includes(event.status)) session.owed = 0
+}
+
+function track(session: Live, event: AgentHQ.AgentEvent) {
+  if (event.type === "message") session.final.add(event.messageID)
+  if (event.type === "tool" && (event.state === "completed" || event.state === "error")) session.tools.add(event.callID)
+}
+
 function apply(session: Live, event: AgentHQ.AgentEvent): AgentHQ.AgentSessionInfo {
   const info = session.info
   const next = (patch: Partial<AgentHQ.AgentSessionInfo>) => ({ ...info, ...patch, updatedAt: Date.now() })
   switch (event.type) {
     case "status":
       if (info.status === event.status) return info
+      if (event.status === "cancelled" && !ACTIVE.has(info.status)) return info
       // Provider progress must not hide a permission request that is still waiting for the human.
       if (session.pending.size > 0 && (event.status === "working" || event.status === "thinking")) return info
       if (event.status === "working") return next({ status: event.status, error: undefined })
@@ -541,6 +641,8 @@ function apply(session: Live, event: AgentHQ.AgentEvent): AgentHQ.AgentSessionIn
       return next({ status: "idle", pendingPermissions: 0 })
     case "error":
       return next({ error: event.message })
+    case "title":
+      return event.title === info.title ? info : next({ title: event.title })
     default:
       return info
   }
@@ -563,14 +665,19 @@ function append(session: Live, envelope: AgentHQ.AgentEventEnvelope) {
     }
     return
   }
-  if (event.type === "message")
-    session.history = session.history.filter(
-      (item) => !(item.event.type === "message.delta" && item.event.messageID === event.messageID),
-    )
-  if (event.type === "tool")
-    session.history = session.history.filter(
-      (item) => !(item.event.type === "tool" && item.event.callID === event.callID),
-    )
+  // A final message replaces its deltas and a tool update its earlier states, within the current turn only:
+  // some models number tool calls per turn, and an earlier turn's entries must stay.
+  if (event.type === "message" || event.type === "tool") {
+    const turn = session.history.findLastIndex((item) => item.event.type === "message" && item.event.role === "user")
+    const replaced = (item: AgentHQ.AgentEventEnvelope) =>
+      event.type === "tool"
+        ? item.event.type === "tool" && item.event.callID === event.callID
+        : item.event.type === "message.delta" && item.event.messageID === event.messageID
+    session.history = [
+      ...session.history.slice(0, turn + 1),
+      ...session.history.slice(turn + 1).filter((item) => !replaced(item)),
+    ]
+  }
   session.history.push(envelope)
   if (session.history.length > HISTORY_LIMIT) session.history.splice(0, session.history.length - HISTORY_LIMIT)
 }

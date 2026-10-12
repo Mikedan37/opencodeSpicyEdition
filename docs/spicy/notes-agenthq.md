@@ -129,7 +129,7 @@ Permission options (ids are what `POST .../permissions/:requestID` takes as `opt
 ### History (`GET /agenthq/sessions/:id`, key `["agenthq","events",id]`)
 
 A compacted view of the stream, newest 2000 entries: a completed `message` replaces its deltas, a `tool`
-keeps only its latest state, consecutive deltas of one message merge. Seq in history is strictly increasing
+keeps only its latest state (both within the current turn since wave 3), consecutive deltas of one message merge. Seq in history is strictly increasing
 but may skip compacted entries; the last entry always has the newest seq. A client that reconnects calls GET,
 continues from `history.at(-1).seq` (GET returns exactly what has been persisted and published, never more), and
 resyncs again whenever a live envelope skips a seq. Deltas-only
@@ -238,8 +238,8 @@ identity's `workingDirectory ?? projectDirectory`.
 
 - `initialize` advertises **no** client capabilities (`fs.readTextFile/writeTextFile: false`, `terminal: false`):
   the agent does its own file and shell work and must ask through `session/request_permission`.
-- `session/new` per Agent HQ session (`providerSessionID` = ACP `sessionId`, `mcpServers: []` is the hook for the
-  Workbench MCP bridge). Resume after a restart or crash: `session/resume` when advertised, else `session/load` with
+- `session/new` per Agent HQ session (`providerSessionID` = ACP `sessionId`, `mcpServers` carries the
+  Workbench MCP server since wave 3). Resume after a restart or crash: `session/resume` when advertised, else `session/load` with
   its replayed updates suppressed, else 409.
 - Turns: `session/prompt`; one prompt at a time per session (later messages queue behind it).
 - Mapping: `agent_message_chunk` → `message.delta` (`messageID` = ACP `messageId`, or a generated id per text
@@ -273,9 +273,10 @@ mode per Agent HQ session, so one Claude Code process serves every turn; `provid
 `sessionId` (resume passes it as `resume`).
 
 - Runs the detected `claude` binary (`pathToClaudeCodeExecutable`), so the owner's existing login is used; the
-  adapter never reads, copies or logs credentials and passes no `env`.
-- Isolation: `settingSources: []` (no `~/.claude` settings, hooks or CLAUDE.md), `strictMcpConfig: true` with
-  `mcpServers: {}` (the hook for the Workbench MCP bridge), `cwd` = the identity's working directory.
+  adapter never reads, copies or logs credentials. Its `env` is this process's environment without the opencode
+  server's credentials (wave 3 follow-up).
+- Isolation: `settingSources: []` (no `~/.claude` settings, hooks or CLAUDE.md), `strictMcpConfig: true` and no
+  `mcpServers` option (wave 3 adds the Workbench MCP server over the SDK control channel), `cwd` = the identity's working directory.
 - Permissions: `permissionMode: "default"` is set explicitly (when omitted, Claude Code may start in `auto`, where
   a classifier approves calls). Every `canUseTool` call becomes `permission.requested` (`requestID` =
   `cc_<toolUseID>`, options `allow` → allow_once, `always` → allow_always, `deny` → reject_once) and waits for
@@ -289,7 +290,7 @@ mode per Agent HQ session, so one Claude Code process serves every turn; `provid
 - Cancel: `query.interrupt()`; parked prompts are denied; the interrupted turn's result is swallowed (matched by
   the `uuid` sent with each user message). Close: `query.close()`. Process end → `error` + `disconnected`.
 - Capabilities: streaming, tool events, permission requests, cancel, resume, models (`identity.model`, e.g.
-  `haiku`); `mcpTools: false` until the bridge is wired.
+  `haiku`); `mcpTools: true` since wave 3.
 
 Contract change (additive): `turn.completed` gains optional `usage { inputTokens, outputTokens, costUSD? }`. The
 OpenCode adapter fills it from the assistant message's tokens and cost.
@@ -412,3 +413,144 @@ Upstream-owned edits in wave 2: `server.ts` gains one more import and `AgentOrch
 (both `// spicy:`); everything else is in fork-owned files (`src/agenthq/**`, the Agent HQ group/handlers, the
 `agenthq` exercise scenario file, `test/agenthq/**`, `test/fixture/agenthq/**`). `packages/opencode/package.json` and
 `bun.lock` gain `@anthropic-ai/claude-agent-sdk` 0.3.293.
+
+# Wave 3
+
+## Late delta after cancel (fixed for every provider)
+
+Desktop smoke history: seq 65 `message` "Paragraph 1: this ", seq 66 `status cancelled`, seq 67 `message.delta`
+"this ", rendered as "Paragraph 1: this this".
+
+Root cause, in the session manager rather than a provider: the consumer took a delta-only batch from the queue
+and waited `DELTA_LINGER` (40 ms) to coalesce it, outside the session lock. `cancel` took the lock in that window,
+called `handle.cancel` (the OpenCode adapter then emits the aborted part's final text as `message`), drained the
+queue, and recorded `message` + `cancelled`. The consumer then recorded the delta it was holding.
+
+Fix, in `src/agenthq/session.ts`, which every provider goes through:
+
+- One writer per session. Manager events (user message + `working`, a send failure, cancel, restart recovery)
+  are queued behind the provider's output and the caller waits until they are recorded, so nothing taken from
+  the queue can be overtaken. `GET` reads between recorded batches.
+- Stale output is dropped when recorded: more text for a message that already has its final `message` (the first
+  final text wins), updates for a tool that already completed or failed, and turn output (`message.delta`,
+  `message`, `reasoning`, `tool`, `plan`, `file.changed`, `turn.completed`) when no turn is owed. Each user
+  message owes one turn; `turn.completed` or `failed` closes one; `cancelled`, `disconnected` and `interrupted`
+  close all. The finished-message and finished-tool sets are per turn, because some models number tool calls per
+  turn (the fake model reuses `call_1`).
+- A turn that ends (`turn.completed` or a non-active status) first answers its open permission requests
+  `cancelled`, so nothing waits on a finished turn. A cancel with no active turn still records nothing.
+- History compaction (a final `message` replaces its deltas, a `tool` keeps its latest state) stays within the
+  current turn, so an earlier turn's tool with a reused call id is kept.
+- ACP adapter: text that resumes under an ACP `messageId` whose text was already completed gets a segment id
+  (`<id>-<n>`), so each completed message keeps its own text instead of being dropped as a repeat.
+
+## Session title (fixed)
+
+Root cause: the OpenCode adapter never forwarded the title opencode generates for its session, so the Agent HQ
+session kept "Untitled session" although the title request was answered. Fix: a new `title` event. The OpenCode
+adapter emits it on `session.updated` for its own session when the title changed and is not a default
+placeholder; the ACP adapter maps `session_info_update.title`; the manager stores it in `AgentSessionInfo.title`,
+which reaches clients through `agenthq.session.updated` like any other change.
+
+## Contract change (additive, `packages/schema/src/agent-hq.ts`)
+
+| Change                                                | Why                                                               |
+| ----------------------------------------------------- | ----------------------------------------------------------------- |
+| `AgentEvent` gains `{ type: "title", title: string }` | the provider named the session; clients may ignore it (see above) |
+
+Semantics clients can rely on now: after a message's final `message` no more deltas arrive for it in that turn,
+and after `status: cancelled` no turn output is recorded until the next user message.
+
+## Workbench MCP bridge for external agents
+
+Claude Code and ACP agents (custom `acp` identities and Cursor) get exactly one MCP server, `opencode-workbench`:
+`opencode workbench mcp --url <server> --directory <dir>` (`src/agenthq/workbench.ts`).
+
+- Command: this same opencode. A compiled binary runs itself (`process.execPath`); from source it is Bun with
+  this tree's `src/index.ts` (as AHQ-08 launches `opencode acp`); a Node build (the desktop's utility-process
+  sidecar) only when `OPENCODE_BIN_PATH` names an opencode CLI, otherwise no server is given.
+- `--url`: this process's listener (`Server.url`; a wildcard host becomes `127.0.0.1`). No listener (in-process
+  use) means no server. `--directory`: the session's working directory, so a task's worktree for isolated tasks.
+- Credentials: when the server has a password, `OPENCODE_SERVER_USERNAME` and `OPENCODE_SERVER_PASSWORD` in the
+  MCP server's `env`, and nothing else. Arguments carry only the URL and directory; nothing is stored.
+- Claude Code: `query.setMcpServers(...)` over the SDK control channel (stdin), awaited (up to 15 s) before the
+  session is returned. Not `options.mcpServers`: SDK 0.3.293 passes that as `--mcp-config <json>` on the claude
+  command line (`sdk.mjs`), where the password would be visible to other processes. A failed connect becomes an
+  `error` event with the password masked, and the session goes on without the tools.
+- ACP: the stdio entry in `session/new`, `session/resume` and `session/load`. `opencode acp` registers it as a
+  local MCP server held in memory only (`sdk.mcp.add`), and its tools appear as `opencode-workbench_workbench_*`.
+- Permissions: unchanged. Each tool call goes through the agent's own permission flow and reaches Agent HQ as
+  `permission.requested`, never auto-approved; `workbench_check` still sends trigger `agent`, so `verify.exec`
+  still gates checks that run project code.
+- Capabilities: `mcpTools: true` for `claude-code`, `acp` and `cursor`.
+
+Limits:
+
+- Unverified: `setMcpServers` under `--strict-mcp-config`. The Claude Code path is tested against the scripted SDK
+  only (no real Claude run is approved), so it is not known whether the real binary admits a server added that way
+  in strict mode. The SDK docs scope strict mode to settings files, `.mcp.json`, plugins and agent frontmatter.
+- After merging with `spicy-ide` (`97cca65c9`), `opencode workbench mcp` also serves the `debug_*` tools, so
+  external agents get them through the same server.
+
+## Agent processes never get the server's credentials (wave 3 follow-up)
+
+`AgentProvider.agentEnv()` (`src/agenthq/provider.ts`) is the environment for every process a provider spawns:
+this process's environment without `OPENCODE_SERVER_USERNAME` and `OPENCODE_SERVER_PASSWORD`. The Claude Code SDK
+spawn (`options.env`, which replaces the subprocess environment), every ACP spawn (custom `acp` identities and
+Cursor) and the detection probes (`--version`, `--help`) use it. Only the Workbench MCP server gets the credentials,
+through its own `env`.
+
+ACP children additionally get a fresh `OPENCODE_SERVER_PASSWORD` (`crypto.randomUUID()`): an agent that is opencode
+itself (`opencode acp`) starts its own TCP listener, which stays authenticated that way without sharing this
+server's password. Other agents ignore the variable. The Workbench MCP server an ACP agent starts still gets this
+server's credentials, because its `env` entries override the agent's own environment.
+
+Where the real boundary is: stripping the variables only closes the trivial path (`env | grep` in an approved shell
+command). A process running as the same user with approved shell access can still read the bridge's environment
+(`ps -E` shows it for any non-platform process of that user, which AHQ-08 relies on) and the opencode data
+directory. The real control is the human approving each shell command. OpenCode's own sessions (provider
+`opencode`) run in this process, and their shell tool keeps the upstream behavior of passing the whole environment.
+
+Desktop (`packages/desktop`): the v1 sidecar runs the server under Node, which has no CLI of its own, so
+`createSidecarEnv()` (`src/main/server.ts`) now sets `OPENCODE_BIN_PATH` to the bundled CLI when it exists.
+`src/main/bundled-cli.ts` holds the lookup that `background-cli.ts` already used (`executableName()`, the app's
+resources when packaged, this tree's `resources/` in development), and `background-cli.ts` now calls it. The v2
+sidecar runs the compiled CLI and needs nothing. Covered by `src/main/bundled-cli.test.ts`; the desktop smoke can
+cover the running app later.
+
+## Tests (wave 3)
+
+| Test                                                 | What it proves                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AHQ-11 (`test/agenthq/agenthq.test.ts`, fake model)  | The desktop race: the model streams "Paragraph 1: " then "this " and hangs; cancel lands right after the "this " delta is published. No turn output after `cancelled`, no delta after the final text, and a client rebuilding text renders "Paragraph 1: this ". Failed 5 of 5 before the fix, 0 of 10 after                                                                                                                                                     |
+| AHQ-11b (scripted ACP agent, script `late`)          | Late output after the turn ended (a chunk for the finished message, a tool update 30 ms later) is dropped for a non-OpenCode provider                                                                                                                                                                                                                                                                                                                            |
+| AHQ-12                                               | The fake model answers the title request "E2E Title"; the Agent HQ session's title becomes it. Failed before the fix                                                                                                                                                                                                                                                                                                                                             |
+| AHQ-03 (extended)                                    | A second turn's tool call reuses `call_1`: it is recorded, and the history keeps both turns' tool entries. Failed before the per-turn fix                                                                                                                                                                                                                                                                                                                        |
+| AHQ-09 (scripted SDK, 2 new)                         | No MCP option or secret in the options that become the claude command line; `setMcpServers` gets exactly `opencode-workbench` (stdio, command, args with URL and directory, env with the two credentials) before the session is returned, and again on resume; a failed connect is an `error` event with the password masked                                                                                                                                     |
+| AHQ-08 (now through a real listener with a password) | Unauthenticated request refused (401); the model is offered `opencode-workbench_workbench_problems`, `_check` and `_doctor`; a `workbench_problems` call raises `permission.requested` and does not run until allowed through the route; it then returns the listener's counts ("0 errors, 0 warnings, 0 info, 0 hints") through the bridge; the bridge's command line has `--directory <dir>` and no password; the bridge is gone after the identity is removed |
+
+Results on the final tree (from `packages/opencode`, `SPICY_REAL_CLAUDE` unset):
+
+| Command                                             | Result                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bun test --timeout 120000 test/agenthq`            | 30 pass, 1 skip (the opt-in real Claude session), 0 fail                                                                                                                                                                                                                                                                                   |
+| `bun test --timeout 30000 test/server test/session` | 719 pass, 9 skip, 1 todo (pre-existing), 0 fail                                                                                                                                                                                                                                                                                            |
+| `bun run test:httpapi`                              | coverage and auth modes 255/255 in all three runs; effect mode 253, 254, 254, each time a different upstream scenario timing out at 30 s (`session.diff` and `session.prompt`; `project.update.missing`; `v2.provider.get`) at load averages of 24 to 54; all four pass alone in effect mode; every `agenthq` scenario passed in every run |
+| `bun run typecheck`                                 | clean                                                                                                                                                                                                                                                                                                                                      |
+
+`test/server/httpapi-v2-pty.test.ts` ("retains exited sessions") is a load-sensitive upstream flake: run interleaved
+20 times each, it failed once on the base (`fe1c8528b`) and once on this branch, both with the PTY still `running`
+after 20 s.
+
+Follow-up tests:
+
+| Test                            | What it proves                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AHQ-09 (scripted SDK)           | With `OPENCODE_SERVER_USERNAME/PASSWORD` set in this process, the claude spawn's `env` has neither key and keeps the rest (`PATH`); the bridge config still carries the credentials. Fails without the change (no `env` option)                                                                                                                                                                            |
+| AHQ-08                          | The real `opencode acp` child's environment (`ps -E` on macOS, `/proc/<pid>/environ` on Linux) has a UUID `OPENCODE_SERVER_PASSWORD`, no `OPENCODE_SERVER_USERNAME`, and nothing of the parent's password; its own listener (given a free `--port`) answers 401 without credentials and 401 with the parent's password, and 200 with its own. Without the change the child inherited the parent's password |
+| `bundled-cli.test.ts` (desktop) | A packaged app gets `OPENCODE_BIN_PATH` set to `<resources>/opencode-cli` only when that file exists; in development the CLI is looked up in `packages/desktop/resources`                                                                                                                                                                                                                                  |
+
+Upstream-owned edits (wave 3 follow-up, each marked `// spicy:`): `packages/desktop/src/main/server.ts` (one import,
+one line in `createSidecarEnv()`), `packages/desktop/src/main/background-cli.ts` (imports `bundledCli` and
+`executableName` from the new `bundled-cli.ts` instead of defining them). No upstream files were edited in wave 3
+itself.

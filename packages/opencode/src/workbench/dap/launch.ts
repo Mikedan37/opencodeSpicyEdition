@@ -1,8 +1,9 @@
 // What to debug: a .vscode/launch.json configuration (JSONC, with ${workspaceFolder},
-// ${file} and ${env:X}), a plain program, or the Python test preset.
+// ${file} and ${env:X}), a plain program, or a test preset (Python, Rust).
 import path from "path"
 import { parse, type ParseError } from "jsonc-parser"
 import { Effect, Schema } from "effect"
+import { Filesystem } from "@/util/filesystem"
 import { DebugError } from "./client"
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
@@ -24,13 +25,15 @@ export const StartInput = Schema.Struct({
     description: "Name of a configuration in .vscode/launch.json",
   }),
   program: Schema.optional(Schema.String).annotate({
-    description: "Program to debug (a .py file, a native binary), or the test file for the python-test preset",
+    description:
+      "Program to debug (a .py file, a native binary), the test file for python-test, or the crate folder for rust-test",
   }),
   args: Schema.optional(Schema.Array(Schema.String)),
   cwd: Schema.optional(Schema.String),
   adapter: Schema.optional(Adapter),
-  preset: Schema.optional(Schema.Literals(["python-test"])).annotate({
-    description: "python-test runs the program file under pytest (unittest when pytest is missing)",
+  preset: Schema.optional(Schema.Literals(["python-test", "rust-test"])).annotate({
+    description:
+      "python-test runs the program file under pytest (unittest when pytest is missing). rust-test builds the crate (default: the project) with cargo test --no-run and debugs its unit-test binary; args go to the test binary, a test name filter first",
   }),
   stopOnEntry: Schema.optional(Schema.Boolean),
   breakpoints: Schema.optional(Schema.Array(Breakpoint)),
@@ -64,6 +67,11 @@ export type Spec = {
   readonly python?: string
   readonly breakpoints: readonly (Omit<Breakpoint, "file"> & { readonly file: string })[]
   readonly exceptions: readonly string[]
+  readonly functions?: readonly string[]
+  // Built after the launch was approved, never before: building runs project code (build scripts, macros).
+  readonly build?: { readonly command: readonly string[]; readonly cwd: string }
+  // Rust program: load rustc's LLDB formatters.
+  readonly rust?: boolean
   readonly notes: readonly string[]
 }
 
@@ -75,6 +83,7 @@ export const resolve = Effect.fnUntraced(function* (input: StartInput, ctx: Cont
     file: path.resolve(ctx.directory, item.file),
   }))
   if (input.configuration) return yield* fromLaunchJson(input, ctx, breakpoints)
+  if (input.preset === "rust-test") return yield* rustTest(input, ctx, breakpoints)
   if (!input.program) return yield* invalid("give a program, a launch.json configuration or a preset")
   const program = path.resolve(ctx.directory, input.program)
   const adapter = input.adapter ?? (program.endsWith(".py") || input.preset === "python-test" ? "debugpy" : "lldb-dap")
@@ -84,11 +93,13 @@ export const resolve = Effect.fnUntraced(function* (input: StartInput, ctx: Cont
     ...(input.stopOnEntry !== undefined ? { stopOnEntry: input.stopOnEntry } : {}),
   }
   const test = input.preset === "python-test"
+  const rust = adapter === "lldb-dap" && (yield* cargo(program, ctx.directory))
   return {
     adapter,
     request: "launch",
     name: path.relative(ctx.directory, program) || program,
     program,
+    ...(rust ? { rust, functions: [PANIC] } : {}),
     arguments:
       adapter === "debugpy"
         ? {
@@ -149,6 +160,39 @@ export const attach = (input: AttachInput, ctx: Context): Effect.Effect<Spec, De
 
 const lldb = { runInTerminal: true, console: "integratedTerminal", commandEscapePrefix: "`" }
 
+// std calls rust_panic for every panic, so a function breakpoint there stops on failed asserts and unwraps.
+const PANIC = "rust_panic"
+
+/** A program inside a Cargo project (a Cargo.toml between it and the project root) is Rust. */
+const cargo = (program: string, directory: string) =>
+  Effect.promise(() =>
+    Filesystem.findUp("Cargo.toml", path.dirname(program), directory).then((found) => found.length > 0),
+  )
+
+const rustTest = Effect.fnUntraced(function* (input: StartInput, ctx: Context, breakpoints: Spec["breakpoints"]) {
+  const target = path.resolve(ctx.directory, input.program ?? ".")
+  const crate = path.basename(target) === "Cargo.toml" ? path.dirname(target) : target
+  if (!(yield* Effect.promise(() => Bun.file(path.join(crate, "Cargo.toml")).exists())))
+    return yield* invalid(`rust-test needs a crate folder; no Cargo.toml in ${crate}`)
+  return {
+    adapter: "lldb-dap",
+    request: "launch",
+    name: `${path.relative(ctx.directory, crate) || path.basename(crate)} tests`,
+    arguments: {
+      ...(input.args ? { args: [...input.args] } : {}),
+      cwd: input.cwd ? path.resolve(ctx.directory, input.cwd) : crate,
+      ...(input.stopOnEntry !== undefined ? { stopOnEntry: input.stopOnEntry } : {}),
+      ...lldb,
+    },
+    build: { command: ["cargo", "test", "--no-run", "--message-format=json"], cwd: crate },
+    rust: true,
+    functions: [PANIC],
+    breakpoints,
+    exceptions: input.exceptions ?? [],
+    notes: [],
+  } satisfies Spec
+})
+
 function defaults(adapter: Adapter, test: boolean) {
   if (adapter === "lldb-dap") return []
   return test ? ["uncaught", "userUnhandled"] : ["uncaught"]
@@ -191,6 +235,7 @@ const fromLaunchJson = Effect.fnUntraced(function* (input: StartInput, ctx: Cont
     return yield* invalid(`launch.json type "${String(config.type)}" is not supported (debugpy and lldb-dap are)`)
   const request = config.request === "attach" ? "attach" : "launch"
   const program = typeof config.program === "string" ? path.resolve(ctx.directory, config.program) : undefined
+  const rust = adapter === "lldb-dap" && program !== undefined && (yield* cargo(program, ctx.directory))
   const preLaunch = typeof config.preLaunchTask === "string" ? config.preLaunchTask : undefined
   const args = {
     ...config,
@@ -207,6 +252,7 @@ const fromLaunchJson = Effect.fnUntraced(function* (input: StartInput, ctx: Cont
     ...(program ? { program } : {}),
     arguments: args,
     ...(typeof config.debugServer === "number" ? { port: config.debugServer } : {}),
+    ...(rust ? { rust, functions: [PANIC] } : {}),
     ...(typeof config.python === "string" ? { python: config.python } : {}),
     breakpoints,
     exceptions: input.exceptions ?? defaults(adapter, false),

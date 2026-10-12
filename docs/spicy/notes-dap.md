@@ -193,3 +193,26 @@ Fork files touched (verification engine, owned by the problems branch; each edit
 | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `packages/opencode/src/workbench/verify/verify.ts` | Import; yield `WorkbenchInvestigation.Service`; `verified(...)` after the report is built (problems list computed once); `WorkbenchInvestigation.node` in deps |
 | `packages/opencode/src/workbench/verify/gate.ts`   | Import; yield the service; `halted(sessionID)` check after the report-only check; `WorkbenchInvestigation.node` in deps                                        |
+
+### 2. Rust under lldb-dap
+
+- `preset: "rust-test"` (`StartInput`, so the tool and `POST /workbench/debug/sessions` both take it): `program` is
+  the crate folder or its `Cargo.toml` (default: the project), `args` go to the test binary (a test name filter
+  first). The spec carries `build: cargo test --no-run --message-format=json` (cwd = crate); the service runs it in
+  `connect()`, after the Developer Mode check and after the agent's `debug.launch` approval (whose metadata names the
+  build command), never in `prepare()`: building runs build scripts and proc macros. `Lldb.testBinaries()` picks
+  the compiler artifacts with `profile.test` and an executable, the library's unit tests first (others are listed in
+  a console note); compile errors (`compiler-message` rendered text) become the error.
+- Rust programs (the preset, or any lldb-dap program or launch.json program with a `Cargo.toml` between it and the
+  project root) get rustc's formatters through `initCommands`: `command script import
+"<sysroot>/lib/rustlib/etc/lldb_lookup.py"` and `command source -s 0 "<sysroot>/lib/rustlib/etc/lldb_commands"`
+  (what `rust-lldb` does), with the sysroot from `rustc --print sysroot` run in the crate so rust-toolchain files
+  apply, and a function breakpoint on `rust_panic`, so failed asserts and unwraps stop with the test's frames. Missing
+  formatters leave a console note.
+- While Developer Mode is off the session is refused before anything is built or spawned (tested: no `target/`).
+  The launch test (DAP-18 Rust: stop on the panic, `orders` formatted) is written and skipped with
+  "[skipped: Developer Mode off]". CodeLLDB's launch.json `cargo` key is not supported yet.
+
+Tests: `test/workbench/dap/rust.test.ts` — cargo JSON parsing (captured), preset/spec shape and Rust detection,
+formatter files from the real toolchain, a real `cargo test --no-run` locating the binary and reporting a compile
+error, the refusal before building; 5 pass, 1 skipped (Developer Mode off).

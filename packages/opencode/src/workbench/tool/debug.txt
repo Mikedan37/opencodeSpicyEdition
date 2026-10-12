@@ -1,7 +1,7 @@
 Debug a program with a real debugger (Debug Adapter Protocol): set breakpoints, run to a stop, read the stack and variables, evaluate expressions, step, and read program output. Python uses debugpy; C, C++, Swift and Rust use lldb-dap (needs macOS Developer Mode).
 
 Actions:
-- start: launch a program. Give `program` (a .py file or native binary), or `configuration` (a name from .vscode/launch.json), or `preset: "python-test"` with the test file as `program`. Add `breakpoints` ({file, line, condition?, hitCondition?, logMessage?}) and `exceptions` filters (debugpy: uncaught, raised, userUnhandled). Runs to the first stop or exit and returns a stop snapshot.
+- start: launch a program. Give `program` (a .py file or native binary), or `configuration` (a name from .vscode/launch.json), or `preset: "python-test"` with the test file as `program`, or `preset: "rust-test"` with the crate folder as `program` (built with cargo test --no-run; `args` go to the test binary, a test name first; stops on panics). Add `breakpoints` ({file, line, condition?, hitCondition?, logMessage?}) and `exceptions` filters (debugpy: uncaught, raised, userUnhandled). Runs to the first stop or exit and returns a stop snapshot.
 - attach: attach to a running program (`adapter` plus `pid` for lldb-dap, or `port` for a program started with `python -m debugpy --listen 127.0.0.1:PORT`).
 - control: `command` continue, pause, next (step over), stepIn or stepOut. Waits up to 30 s for the next stop, then pauses the program.
 - breakpoints: replace the breakpoints of one `file` with `breakpoints`, or set `functions` / `exceptions` filters.

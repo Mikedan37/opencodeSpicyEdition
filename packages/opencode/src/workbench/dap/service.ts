@@ -45,6 +45,13 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/WorkbenchDebug") {}
 
 type Entry = { readonly session: DebugSession.Session; readonly agentSessionID?: string }
+type Target = {
+  readonly connection: DebugSession.Connection
+  readonly arguments: Record<string, unknown>
+  readonly notes?: readonly string[]
+  // The program actually launched, when it was built after approval (rust-test).
+  readonly program?: string
+}
 
 const layer = Layer.effect(
   Service,
@@ -87,33 +94,52 @@ const layer = Layer.effect(
       return yield* DebugLaunch.attach(input, { directory: (yield* InstanceState.get(state)).ctx.directory })
     })
 
-    const connect = Effect.fnUntraced(function* (spec: DebugLaunch.Spec, directory: string) {
-      if (spec.adapter === "lldb-dap") {
-        // Never launch or attach without Developer Mode: macOS would prompt for an admin password.
-        if (!spec.port && !(yield* Effect.promise(Lldb.developerMode)))
-          return yield* new DebugError({ kind: "unavailable", message: Lldb.DEVELOPER_MODE_OFF })
+    const connect = (spec: DebugLaunch.Spec, directory: string): Effect.Effect<Target, DebugError> =>
+      Effect.gen(function* () {
+        if (spec.adapter === "lldb-dap") {
+          // Never launch or attach without Developer Mode: macOS would prompt for an admin password.
+          if (!spec.port && !(yield* Effect.promise(Lldb.developerMode)))
+            return yield* new DebugError({ kind: "unavailable", message: Lldb.DEVELOPER_MODE_OFF })
+          // Building (rust-test) runs project code, so it happens here: after approval, never in prepare().
+          const built = spec.build ? yield* Effect.promise(() => Lldb.testBinary(spec.build!)) : undefined
+          if (built && "error" in built) return yield* new DebugError({ kind: "invalid", message: built.error })
+          const cwd = typeof spec.arguments.cwd === "string" ? spec.arguments.cwd : directory
+          const formatters = spec.rust ? yield* Effect.promise(() => Lldb.rust(cwd)) : undefined
+          const existing = Array.isArray(spec.arguments.initCommands) ? spec.arguments.initCommands : []
+          const args = {
+            ...spec.arguments,
+            ...(built ? { program: built.program } : {}),
+            ...(formatters ? { initCommands: [...existing, ...formatters] } : {}),
+          }
+          const notes = [
+            ...(built?.notes ?? []),
+            ...(spec.rust && !formatters
+              ? ["rustc's LLDB formatters were not found; Rust values show raw fields"]
+              : []),
+          ]
+          const program = built?.program
+          if (spec.port) return { connection: { port: spec.port }, arguments: args, notes, program }
+          const found = yield* Effect.promise(Lldb.resolve)
+          if ("error" in found) return yield* new DebugError({ kind: "unavailable", message: found.error })
+          return { connection: { command: Lldb.command(found.binary) }, arguments: args, notes, program }
+        }
         if (spec.port) return { connection: { port: spec.port }, arguments: spec.arguments }
-        const found = yield* Effect.promise(Lldb.resolve)
-        if ("error" in found) return yield* new DebugError({ kind: "unavailable", message: found.error })
-        return { connection: { command: Lldb.command(found.binary) }, arguments: spec.arguments }
-      }
-      if (spec.port) return { connection: { port: spec.port }, arguments: spec.arguments }
-      const python = yield* Effect.promise(() =>
-        Debugpy.resolve({ directory, ...(spec.python ? { python: spec.python } : {}) }),
-      )
-      if ("error" in python) return yield* new DebugError({ kind: "unavailable", message: python.error })
-      const args = spec.arguments
-      // The python-test preset falls back to unittest when pytest is not installed.
-      const test = args.module === "pytest" && !python.pytest ? { module: "unittest" } : {}
-      return {
-        connection: { command: python.command, env: python.env },
-        arguments: {
-          ...args,
-          ...test,
-          ...(args.request === "launch" && !args.python ? { python: [python.python] } : {}),
-        },
-      }
-    })
+        const python = yield* Effect.promise(() =>
+          Debugpy.resolve({ directory, ...(spec.python ? { python: spec.python } : {}) }),
+        )
+        if ("error" in python) return yield* new DebugError({ kind: "unavailable", message: python.error })
+        const args = spec.arguments
+        // The python-test preset falls back to unittest when pytest is not installed.
+        const test = args.module === "pytest" && !python.pytest ? { module: "unittest" } : {}
+        return {
+          connection: { command: python.command, env: python.env },
+          arguments: {
+            ...args,
+            ...test,
+            ...(args.request === "launch" && !args.python ? { python: [python.python] } : {}),
+          },
+        }
+      })
 
     // runInTerminal: the program runs in an opencode PTY, so output written before a crash survives.
     const terminal = (directory: string) => (args: DapClient.Body, output: (chunk: string) => void) => {
@@ -166,13 +192,14 @@ const layer = Layer.effect(
       const session = DebugSession.make({
         id,
         adapter: spec.adapter,
-        program: spec.program,
+        program: target.program ?? spec.program,
         directory: data.ctx.directory,
         connection: target.connection,
         request: spec.request,
         arguments: target.arguments,
         breakpoints: spec.breakpoints,
         exceptions: spec.exceptions,
+        ...(spec.functions ? { functions: spec.functions } : {}),
         actor,
         ...(options.limits ? { limits: options.limits } : {}),
         ...(options.investigationID ? { investigationID: options.investigationID } : {}),
@@ -184,7 +211,7 @@ const layer = Layer.effect(
         runInTerminal: terminal(data.ctx.directory),
       })
       data.sessions.set(id, { session, ...(actor.sessionID ? { agentSessionID: actor.sessionID } : {}) })
-      for (const note of spec.notes) session.system(note)
+      for (const note of [...spec.notes, ...(target.notes ?? [])]) session.system(note)
       const ended = [...data.sessions.values()].filter((entry) => !live(entry) && entry.session !== session)
       for (const entry of ended.slice(0, Math.max(0, ended.length - KEEP_ENDED))) data.sessions.delete(entry.session.id)
       // Cancelling the agent session cancels its background jobs; this job ends the debug session with it.

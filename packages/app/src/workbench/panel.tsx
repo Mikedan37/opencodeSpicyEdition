@@ -105,8 +105,14 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       ),
     )
 
-    const show = (next: WorkbenchTab) => {
+    // Choosing a Workbench tab drops a terminal focus request that has not been served yet, so a terminal that
+    // appears later (recovery, a new PTY) does not pull the bar back.
+    const open = (next: WorkbenchTab) => {
+      terminal.cancelFocus()
       setPanel("tab", next)
+    }
+    const show = (next: WorkbenchTab) => {
+      open(next)
       // The panel's opened flag is global; build a layout view only when a command needs it, so this provider adds no
       // per-session-switch memos (useSessionLayout would).
       runWithOwner(owner, () => layout.view(sessionKey()).terminal.open())
@@ -140,7 +146,7 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
         setPanel("tab", "")
         return false
       },
-      open: (next: WorkbenchTab) => setPanel("tab", next),
+      open,
       show,
       directory,
       problems,

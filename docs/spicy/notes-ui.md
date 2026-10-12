@@ -160,9 +160,16 @@ while Vite re-optimizes `marked`/`shiki` (it reloads the page); the timeline has
   without the route it shows "This server can't start checks from the app yet." and nothing else changes.
 - The Output tab badge counts runs that are queued or running.
 
+Against the `spicy-problems` routes (commit `a9d2d9c8a` applied to this worktree temporarily, not committed here):
+`GET /workbench/runs` listed an earlier run, opening it fetched `GET /workbench/runs/:runID` and showed tsc's output,
+"Run checks" posted `{ unit: <project> }` and showed "Last check: 0 passed, 1 failed, …" with the new run on top. That
+run also found a bug, now fixed: pressing ctrl+` (a terminal focus request) and switching to a Workbench tab before the
+terminal took focus left the request pending, so a terminal created later (here a stale PTY recovered after a server
+restart) pulled the bar back to the terminal. Opening a Workbench tab now cancels a pending terminal focus request.
+
 Verified against the real server (same setup as above, the stub model asked for the `check` tool on
 `src/broken.ts`): the run appeared as Running, streamed tsc's text output, finished as Failed with 2 errors, `0.4 s`,
 `exit 2`; both `src/broken.ts(1,14)` / `(3,19)` links were clickable and opened `broken.ts` with line 1 selected.
-`GET /workbench/runs` and `POST /workbench/check` do not exist on this branch's server: it answered them with HTML, so the
-tab showed the window-only hint and the toast, as designed. Runs started by the server have `NO_COLOR`/`TERM=dumb`, so
+Before those routes were applied, the server answered `GET /workbench/runs` and `POST /workbench/check` with HTML, so
+the tab showed the window-only hint and the toast, as designed. Runs started by the server have `NO_COLOR`/`TERM=dumb`, so
 real output is usually uncolored; colors are covered by unit tests and the e2e spec.

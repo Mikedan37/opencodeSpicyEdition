@@ -1,12 +1,16 @@
 import { createCommandPaletteFileOpener } from "@/components/command-palette"
 import { useFile } from "@/context/file"
+import { useWorkbench } from "./panel"
 
 // Opens a file tab at a 1-based line: selects the line (the viewer highlights it), opens the tab with the app's own
 // opener, then scrolls the rendered line into view. The viewer exposes [data-line] rows inside its shadow root.
 export function useFileLineOpener() {
   const file = useFile()
+  const workbench = useWorkbench()
   const openFile = createCommandPaletteFileOpener()
   return (path: string, line: number) => {
+    // The side panel's Debug tab covers the file tabs.
+    workbench.hideSide()
     file.setSelectedLines(path, { start: line, end: line })
     openFile(path)
     revealLine(line)

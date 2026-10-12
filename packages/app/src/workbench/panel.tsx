@@ -1,6 +1,7 @@
 import {
   createEffect,
   createMemo,
+  createSignal,
   For,
   getOwner,
   lazy,
@@ -31,6 +32,7 @@ import { useLayout } from "@/context/layout"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { Persist, persisted } from "@/utils/persist"
 import { createWorkbenchClient } from "./client"
+import { DebugProvider } from "./debug-context"
 import { createProblemsState, type ProblemFilter } from "./problems"
 import { createRunsState, isFinished } from "./runs"
 import { BUG_GLYPH, Glyph, PanelState, PLAY_GLYPH, TONE_CLASS } from "./ui"
@@ -117,6 +119,15 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       // per-session-switch memos (useSessionLayout would).
       runWithOwner(owner, () => layout.view(sessionKey()).terminal.open())
     }
+    // The Debug tab of the side panel (workbench/debug-side.tsx) shows over whatever tab the panel has selected.
+    const [side, setSide] = createSignal(false)
+    const showSide = () => {
+      runWithOwner(owner, () => {
+        const view = layout.view(sessionKey())
+        if (!view.reviewPanel.opened()) view.reviewPanel.open()
+      })
+      setSide(true)
+    }
     command.register("workbench", () => [
       {
         id: "workbench.agents",
@@ -148,7 +159,11 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       },
       open,
       show,
+      side,
+      showSide,
+      hideSide: () => setSide(false),
       directory,
+      client,
       problems,
       runs,
       problemFilter: { state: problemFilter, set: setProblemFilter },
@@ -159,7 +174,9 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
 export function WorkbenchProviders(props: ParentProps) {
   return (
     <AgentHQProvider>
-      <WorkbenchProvider>{props.children}</WorkbenchProvider>
+      <WorkbenchProvider>
+        <DebugProvider>{props.children}</DebugProvider>
+      </WorkbenchProvider>
     </AgentHQProvider>
   )
 }

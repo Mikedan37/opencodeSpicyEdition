@@ -46,6 +46,30 @@ const RunDetail = Schema.Struct({
 // POST /workbench/check (`CheckPayload`): files, or a folder/file as `unit` (its source files, at most 200).
 export type CheckInput = { files?: string[]; unit?: string; tests?: boolean }
 
+// Debugger routes (groups/workbench-debug.ts; docs/spicy/notes-dap.md "UI reference"). Requests act as the human.
+const DebugBreakpointsResult = Schema.Struct({
+  file: Schema.optional(Schema.String),
+  breakpoints: Schema.Array(
+    Schema.Struct({ line: Schema.Int, verified: Schema.Boolean, message: Schema.optional(Schema.String) }),
+  ),
+  exceptions: Schema.optional(Schema.Array(Schema.String)),
+})
+export type DebugBreakpointsResult = typeof DebugBreakpointsResult.Type
+export type DebugBreakpointsInput = {
+  file?: string
+  breakpoints?: { line: number; condition?: string; hitCondition?: string; logMessage?: string }[]
+  exceptions?: string[]
+}
+const DebugCompletion = Schema.Struct({
+  label: Schema.String,
+  text: Schema.optional(Schema.String),
+  type: Schema.optional(Schema.String),
+  start: Schema.optional(Schema.Int),
+  length: Schema.optional(Schema.Int),
+})
+export type DebugCompletion = typeof DebugCompletion.Type
+export type DebugAction = "continue" | "pause" | "next" | "stepIn" | "stepOut"
+
 const decoders = {
   providers: Schema.decodeUnknownOption(Schema.Array(AgentHQ.ProviderStatus)),
   agents: Schema.decodeUnknownOption(Schema.Array(AgentHQ.AgentIdentity)),
@@ -57,6 +81,13 @@ const decoders = {
   runs: Schema.decodeUnknownOption(Schema.Array(Workbench.RunInfo)),
   run: Schema.decodeUnknownOption(RunDetail),
   report: Schema.decodeUnknownOption(Workbench.VerificationReport),
+  debugSessions: Schema.decodeUnknownOption(Schema.Array(Workbench.DebugSessionInfo)),
+  debugSession: Schema.decodeUnknownOption(Workbench.DebugSessionInfo),
+  debugBreakpoints: Schema.decodeUnknownOption(DebugBreakpointsResult),
+  debugVariables: Schema.decodeUnknownOption(Schema.Array(Workbench.VariableView)),
+  debugRow: Schema.decodeUnknownOption(Workbench.ConsoleRow),
+  debugRows: Schema.decodeUnknownOption(Schema.Array(Workbench.ConsoleRow)),
+  debugCompletions: Schema.decodeUnknownOption(Schema.Array(DebugCompletion)),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -99,6 +130,7 @@ export function createWorkbenchClient(input: {
       if (Option.isNone(result)) throw new WorkbenchRequestError("failed", `${method} ${path}: unexpected response`)
       return result.value
     })
+  const debug = (id: string) => `/workbench/debug/sessions/${encodeURIComponent(id)}`
   const agent = (id: string) => `/agenthq/agents/${encodeURIComponent(id)}`
   const session = (id: string) => `/agenthq/sessions/${encodeURIComponent(id)}`
 
@@ -121,6 +153,32 @@ export function createWorkbenchClient(input: {
     runs: () => decoded(decoders.runs, "GET", "/workbench/runs"),
     run: (id: string) => decoded(decoders.run, "GET", `/workbench/runs/${encodeURIComponent(id)}`),
     check: (body: CheckInput = {}) => decoded(decoders.report, "POST", "/workbench/check", body),
+    debugSessions: () => decoded(decoders.debugSessions, "GET", "/workbench/debug/sessions"),
+    debugStart: (input: Workbench.DebugStartInput) =>
+      decoded(decoders.debugSession, "POST", "/workbench/debug/sessions", input),
+    debugControl: (id: string, action: DebugAction) =>
+      decoded(decoders.debugSession, "POST", `${debug(id)}/control`, { action }),
+    debugBreakpoints: (id: string, body: DebugBreakpointsInput) =>
+      decoded(decoders.debugBreakpoints, "POST", `${debug(id)}/breakpoints`, body),
+    debugVariables: (id: string, ref: number, start = 0) =>
+      decoded(decoders.debugVariables, "GET", `${debug(id)}/variables?ref=${ref}&start=${start}`),
+    debugEvaluate: (id: string, expression: string, frameID?: number) =>
+      decoded(decoders.debugRow, "POST", `${debug(id)}/evaluate`, { expression, frameID }),
+    // `column` is the 1-based cursor position in `text`.
+    debugCompletions: (id: string, text: string, column: number, frameID?: number) =>
+      decoded(
+        decoders.debugCompletions,
+        "GET",
+        `${debug(id)}/completions?${new URLSearchParams({
+          text,
+          column: String(column),
+          ...(frameID === undefined ? {} : { frameID: String(frameID) }),
+        })}`,
+      ),
+    debugOutput: (id: string, after = 0) => decoded(decoders.debugRows, "GET", `${debug(id)}/output?after=${after}`),
+    debugOwner: (id: string, owner: "idle" | "agent" | "human") =>
+      decoded(decoders.debugSession, "POST", `${debug(id)}/owner`, { owner }),
+    debugStop: (id: string) => decoded(decoders.debugSession, "DELETE", debug(id)),
   }
 }
 

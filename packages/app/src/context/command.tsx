@@ -7,13 +7,15 @@ import { useLanguage } from "@/context/language"
 import { useSettings } from "@/context/settings"
 import { dict as en } from "@/i18n/en"
 import { Persist, persisted } from "@/utils/persist"
+import { SPICY_EDITABLE_KEYBIND_IDS } from "@/workbench/keys" // spicy: fork keys that fire while typing
 
 const IS_MAC = typeof navigator === "object" && /(Mac|iPod|iPhone|iPad)/.test(navigator.platform)
 
 const PALETTE_ID = "command.palette"
 export const DEFAULT_PALETTE_KEYBIND = "mod+k,mod+shift+p"
 const SUGGESTED_PREFIX = "suggested."
-const EDITABLE_KEYBIND_IDS = new Set(["terminal.toggle", "terminal.new", "file.attach"])
+// spicy: fork keys (debugger F5, F9, F10, ...) also fire while typing; the list lives in workbench/keys.ts
+const EDITABLE_KEYBIND_IDS = new Set(["terminal.toggle", "terminal.new", "file.attach", ...SPICY_EDITABLE_KEYBIND_IDS])
 
 type KeyLabel =
   | "common.key.ctrl"

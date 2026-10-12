@@ -196,3 +196,79 @@ Correction to "no OpenCode Dev\* item": the real login keychain does contain ser
 | `bun scripts/spicy-package-check.ts`                                       | 7/7 checks                                                                                                |
 | `bun scripts/spicy-smoke.ts`                                               | 31/31                                                                                                     |
 | `bun scripts/spicy-smoke.ts --mode dev`                                    | 33/33                                                                                                     |
+
+# Wave 3: the whole workbench in the desktop app
+
+`bun scripts/spicy-smoke.ts` now drives every workbench surface in one isolated root with one fixture project (a git
+repo), through the UI, with the scripted model. Final run on `spicy-ide` df4f8e860 plus this branch, built mode: 59/59
+checks, no skips. A failing section is recorded and the run goes on with the next one.
+
+| Section             | What the UI does                                                                                                                                                                                     | Checked against                                                                                                                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agents              | as in wave 2, plus: the session gets its generated title; after a cancel nothing more arrives                                                                                                        | session list shows "Felix demo" and `session.title`; the shown text is a prefix of the scripted reply; no history entry after `cancelled`                       |
+| Tasks               | Tasks view, create an isolated task for Felix and a second one that depends on it, Start, "Waiting for your approval" → open session → **Allow once**, back, review gate, **Approve** (a click)      | dependent shows `Waiting on "…"`, then becomes ready; project has the file, last commit `Merge task: …`, one worktree, no `task-*` branch, worktree folder gone |
+| Review              | Felix writes `a.txt` (2 hunks) and `b.txt`; each `edit` permission answered in the UI; Review panel → Agent changes: accept hunk 1, reject hunk 2, open `b.txt` and **Reject file** in the file view | files on disk byte for byte; changeset counts pending 0, accepted 1, rejected 2                                                                                 |
+| Problems and Output | Output → **Run checks** (project unit; `tsc` from this tree via the fixture's `node_modules/.bin/tsc` symlink)                                                                                       | a failed `tsc` run with `broken.ts` in its output, the summary line; Problems lists TS2322; `GET /workbench/problems`                                           |
+| Debug               | F5 → launch.json "App in terminal" (debugpy, `console: integratedTerminal`), Pause on the first line → click line 11's number in the viewer → F9 → F5 → Debug tab → Debug Console `answer * 2` → F5  | stop at `main app.py:11`, locals `answer = 12`, result 24, Run tab "Exited with code 0", stdout row `answer = 12`, no debugpy process left                      |
+| Activity            | the tab                                                                                                                                                                                              | "No investigations yet"; `GET /workbench/investigations` is `[]`                                                                                                |
+| Restart             | quit mid-turn, restart, scroll the conversation to its start                                                                                                                                         | record `interrupted` on disk right after the quit; history recovered (26 entries)                                                                               |
+| Afterwards          |                                                                                                                                                                                                      | throwaway keychain deleted, real keychain unchanged, no process with the root on its command line, `~/Library/Logs/DiagnosticReports` 90 → 90                   |
+
+Harness changes:
+
+- `spicy-model.ts`: `scripts` option. A conversation whose latest user message contains a trigger gets that script's
+  reply for its step (assistant messages after that user message): one tool call per step, then text. Stateless, so a
+  task's brief (`WRITE notes/task.txt`) and an Agent HQ session each run their own copy. Test: 4 pass.
+- `spicy-cdp.ts`: `query()` with `>>>` into shadow roots (pierre's file viewer) and the first visible match (hidden
+  side-panel tabs stay mounted); `click(selector, text?)`; `clickOn(expression)`.
+- `spicy-launch.ts`: a fixed `PATH` (`/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`) instead of the caller's, which
+  held `~/.opencode/bin` (the owner's opencode) and `~/.local/bin` (claude, cursor-agent).
+- debugpy: VS Code's bundled copy is cloned (APFS `cp -c`) into the fake home's `~/.vscode/extensions`, where the server
+  looks, so nothing is written into the owner's extension. Python is Homebrew's; the server never uses Apple's.
+
+## Fixed (found by the smoke)
+
+- **Debugger under the desktop: `ReferenceError: Bun is not defined`.** The desktop's v1 sidecar runs the server under
+  Node, and the workbench called Bun APIs: `Bun.file` (launch.json, `Cargo.toml`, lldb's Rust scripts, investigation
+  patch hashes), `Bun.sleep` (the debug process kill loop), `Bun.which` (lldb-dap), `Bun.CryptoHasher`, `Bun.spawn` (the
+  pytest/python probes). Replaced with `@/util/filesystem`, `fs/promises`, `crypto`, `setTimeout`, core's `which` and
+  `Process.spawn`; same results (sha256 hex hashes unchanged). `test/workbench`: 145 pass, 9 skip, 0 fail. Guard:
+  `scripts/spicy-sidecar-runtime.test.ts` fails on any `Bun.` call in `packages/opencode/src` outside `src/cli`
+  (positive control: it flags all 9 pre-fix calls).
+- **Quitting killed the sidecar mid-shutdown** (`src/main/index.ts`). Only relaunch and update installs waited for the
+  sidecar; a normal quit let the app terminate its utility process. Measured: the app was gone ~200 ms after SIGTERM,
+  while the server's own stop takes ~1.1 s with the renderer's event streams open (headless, same server bundle under
+  Node). So the server's shutdown never ran: Agent HQ sessions stayed `working` on disk and the restart recovery marked
+  them; in one run the history file of the session that was streaming was unreadable at restart and the recovery
+  replaced it with one entry (`seq 0 interrupted`), losing the whole conversation. Now `before-quit` waits for the
+  sidecar (bounded by the existing 6 s stop timeout) and quits after; a second caller of `killSidecar` waits for the stop
+  in flight. Verified: the record reads `interrupted` right after the quit (the server's shutdown ran) and the history
+  survives the restart.
+
+## Findings for other branches
+
+- **Agent HQ (data safety):** `readHistory` turns an unreadable or undecodable history file into `[]`, and the restart
+  recovery then overwrites it. Storage writes are not atomic (`writeFileString`). With the quit fix the window is
+  small, but a crash or kill during a write still loses the history; write-then-rename, or not overwriting a history it
+  could not read, would close it.
+- **Debugger UI:** on a human-driven stop (entry), `app.py`'s tab was added to the side panel but the Review ("Files
+  Changed") tab stayed in front; the smoke clicks the tab, as a person would. The mocked spec expects the file tab
+  selected.
+- **Run tab:** opened after the program ended, it shows "Exited with code 0" but an empty terminal; the output is only
+  in the Debug Console.
+- **Review hunk bar:** at the default 1280×800 window with the side panel open, "Accept"/"Reject" wrap mid-word in the
+  hunk bars (screenshot 12).
+- **Agent HQ title** is fixed (wave 2 finding): the session list shows "Felix demo". **Late delta after cancel** is
+  fixed: nothing is recorded after `cancelled`.
+
+Screenshots (local only): `docs/spicy/desktop-smoke/20261012T210056/01-home.png` … `24-restored.png`.
+
+## Wave 3 tests
+
+| Command                                                       | Result                                                     |
+| ------------------------------------------------------------- | ---------------------------------------------------------- |
+| `bun scripts/spicy-smoke.ts` (built)                          | 59/59 (fourth run; the first three found the issues above) |
+| `bun test` (packages/desktop)                                 | 79 pass                                                    |
+| `bun run typecheck` (packages/desktop, packages/opencode)     | clean                                                      |
+| `bun test --timeout 60000 test/workbench` (packages/opencode) | 145 pass, 9 skip, 0 fail                                   |
+| scripts typecheck (scratch tsconfig)                          | clean                                                      |

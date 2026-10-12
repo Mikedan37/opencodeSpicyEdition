@@ -56,7 +56,12 @@ export function DebugFile<T>(props: FileProps<T>) {
     if (!shown.length) return
     return {
       lineNumber: current.line,
-      metadata: { spicyDebugValues: shown.map((item) => `${item.name} = ${item.value}`).join("   ") },
+      // Short values keep the row inside the viewer; the Debug tab has them in full.
+      metadata: {
+        spicyDebugValues: shown
+          .map((item) => `${item.name} = ${item.value.length > 40 ? `${item.value.slice(0, 40)}…` : item.value}`)
+          .join("   "),
+      },
     } as unknown as Annotation<T>
   })
   const annotations = createMemo(() => {
@@ -94,7 +99,15 @@ export function DebugFile<T>(props: FileProps<T>) {
   onMount(() => {
     const outer = new MutationObserver(paint)
     outer.observe(host, { childList: true, subtree: true })
+    const file = name()
+    // F9 toggles what this viewer shows selected (pierre marks it [data-selected-line]).
+    const selection = () => {
+      const line = host.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-line][data-selected-line]")
+      return line ? Number(line.getAttribute("data-line")) || undefined : undefined
+    }
+    if (file) debug.viewers.set(file, selection)
     onCleanup(() => {
+      if (file && debug.viewers.get(file) === selection) debug.viewers.delete(file)
       outer.disconnect()
       inner.disconnect()
       if (frame !== undefined) cancelAnimationFrame(frame)

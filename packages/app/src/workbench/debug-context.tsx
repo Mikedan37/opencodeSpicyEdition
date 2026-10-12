@@ -104,14 +104,17 @@ function createDebug() {
     const path = activeFile()
     dialog.show(() => <DebugStartDialog file={path} />)
   }
-  // F9: the line selected in the active file, else the paused line when that file is the one paused in.
+  const viewers = new Map<string, () => number | undefined>()
+  // F9: the line the active file's viewer shows selected (its saved selection when it is not mounted), else the paused
+  // line when that file is the one paused in.
   const toggleAtCursor = () => {
     const path = activeFile()
-    const range = path ? (file.selectedLines(path) as SelectedLineRange | undefined) : undefined
+    const viewer = path ? viewers.get(path) : undefined
+    const range = path && !viewer ? (file.selectedLines(path) as SelectedLineRange | undefined) : undefined
     const session = debug.selected()
     const frame = session?.stop?.frames.find((item) => item.id === debug.frameID())
     const paused = frame?.file && debug.relative(frame.file) === path ? frame.line : undefined
-    const line = range ? Math.min(range.start, range.end) : paused
+    const line = viewer?.() ?? (range ? Math.min(range.start, range.end) : paused)
     if (!path || !line) return showToast({ title: language.t("workbench.debug.toggle.none") })
     void debug.toggleBreakpoint(path, line).catch(fail(language.t("workbench.debug.failed.breakpoints")))
   }
@@ -185,6 +188,8 @@ function createDebug() {
     consoleFilter: { state: consoleFilter, set: setConsoleFilter },
     // Terminal snapshots of program PTYs, so the Run tab restores a terminal it unmounted.
     terminals: new Map<string, Partial<LocalPTY> & { id: string }>(),
+    // The line each mounted file viewer shows selected, by project-relative path (debug-file.tsx registers them).
+    viewers,
   }
 }
 

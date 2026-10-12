@@ -340,7 +340,9 @@ function Breakpoints() {
             <div data-breakpoint-file={file}>
               <div class="flex h-[22px] items-center gap-1.5 px-3 text-[12px]" title={file}>
                 <span class="shrink-0 font-[530] text-v2-text-text-base">{getFilename(file)}</span>
-                <span class="min-w-0 truncate text-v2-text-text-faint">{getDirectory(file)}</span>
+                <span class="min-w-0 truncate text-v2-text-text-faint">
+                  {file.includes("/") ? getDirectory(file) : ""}
+                </span>
               </div>
               <For each={debug.breakpoints(file)}>
                 {(item) => {

@@ -144,8 +144,9 @@ export function VariableNode(props: { variable: Variable; path: string[]; depth?
   const open = () => ref() > 0 && debug.expanded(props.path)
   const page = () => debug.page(ref())
   const pad = (depth: number) => ({ "padding-left": `${8 + depth * 12}px` })
+  // Loads when opened and again after each stop (its pages die with the stop); a failure waits for a retry click.
   createEffect(() => {
-    if (open()) void debug.children(ref())
+    if (open() && !page()) void debug.children(ref())
   })
   return (
     <div role="treeitem" aria-expanded={ref() > 0 ? open() : undefined} data-variable={props.variable.name}>
@@ -163,7 +164,10 @@ export function VariableNode(props: { variable: Variable; path: string[]; depth?
         {/* An evaluation result has no name. */}
         <Show when={props.variable.name}>
           <span class="shrink-0 text-v2-text-text-accent">{props.variable.name}</span>
-          <span class="shrink-0 text-v2-text-text-faint">=</span>
+          {/* Groups such as debugpy's "special variables" have no value. */}
+          <Show when={props.variable.value}>
+            <span class="shrink-0 text-v2-text-text-faint">=</span>
+          </Show>
         </Show>
         <span class="min-w-0 truncate text-v2-text-text-base" title={props.variable.value}>
           {props.variable.value}
@@ -190,9 +194,16 @@ export function VariableNode(props: { variable: Variable; path: string[]; depth?
           </Show>
           <Show when={page()?.error}>
             {(error) => (
-              <div class="py-0.5 pr-3 text-[12px] text-v2-state-fg-danger" style={pad((props.depth ?? 0) + 1)}>
+              <button
+                type="button"
+                data-slot="variables-error"
+                class="w-full py-0.5 pr-3 text-left text-[12px] text-v2-state-fg-danger hover:underline"
+                style={pad((props.depth ?? 0) + 1)}
+                title={language.t("workbench.retry")}
+                onClick={() => void debug.children(ref())}
+              >
                 {error()}
-              </div>
+              </button>
             )}
           </Show>
           <Show when={page() && !page()!.loading && !page()!.done && !page()!.error}>

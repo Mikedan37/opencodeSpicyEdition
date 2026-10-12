@@ -139,6 +139,12 @@ function Line(props: { row: ConsoleRow; chip: boolean }) {
   const openAt = useFileLineOpener()
   const text = () => props.row.text.replace(ANSI, "")
   const by = () => (props.row.by === "system" ? undefined : props.row.by)
+  // A result's reference lives only until the program moves on, so only results from the current pause expand.
+  const expandable = () => {
+    const session = debug.selected()
+    const current = session?.state === "stopped" && session.stop && props.row.at >= session.stop.at
+    return current ? props.row.variablesReference : undefined
+  }
   return (
     <div
       data-console-row={props.row.seq}
@@ -164,7 +170,7 @@ function Line(props: { row: ConsoleRow; chip: boolean }) {
             <span class="text-v2-text-text-faint">› </span>
             {text()}
           </Match>
-          <Match when={props.row.kind === "result" && props.row.variablesReference}>
+          <Match when={props.row.kind === "result" && expandable()}>
             {(ref) => (
               <VariableNode
                 variable={{ name: "", value: text(), variablesReference: ref() }}

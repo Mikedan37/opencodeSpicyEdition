@@ -1,4 +1,4 @@
-import { batch } from "solid-js"
+import { batch, untrack } from "solid-js"
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { errorText, WorkbenchRequestError, type DebugAction, type WorkbenchClient } from "./client"
@@ -244,8 +244,10 @@ export function createDebugState(input: {
     )
   }
 
-  // The rows from before this view saw the session; live rows that arrived first are kept.
-  function backlog(sessionID: string) {
+  // The rows from before this view saw the session; live rows that arrived first are kept. Loaders read the store
+  // untracked, so an effect that calls one does not rerun (and retry) when its request settles.
+  const backlog = (sessionID: string) => untrack(() => loadBacklog(sessionID))
+  function loadBacklog(sessionID: string) {
     const current = state.consoles[sessionID]?.backlog
     if (current === "loading" || current === "ready") return Promise.resolve()
     if (!state.consoles[sessionID]) setState("consoles", sessionID, emptyConsole())
@@ -288,8 +290,10 @@ export function createDebugState(input: {
     const session = selected()
     return session?.stop ? state.pages[pageKey(session, ref)] : undefined
   }
-  // Loads the first page of a reference's children, or the next page with `more`.
-  function children(ref: number, more = false) {
+  // Loads the first page of a reference's children, or the next page with `more`; a failed page loads again only when
+  // asked.
+  const children = (ref: number, more = false) => untrack(() => loadChildren(ref, more))
+  function loadChildren(ref: number, more: boolean) {
     const session = selected()
     if (!session?.stop || ref <= 0) return Promise.resolve()
     const key = pageKey(session, ref)

@@ -273,7 +273,8 @@ mode per Agent HQ session, so one Claude Code process serves every turn; `provid
 `sessionId` (resume passes it as `resume`).
 
 - Runs the detected `claude` binary (`pathToClaudeCodeExecutable`), so the owner's existing login is used; the
-  adapter never reads, copies or logs credentials and passes no `env`.
+  adapter never reads, copies or logs credentials. Its `env` is this process's environment without the opencode
+  server's credentials (wave 3 follow-up).
 - Isolation: `settingSources: []` (no `~/.claude` settings, hooks or CLAUDE.md), `strictMcpConfig: true` and no
   `mcpServers` option (wave 3 adds the Workbench MCP server over the SDK control channel), `cwd` = the identity's working directory.
 - Permissions: `permissionMode: "default"` is set explicitly (when omitted, Claude Code may start in `auto`, where
@@ -485,18 +486,37 @@ Claude Code and ACP agents (custom `acp` identities and Cursor) get exactly one 
 
 Limits:
 
-- The Claude Code path is tested against the scripted SDK only (no real Claude run). Not verified against the real
-  binary: that it admits a server added by `setMcpServers` under `--strict-mcp-config` (the SDK docs scope strict
-  mode to settings files, `.mcp.json`, plugins and agent frontmatter).
-- Desktop: the default sidecar (v1) runs the server under Node, so it gets no bridge until the desktop sets
-  `OPENCODE_BIN_PATH` to its bundled `opencode-cli` in `createSidecarEnv()`. The v2 sidecar
-  (`OPENCODE_SIDECAR_V2=1`) runs the compiled CLI and needs nothing.
+- Unverified: `setMcpServers` under `--strict-mcp-config`. The Claude Code path is tested against the scripted SDK
+  only (no real Claude run is approved), so it is not known whether the real binary admits a server added that way
+  in strict mode. The SDK docs scope strict mode to settings files, `.mcp.json`, plugins and agent frontmatter.
 - After merging with `spicy-ide` (`97cca65c9`), `opencode workbench mcp` also serves the `debug_*` tools, so
   external agents get them through the same server.
-- Pre-existing, not changed here: agent processes inherit the server's environment (the Claude SDK's default `env`
-  and the ACP spawn), so when the server has a password, `OPENCODE_SERVER_PASSWORD` is visible to the agent's own
-  approved shell commands. Dropping the two variables from the agents' environment would close that; `opencode
-acp` as the agent would then run its own internal server without a password.
+
+## Agent processes never get the server's credentials (wave 3 follow-up)
+
+`AgentProvider.agentEnv()` (`src/agenthq/provider.ts`) is the environment for every process a provider spawns:
+this process's environment without `OPENCODE_SERVER_USERNAME` and `OPENCODE_SERVER_PASSWORD`. The Claude Code SDK
+spawn (`options.env`, which replaces the subprocess environment), every ACP spawn (custom `acp` identities and
+Cursor) and the detection probes (`--version`, `--help`) use it. Only the Workbench MCP server gets the credentials,
+through its own `env`.
+
+ACP children additionally get a fresh `OPENCODE_SERVER_PASSWORD` (`crypto.randomUUID()`): an agent that is opencode
+itself (`opencode acp`) starts its own TCP listener, which stays authenticated that way without sharing this
+server's password. Other agents ignore the variable. The Workbench MCP server an ACP agent starts still gets this
+server's credentials, because its `env` entries override the agent's own environment.
+
+Where the real boundary is: stripping the variables only closes the trivial path (`env | grep` in an approved shell
+command). A process running as the same user with approved shell access can still read the bridge's environment
+(`ps -E` shows it for any non-platform process of that user, which AHQ-08 relies on) and the opencode data
+directory. The real control is the human approving each shell command. OpenCode's own sessions (provider
+`opencode`) run in this process, and their shell tool keeps the upstream behavior of passing the whole environment.
+
+Desktop (`packages/desktop`): the v1 sidecar runs the server under Node, which has no CLI of its own, so
+`createSidecarEnv()` (`src/main/server.ts`) now sets `OPENCODE_BIN_PATH` to the bundled CLI when it exists.
+`src/main/bundled-cli.ts` holds the lookup that `background-cli.ts` already used (`executableName()`, the app's
+resources when packaged, this tree's `resources/` in development), and `background-cli.ts` now calls it. The v2
+sidecar runs the compiled CLI and needs nothing. Covered by `src/main/bundled-cli.test.ts`; the desktop smoke can
+cover the running app later.
 
 ## Tests (wave 3)
 
@@ -522,4 +542,15 @@ Results on the final tree (from `packages/opencode`, `SPICY_REAL_CLAUDE` unset):
 20 times each, it failed once on the base (`fe1c8528b`) and once on this branch, both with the PTY still `running`
 after 20 s.
 
-No upstream-owned files were edited in wave 3.
+Follow-up tests:
+
+| Test                            | What it proves                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| AHQ-09 (scripted SDK)           | With `OPENCODE_SERVER_USERNAME/PASSWORD` set in this process, the claude spawn's `env` has neither key and keeps the rest (`PATH`); the bridge config still carries the credentials. Fails without the change (no `env` option)                                                                                                                              |
+| AHQ-08                          | The real `opencode acp` child's environment (`ps -E`) has a UUID `OPENCODE_SERVER_PASSWORD`, no `OPENCODE_SERVER_USERNAME`, and nothing of the parent's password; its own listener (port from `lsof`) answers 401 without credentials and 401 with the parent's password, and 200 with its own. Without the change the child inherited the parent's password |
+| `bundled-cli.test.ts` (desktop) | A packaged app gets `OPENCODE_BIN_PATH` set to `<resources>/opencode-cli` only when that file exists; in development the CLI is looked up in `packages/desktop/resources`                                                                                                                                                                                    |
+
+Upstream-owned edits (wave 3 follow-up, each marked `// spicy:`): `packages/desktop/src/main/server.ts` (one import,
+one line in `createSidecarEnv()`), `packages/desktop/src/main/background-cli.ts` (imports `bundledCli` and
+`executableName` from the new `bundled-cli.ts` instead of defining them). No upstream files were edited in wave 3
+itself.

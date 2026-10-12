@@ -122,7 +122,11 @@ describe("tasks", () => {
     expect(calls.filter((call) => call.name === "startTask")).toHaveLength(1)
     expect(tasks.state.busy.tsk_1).toBeUndefined()
 
-    await expect(tasks.approve("tsk_1")).rejects.toThrow("the project has uncommitted changes to tracked files")
+    await expect(tasks.approve("tsk_1", "c0ffee")).rejects.toThrow(
+      "the project has uncommitted changes to tracked files",
+    )
+    // Approve carries the head of the review the user looked at.
+    expect(calls.find((call) => call.name === "approveTask")?.args).toEqual(["tsk_1", "c0ffee"])
   })
 
   test("the dry run is kept per task and dropped when the task's status changes", async () => {

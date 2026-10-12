@@ -30,6 +30,8 @@ const RATE_WINDOW = 60_000
 const SUMMARY_LIMIT = 4_000
 const WAITING = new Set<AgentHQ.TaskStatus>(["pending", "ready", "blocked"])
 const STARTABLE = new Set<AgentHQ.TaskStatus>(["ready", "failed", "cancelled"])
+const WORKING = "The agent is still working; review again when it finishes"
+const CHANGED = "The task changed since you reviewed it; review again"
 
 export const CreateTaskInput = Schema.Struct({
   title: Schema.String,
@@ -49,6 +51,10 @@ export const UpdateTaskInput = Schema.Struct({
   isolated: Schema.optional(Schema.Boolean),
 })
 export type UpdateTaskInput = typeof UpdateTaskInput.Type
+
+// The branch commit the human reviewed (`TaskReview.head`); a task with a worktree merges only that commit.
+export const ApproveInput = Schema.Struct({ head: Schema.optional(Schema.String) })
+export type ApproveInput = typeof ApproveInput.Type
 
 export const SendInput = Schema.Struct({
   from: Schema.optional(Schema.Union([AgentHQ.AgentID, Schema.Literals(["user", "system"])])),
@@ -81,7 +87,7 @@ export interface Interface {
   >
   readonly cancel: (id: AgentHQ.TaskID) => Effect.Effect<AgentHQ.Task, NotFound>
   readonly review: (id: AgentHQ.TaskID) => Effect.Effect<AgentHQ.TaskReview, NotFound>
-  readonly approve: (id: AgentHQ.TaskID) => Effect.Effect<AgentHQ.Task, NotFound | Conflict>
+  readonly approve: (id: AgentHQ.TaskID, head?: string) => Effect.Effect<AgentHQ.Task, NotFound | Conflict>
   readonly messages: (filter: {
     readonly taskID?: AgentHQ.TaskID
     readonly agentID?: AgentHQ.AgentID
@@ -222,6 +228,20 @@ const layer = Layer.effect(
       ])
       if (committed.code !== 0)
         return yield* conflict(`could not commit the task's changes: ${committed.err || committed.out}`)
+    })
+
+    /** The commit a task's branch points at, or "" when it is gone. */
+    const tip = (project: string, branch: string) =>
+      git(project, ["rev-parse", "--verify", "--quiet", `${branch}^{commit}`]).pipe(Effect.map((result) => result.out))
+
+    /** The task's session is mid-turn or waits on a permission, so its work may still change. */
+    const working = Effect.fnUntraced(function* (task: AgentHQ.Task) {
+      const sessionID = task.result?.sessionID
+      if (!sessionID) return false
+      const detail = yield* sessions.get(sessionID).pipe(Effect.option)
+      if (Option.isNone(detail)) return false
+      const info = detail.value.session
+      return AgentSessions.ACTIVE.has(info.status) || info.pendingPermissions > 0
     })
 
     const provision = Effect.fnUntraced(function* (task: AgentHQ.Task, agent: AgentHQ.AgentIdentity) {
@@ -442,7 +462,7 @@ const layer = Layer.effect(
 
     const review = Effect.fn("AgentHQOrchestrator.review")(function* (id: AgentHQ.TaskID) {
       const task = yield* get(id)
-      const waiting = task.status === "review" ? undefined : `Task is ${task.status}`
+      const waiting = task.status !== "review" ? `Task is ${task.status}` : (yield* working(task)) ? WORKING : undefined
       if (!task.worktree)
         return {
           taskID: id,
@@ -463,13 +483,18 @@ const layer = Layer.effect(
           mergeable: false,
           reason: "The assignee no longer exists",
         }
+      // Approving merges whatever the agent left in its worktree too, so the review commits it first (never mid-turn)
+      // and describes exactly the commit it reports as `head`.
+      const saved = waiting ? undefined : yield* lock.withPermit(snapshot(task)).pipe(Effect.result)
+      const unsaved = saved?._tag === "Failure" ? saved.failure.message : undefined
       const branch = task.worktree.branch
+      const head = yield* tip(project, branch)
       const base = (yield* git(project, ["rev-parse", "--abbrev-ref", "HEAD"])).out
-      const commits = (yield* git(project, ["log", "--format=%H%x09%s", `HEAD..${branch}`])).out
+      const commits = (yield* git(project, ["log", "--format=%H%x09%s", `HEAD..${head}`])).out
         .split("\n")
         .filter(Boolean)
         .map((line) => ({ sha: line.split("\t")[0] ?? "", subject: line.split("\t").slice(1).join("\t") }))
-      const files = (yield* git(project, ["diff", "--numstat", `HEAD...${branch}`])).out
+      const files = (yield* git(project, ["diff", "--numstat", `HEAD...${head}`])).out
         .split("\n")
         .filter(Boolean)
         .map((line) => {
@@ -477,51 +502,55 @@ const layer = Layer.effect(
           return { path: name.join("\t"), additions: Number(added) || 0, deletions: Number(deleted) || 0 }
         })
       const dirty = (yield* git(project, ["status", "--porcelain", "--untracked-files=no"])).raw
-      const merge = yield* git(project, ["merge-tree", "--write-tree", "--name-only", "HEAD", branch])
+      const merge = yield* git(project, ["merge-tree", "--write-tree", "--name-only", "HEAD", head])
       const conflicts = merge.code === 1 ? conflicted(merge.out) : []
-      const unsaved = (yield* git(task.worktree.path, ["status", "--porcelain"])).out
       const reason =
         waiting ??
+        unsaved ??
         (dirty.trim() ? `The project has uncommitted changes: ${names(dirty).join(", ")}` : undefined) ??
         (conflicts.length > 0 ? `Merging conflicts in ${conflicts.join(", ")}` : undefined) ??
-        (merge.code > 1 ? `The merge check failed: ${merge.err || merge.out}` : undefined) ??
-        (unsaved ? "The worktree has uncommitted changes; approving commits them first" : undefined)
+        (merge.code > 1 ? `The merge check failed: ${merge.err || merge.out}` : undefined)
       return {
         taskID: id,
         branch,
+        ...(head ? { head } : {}),
         base,
         commits,
         files,
         clean: !dirty.trim(),
-        mergeable: !waiting && !dirty.trim() && merge.code === 0,
+        mergeable: !waiting && !unsaved && !dirty.trim() && merge.code === 0,
         ...(reason ? { reason } : {}),
       }
     })
 
-    const approve = Effect.fn("AgentHQOrchestrator.approve")(function* (id: AgentHQ.TaskID) {
+    // Merges exactly the commit the human reviewed: never while the agent works, never after the branch moved on.
+    const approve = Effect.fn("AgentHQOrchestrator.approve")(function* (id: AgentHQ.TaskID, head?: string) {
       return yield* lock.withPermit(
         Effect.gen(function* () {
           const task = yield* get(id)
           if (task.status !== "review")
             return yield* conflict(`Task is ${task.status}; only a task in review can be approved`)
+          if (yield* working(task)) return yield* conflict(WORKING)
           if (task.worktree) {
             const agent = yield* registry
               .get(task.assignee)
               .pipe(Effect.mapError(() => conflict("The assignee no longer exists")))
             const project = agent.projectDirectory
             yield* snapshot(task)
+            if (!head || (yield* tip(project, task.worktree.branch)) !== head) return yield* conflict(CHANGED)
             const dirty = (yield* git(project, ["status", "--porcelain", "--untracked-files=no"])).raw
             if (dirty.trim())
               return yield* conflict(
                 `The project has uncommitted changes (${names(dirty).join(", ")}); commit or stash them before approving`,
               )
+            // The reviewed commit itself, not the branch name: nothing that lands can be newer than the review.
             const merged = yield* git(project, [
               "merge",
               "--no-ff",
               "--no-edit",
               "-m",
               `Merge task: ${task.title}`,
-              task.worktree.branch,
+              head,
             ])
             if (merged.code !== 0) {
               yield* git(project, ["merge", "--abort"])
@@ -531,7 +560,13 @@ const layer = Layer.effect(
             const worktree = task.worktree.path
             yield* store.provide({ directory: project }, worktrees.remove({ directory: worktree })).pipe(Effect.ignore)
           }
-          const done = yield* save({ ...task, status: "done", reason: undefined, updatedAt: Date.now() })
+          const done = yield* save({
+            ...task,
+            status: "done",
+            worktree: undefined,
+            reason: undefined,
+            updatedAt: Date.now(),
+          })
           yield* settle()
           return done
         }),

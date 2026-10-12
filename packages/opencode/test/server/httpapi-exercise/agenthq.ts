@@ -398,6 +398,8 @@ export const agenthqScenarios: Scenario[] = [
     .at((ctx) => ({
       path: route("/agenthq/tasks/{taskID}/approve", { taskID: ctx.state.task.id }),
       headers: ctx.headers(),
+      // A task without a worktree has no branch commit to pin.
+      body: {},
     }))
     .json(
       200,

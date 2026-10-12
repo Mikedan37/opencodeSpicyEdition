@@ -205,8 +205,9 @@ export function createTasksState(client: Client) {
     start: (id: string) => act(id, "start", () => client.startTask(id)),
     cancel: (id: string) => act(id, "cancel", () => client.cancelTask(id)),
     review,
-    // Merges the task's branch into the project. Only ever called from the user's Approve click.
-    approve: (id: string) => act(id, "approve", () => client.approveTask(id)),
+    // Merges the reviewed commit of the task's branch into the project. Only ever called from the user's Approve
+    // click, with the `head` of the review the user is looking at.
+    approve: (id: string, head?: string) => act(id, "approve", () => client.approveTask(id, head)),
     upsertMessage,
     loadThread,
     thread,

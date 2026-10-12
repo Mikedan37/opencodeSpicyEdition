@@ -193,20 +193,25 @@ describe("agenthq orchestration", () => {
         files: [{ path: "shared.txt", additions: 1, deletions: 1 }],
       })
       expect(preview.commits.map((commit) => commit.subject)).toEqual(["Edit one"])
+      expect(preview.head).toBe(yield* git(dir, `git rev-parse ${first.worktree!.branch}`))
       expect(yield* read(path.join(dir, "shared.txt"))).toBe("base\n")
 
       // A project with uncommitted changes is refused, untouched.
       yield* Effect.promise(() => fs.writeFile(path.join(dir, "shared.txt"), "local edit\n"))
-      const dirty = yield* orchestrator.approve(one.id).pipe(Effect.flip)
+      const dirty = yield* orchestrator.approve(one.id, preview.head).pipe(Effect.flip)
       expect(dirty._tag).toBe("AgentHQ.ConflictError")
       expect(dirty.message).toContain("uncommitted changes (shared.txt)")
       expect((yield* orchestrator.get(one.id)).status).toBe("review")
       yield* git(dir, "git checkout -- shared.txt")
 
-      const approved = yield* orchestrator.approve(one.id)
+      const approved = yield* orchestrator.approve(one.id, preview.head)
       expect(approved.status).toBe("done")
+      // The record no longer points at the removed worktree.
+      expect(approved.worktree).toBeUndefined()
+      expect((yield* orchestrator.get(one.id)).worktree).toBeUndefined()
       expect(yield* read(path.join(dir, "shared.txt"))).toBe("one\n")
       expect(yield* git(dir, "git log -1 --format=%s")).toBe("Merge task: Edit one")
+      expect(yield* git(dir, "git rev-parse HEAD^2")).toBe(preview.head!)
       expect(
         yield* Effect.promise(() =>
           fs.stat(first.worktree!.path).then(
@@ -217,16 +222,84 @@ describe("agenthq orchestration", () => {
       ).toBe(false)
 
       // The second branch now conflicts: the dry run says so and approving refuses and aborts.
-      expect(yield* orchestrator.review(two.id)).toMatchObject({
-        mergeable: false,
-        reason: "Merging conflicts in shared.txt",
-      })
-      const conflict = yield* orchestrator.approve(two.id).pipe(Effect.flip)
+      const conflicting = yield* orchestrator.review(two.id)
+      expect(conflicting).toMatchObject({ mergeable: false, reason: "Merging conflicts in shared.txt" })
+      const conflict = yield* orchestrator.approve(two.id, conflicting.head).pipe(Effect.flip)
       expect(conflict._tag).toBe("AgentHQ.ConflictError")
       expect(conflict.message).toContain("The merge failed and was aborted")
       expect(yield* git(dir, "git status --porcelain --untracked-files=no")).toBe("")
       expect(yield* read(path.join(dir, "shared.txt"))).toBe("one\n")
       expect((yield* orchestrator.get(two.id)).status).toBe("review")
+    }),
+  )
+
+  it.live("approve merges exactly the reviewed commit: never mid-turn, never after the branch moved on", () =>
+    Effect.gen(function* () {
+      const { llm, dir } = yield* project
+      const orchestrator = yield* AgentOrchestrator.Service
+      const sessions = yield* AgentSessions.Service
+      const editor = yield* agent(dir, "Editor")
+      const task = yield* orchestrator.create({ title: "Edit", assignee: editor.id, isolated: true })
+      yield* llm.push(reply().tool("write", { filePath: "shared.txt", content: "one\n" }))
+      yield* llm.push(reply().text("wrote one").stop())
+      const sessionID = (yield* orchestrator.start(task.id)).result!.sessionID!
+      yield* allowNext(sessionID)
+      yield* waitTask(task.id, "review")
+      const reviewed = yield* orchestrator.review(task.id)
+      expect(reviewed).toMatchObject({ mergeable: true, head: expect.stringMatching(/^[0-9a-f]{40}$/) })
+
+      // A message to the task in review starts another turn in its session. While it runs, nothing is approved.
+      yield* llm.push(reply().tool("write", { filePath: "extra.txt", content: "extra\n" }))
+      yield* llm.push(reply().text("wrote extra").stop())
+      yield* orchestrator.send({ to: editor.id, taskID: task.id, text: "Also add extra.txt" })
+      yield* pollWithTimeout(
+        sessions
+          .get(sessionID)
+          .pipe(Effect.map((detail) => (detail.session.pendingPermissions > 0 ? true : undefined))),
+        "the second turn never asked for permission",
+        "30 seconds",
+      )
+      const busy = yield* orchestrator.approve(task.id, reviewed.head).pipe(Effect.flip)
+      expect(busy).toMatchObject({
+        _tag: "AgentHQ.ConflictError",
+        message: "The agent is still working; review again when it finishes",
+      })
+      expect(yield* orchestrator.review(task.id)).toMatchObject({
+        mergeable: false,
+        reason: "The agent is still working; review again when it finishes",
+      })
+
+      // The turn adds a commit after the human's review: the reviewed commit no longer approves, nothing merges.
+      yield* allowNext(sessionID)
+      yield* pollWithTimeout(
+        sessions
+          .get(sessionID)
+          .pipe(
+            Effect.map((detail) =>
+              detail.history.filter((item) => item.event.type === "turn.completed").length > 1 ? true : undefined,
+            ),
+          ),
+        "the second turn never completed",
+        "30 seconds",
+      )
+      const stale = yield* orchestrator.approve(task.id, reviewed.head).pipe(Effect.flip)
+      expect(stale).toMatchObject({
+        _tag: "AgentHQ.ConflictError",
+        message: "The task changed since you reviewed it; review again",
+      })
+      expect(yield* git(dir, "git log -1 --format=%s")).toBe("base")
+      expect(yield* read(path.join(dir, "shared.txt"))).toBe("base\n")
+      expect((yield* orchestrator.get(task.id)).status).toBe("review")
+
+      // Reviewed again, approving merges exactly that commit and the record forgets the removed worktree.
+      const again = yield* orchestrator.review(task.id)
+      expect(again.head).not.toBe(reviewed.head)
+      expect(again.files.map((file) => file.path).toSorted()).toEqual(["extra.txt", "shared.txt"])
+      const approved = yield* orchestrator.approve(task.id, again.head)
+      expect(approved).toMatchObject({ status: "done" })
+      expect(approved.worktree).toBeUndefined()
+      expect(yield* git(dir, "git rev-parse HEAD^2")).toBe(again.head!)
+      expect(yield* read(path.join(dir, "extra.txt"))).toBe("extra\n")
     }),
   )
 

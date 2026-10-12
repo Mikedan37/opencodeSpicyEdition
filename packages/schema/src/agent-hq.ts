@@ -224,10 +224,14 @@ export const Task = Schema.Struct({
 }).annotate({ identifier: "AgentHQTask" })
 export interface Task extends Schema.Schema.Type<typeof Task> {}
 
-/** Dry run of approving a task: what merging its branch into the project's current branch would bring in. */
+/**
+ * Dry run of approving a task: what merging its branch into the project's current branch would bring in. The agent's
+ * uncommitted work is committed on the branch first, so `head` is everything approving would merge.
+ */
 export const TaskReview = Schema.Struct({
   taskID: TaskID,
   branch: optional(Schema.String),
+  head: optional(Schema.String), // the branch commit this review describes; approving requires it back
   base: optional(Schema.String), // the project's current branch
   commits: Schema.Array(Schema.Struct({ sha: Schema.String, subject: Schema.String })),
   files: Schema.Array(Schema.Struct({ path: Schema.String, additions: Schema.Number, deletions: Schema.Number })),

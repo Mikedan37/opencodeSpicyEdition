@@ -73,7 +73,7 @@ function createDebug() {
       (key) => {
         const frame = debug.selected()?.stop?.frames[0]
         if (!key || workbench.side() || !frame?.file || !frame.line || !debug.relative(frame.file)) return
-        openAt(frame.file, frame.line)
+        openAt(frame.file, frame.line, false)
       },
       { defer: true },
     ),
@@ -104,13 +104,16 @@ function createDebug() {
     const path = activeFile()
     dialog.show(() => <DebugStartDialog file={path} />)
   }
+  // F9: the line selected in the active file, else the paused line when that file is the one paused in.
   const toggleAtCursor = () => {
     const path = activeFile()
     const range = path ? (file.selectedLines(path) as SelectedLineRange | undefined) : undefined
-    if (!path || !range) return showToast({ title: language.t("workbench.debug.toggle.none") })
-    void debug
-      .toggleBreakpoint(path, Math.min(range.start, range.end))
-      .catch(fail(language.t("workbench.debug.failed.breakpoints")))
+    const session = debug.selected()
+    const frame = session?.stop?.frames.find((item) => item.id === debug.frameID())
+    const paused = frame?.file && debug.relative(frame.file) === path ? frame.line : undefined
+    const line = range ? Math.min(range.start, range.end) : paused
+    if (!path || !line) return showToast({ title: language.t("workbench.debug.toggle.none") })
+    void debug.toggleBreakpoint(path, line).catch(fail(language.t("workbench.debug.failed.breakpoints")))
   }
 
   command.register("debug", () => {

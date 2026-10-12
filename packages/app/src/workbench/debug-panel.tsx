@@ -163,7 +163,7 @@ function CallStack() {
                     })}
                     onClick={() => {
                       debug.selectFrame(frame.id)
-                      openAt(frame.file!, frame.line!)
+                      openAt(frame.file!, frame.line!, false)
                     }}
                   />
                 </Show>
@@ -354,7 +354,7 @@ function Breakpoints() {
                           type="button"
                           class={`${ROW} flex-1 pl-6`}
                           title={state()?.message}
-                          onClick={() => openAt(debug.absolute(file), item.line)}
+                          onClick={() => openAt(debug.absolute(file), item.line, false)}
                         >
                           <span
                             class="size-2 shrink-0 rounded-full"

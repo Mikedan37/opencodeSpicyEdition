@@ -181,7 +181,7 @@ function Line(props: { row: ConsoleRow; chip: boolean }) {
             disabled={!debug.relative(location().file)}
             class="shrink-0 text-[11px] text-v2-text-text-faint enabled:hover:text-v2-text-text-accent enabled:hover:underline"
             title={location().file}
-            onClick={() => openAt(location().file, location().line)}
+            onClick={() => openAt(location().file, location().line, false)}
           >
             {getFilename(location().file)}:{location().line}
           </button>

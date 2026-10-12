@@ -21,6 +21,9 @@ const source = [
   "def helper(value):",
   "    return value * 2",
   "",
+  'if __name__ == "__main__":',
+  "    main()",
+  "",
 ].join("\n")
 
 test.use({ viewport: { width: 1440, height: 900 } })
@@ -259,6 +262,48 @@ test("run tab: the program's terminal stays after exit with its code; an interna
   await expect(run).toContainText("This program writes to the Debug Console")
   await run.getByRole("button", { name: "Show Debug Console" }).click()
   await expect(page.locator('[data-workbench-tab="debug"]')).toHaveAttribute("aria-selected", "true")
+})
+
+test("editor gutter: paused line with values, breakpoint dots, F9, frame selection", async ({ page }) => {
+  const mock = await setup(page)
+  mock.sessions = [session()]
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+
+  // The stop opens app.py; the paused line is marked and shows the values named on it
+  mock.emit(updated({ state: "stopped", stop: stopAt(1) }))
+  const panel = page.locator("#review-panel")
+  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
+  const viewer = panel.locator('[data-component="file"][data-mode="text"]')
+  await expect(viewer.locator('[data-line="4"][data-spicy-exec]')).toHaveCount(1)
+  await expect(viewer.locator('[data-column-number="4"][data-spicy-exec]')).toHaveCount(1)
+  await expect(viewer.locator("[data-debug-values]")).toHaveText("x = 1")
+
+  // F9 on the selected (paused) line adds a breakpoint dot; the server reported it unverified
+  await page.keyboard.press("F9")
+  await expect(viewer.locator('[data-column-number="4"][data-spicy-breakpoint]')).toHaveAttribute(
+    "data-spicy-breakpoint",
+    "unverified",
+  )
+
+  // Another frame moves the marker; values are only known for the top frame
+  await panel.locator('[data-workbench-side-tab="debug"]').click()
+  await panel.getByRole("button", { name: "Open app.py at line 12" }).click()
+  await expect(viewer.locator('[data-line="12"][data-spicy-exec]')).toHaveCount(1)
+  await expect(viewer.locator('[data-line="4"][data-spicy-exec]')).toHaveCount(0)
+  await expect(viewer.locator("[data-debug-values]")).toHaveCount(0)
+
+  // F9 on line 12 adds a second breakpoint; F9 again removes it
+  await page.keyboard.press("F9")
+  await expect(viewer.locator('[data-column-number="12"][data-spicy-breakpoint]')).toHaveCount(1)
+  await page.keyboard.press("F9")
+  await expect(viewer.locator('[data-column-number="12"][data-spicy-breakpoint]')).toHaveCount(0)
+  await expect(viewer.locator('[data-column-number="4"][data-spicy-breakpoint]')).toHaveCount(1)
+  expect(mock.breakpoints.at(-1)).toEqual({ file: `${directory}/app.py`, breakpoints: [{ line: 4 }] })
+
+  // Running clears the paused line
+  mock.emit(updated({ state: "running" }))
+  await expect(viewer.locator("[data-spicy-exec]")).toHaveCount(0)
 })
 
 function row(seq: number, kind: string, by: string, text: string) {

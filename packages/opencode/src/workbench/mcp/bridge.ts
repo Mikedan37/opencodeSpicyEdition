@@ -215,8 +215,11 @@ export function create(connection: Connection, extra: ReadonlyArray<Tool> = []) 
 /** Serves the bridge on stdin/stdout until stdin closes. */
 export async function serve(connection: Connection, extra: ReadonlyArray<Tool> = []) {
   const transport = new StdioServerTransport()
+  // the host ends the session by closing our stdin; the transport itself does not report that
   const closed = new Promise<void>((resolve) => {
     transport.onclose = resolve
+    process.stdin.once("end", resolve)
+    process.stdin.once("close", resolve)
   })
   await create(connection, extra).connect(transport)
   await closed

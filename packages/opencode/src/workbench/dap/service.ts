@@ -162,7 +162,7 @@ const layer = Layer.effect(
           })
           const attachment = yield* pty.attach(info.id, { onData: output, onEnd: () => {} })
           attachment.activate()
-          return { processId: info.pid }
+          return { processId: info.pid, ptyID: info.id }
         }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(directory) })))),
       )
     }

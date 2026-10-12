@@ -2,47 +2,20 @@
 // ${file} and ${env:X}), a plain program, or a test preset (Python, Rust).
 import path from "path"
 import { parse, type ParseError } from "jsonc-parser"
+import { Workbench } from "@opencode-ai/schema/workbench"
 import { Effect, Schema } from "effect"
 import { Filesystem } from "@/util/filesystem"
 import { DebugError } from "./client"
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 
-export const Adapter = Schema.Literals(["debugpy", "lldb-dap"])
-export type Adapter = typeof Adapter.Type
-
-export const Breakpoint = Schema.Struct({
-  file: Schema.String.annotate({ description: "Source file, absolute or relative to the project" }),
-  line: PositiveInt.annotate({ description: "1-based line" }),
-  condition: Schema.optional(Schema.String).annotate({ description: "Stop only when this expression is true" }),
-  hitCondition: Schema.optional(Schema.String).annotate({ description: "Stop on this hit count, e.g. >= 3" }),
-  logMessage: Schema.optional(Schema.String).annotate({ description: "Log this message instead of stopping" }),
-})
-export type Breakpoint = typeof Breakpoint.Type
-
-export const StartInput = Schema.Struct({
-  configuration: Schema.optional(Schema.String).annotate({
-    description: "Name of a configuration in .vscode/launch.json",
-  }),
-  program: Schema.optional(Schema.String).annotate({
-    description:
-      "Program to debug (a .py file, a native binary), the test file for python-test, or the crate folder for rust-test",
-  }),
-  args: Schema.optional(Schema.Array(Schema.String)),
-  cwd: Schema.optional(Schema.String),
-  adapter: Schema.optional(Adapter),
-  preset: Schema.optional(Schema.Literals(["python-test", "rust-test"])).annotate({
-    description:
-      "python-test runs the program file under pytest (unittest when pytest is missing). rust-test builds the crate (default: the project) with cargo test --no-run and debugs its unit-test binary; args go to the test binary, a test name filter first",
-  }),
-  stopOnEntry: Schema.optional(Schema.Boolean),
-  breakpoints: Schema.optional(Schema.Array(Breakpoint)),
-  exceptions: Schema.optional(Schema.Array(Schema.String)).annotate({
-    description: "Exception filters, e.g. uncaught, raised, userUnhandled (debugpy) or cpp_throw (lldb-dap)",
-  }),
-  file: Schema.optional(Schema.String).annotate({ description: "Value of ${file} in launch.json" }),
-})
-export type StartInput = typeof StartInput.Type
+// The start input is part of the shared contract (the debug route body, the tool's fields, investigation targets).
+export const Adapter = Workbench.DebugAdapter
+export type Adapter = Workbench.DebugAdapter
+export const Breakpoint = Workbench.DebugBreakpoint
+export type Breakpoint = Workbench.DebugBreakpoint
+export const StartInput = Workbench.DebugStartInput
+export type StartInput = Workbench.DebugStartInput
 
 export const AttachInput = Schema.Struct({
   adapter: Adapter,

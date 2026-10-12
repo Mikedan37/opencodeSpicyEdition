@@ -216,3 +216,98 @@ Fork files touched (verification engine, owned by the problems branch; each edit
 Tests: `test/workbench/dap/rust.test.ts` — cargo JSON parsing (captured), preset/spec shape and Rust detection,
 formatter files from the real toolchain, a real `cargo test --no-run` locating the binary and reporting a compile
 error, the refusal before building; 5 pass, 1 skipped (Developer Mode off).
+
+### 3. Shared contract and the UI reference
+
+Contract additions in `packages/schema/src/workbench.ts` (additive; no existing field changed):
+
+| Export                                                                 | Identifier                     | What                                                                                                                           |
+| ---------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `DebugSessionInfo.ptyID`                                               | (field)                        | PTY the program runs in when the adapter asked for a terminal                                                                  |
+| `DebugAdapter`                                                         |                                | `"debugpy" \| "lldb-dap"`                                                                                                      |
+| `DebugBreakpoint`                                                      |                                | `{ file, line, condition?, hitCondition?, logMessage? }`                                                                       |
+| `DebugStartInput`                                                      | `WorkbenchDebugStartInput`     | body of `POST /workbench/debug/sessions` and the `debug` tool's start fields (moved from `dap/launch.ts`, which re-exports it) |
+| `InvestigationNote`, `InvestigationAttempt`, `InvestigationCheckpoint` |                                | parts of the record                                                                                                            |
+| `Investigation`                                                        | `WorkbenchInvestigationRecord` | the full investigation record (moved from `investigation.ts`, which re-exports it as `Info`)                                   |
+| `InvestigationDetail`                                                  | `WorkbenchInvestigationDetail` | `{ investigation, evidence, report }` (was `WorkbenchInvestigationFull`)                                                       |
+
+## UI reference: debug and investigation routes
+
+For the Debug panel, Debug Console and Run tab (the app now; a SwiftUI client can use the same JSON later).
+Shapes named `Workbench.*` are in `packages/schema/src/workbench.ts`.
+
+**Conventions.** Every route is instance-scoped: pass the project folder as `?directory=<abs path>` or the
+`x-opencode-directory` header, with the same auth as other instance routes. Requests from these routes act as the
+**human**. Errors are JSON with a `message`: 400 invalid or unsupported (unknown filter, capability missing, wrong
+state), 404 unknown session or investigation, 409 not the owner or a limit (2 live sessions per project), 502 the
+adapter failed, 503 adapter unavailable (no Python/debugpy, or "Developer Mode off — run sudo DevToolsSecurity
+-enable"), 504 timeout.
+
+### Routes
+
+| Method | Path                                                    | Body / query                                                                                                                                                                                               | Returns                                                                                                                                                                             |
+| ------ | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/workbench/debug/sessions`                             |                                                                                                                                                                                                            | `Workbench.DebugSessionInfo[]` (live ones and the last 10 ended)                                                                                                                    |
+| POST   | `/workbench/debug/sessions`                             | `Workbench.DebugStartInput`                                                                                                                                                                                | `DebugSessionInfo`. Returns once the adapter is configured (usually `running`); the first stop arrives as an event.                                                                 |
+| POST   | `/workbench/debug/sessions/:debugSessionID/control`     | `{ action: "continue" \| "pause" \| "next" \| "stepIn" \| "stepOut" }`                                                                                                                                     | `DebugSessionInfo` right after the adapter accepted the command; the stop arrives as an event. 409 when the agent owns the session (take over first).                               |
+| POST   | `/workbench/debug/sessions/:debugSessionID/breakpoints` | `{ file?, breakpoints?: { line, condition?, hitCondition?, logMessage? }[], functions?: string[], exceptions?: string[] }`. `file` + `breakpoints` replace every breakpoint in that file (`[]` clears it). | `{ file?, breakpoints: { line, verified, message? }[], functions?: { name, verified, message? }[], exceptions?: string[] }`                                                         |
+| GET    | `/workbench/debug/sessions/:debugSessionID/variables`   | `?ref=<variablesReference>&start=<n>`                                                                                                                                                                      | `Workbench.VariableView[]`, 50 per page (`start` pages). Only while stopped; refs from older stops are invalid.                                                                     |
+| POST   | `/workbench/debug/sessions/:debugSessionID/evaluate`    | `{ expression, frameID? }` (default: top frame)                                                                                                                                                            | `Workbench.ConsoleRow` (`kind: "result"`, or `"exception"` when the expression failed; `variablesReference` > 0 means expandable). The human may evaluate whoever owns the session. |
+| GET    | `/workbench/debug/sessions/:debugSessionID/completions` | `?text=<input>&column=<1-based cursor>&frameID=<id>`                                                                                                                                                       | `{ label, text?, type?, start?, length? }[]` (max 50)                                                                                                                               |
+| GET    | `/workbench/debug/sessions/:debugSessionID/output`      | `?after=<seq>`                                                                                                                                                                                             | `Workbench.ConsoleRow[]` after `seq`; led by a `system` truncation row when the 256 KB cap dropped older rows                                                                       |
+| POST   | `/workbench/debug/sessions/:debugSessionID/owner`       | `{ owner: "idle" \| "agent" \| "human" }`                                                                                                                                                                  | `DebugSessionInfo`                                                                                                                                                                  |
+| DELETE | `/workbench/debug/sessions/:debugSessionID`             |                                                                                                                                                                                                            | `DebugSessionInfo` (`terminated`); the program's whole process tree is gone                                                                                                         |
+| GET    | `/workbench/investigations`                             |                                                                                                                                                                                                            | `Workbench.InvestigationSummary[]`, newest first                                                                                                                                    |
+| GET    | `/workbench/investigations/:investigationID`            |                                                                                                                                                                                                            | `Workbench.InvestigationDetail` = `{ investigation: Investigation, evidence: Evidence[], report: string }`                                                                          |
+| POST   | `/workbench/investigations/:investigationID/resume`     |                                                                                                                                                                                                            | `InvestigationSummary`. Only from `interrupted`, `needs_human` or `blocked`; relaunches the stored `target` with its breakpoints.                                                   |
+| POST   | `/workbench/investigations/:investigationID/cancel`     |                                                                                                                                                                                                            | `InvestigationSummary` (`cancelled`); its debug sessions stop                                                                                                                       |
+
+### Events
+
+Delivered on the instance stream `GET /event` (SSE; each item `{ id, type, properties }`) and on `GET /global/event`
+(SSE; `{ directory, project, workspace, payload: { id, type, properties } }`). All three carry the project directory.
+
+| Type                              | `properties`                              | Use                                                                                                                                                                                                          |
+| --------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `workbench.debug.updated`         | `{ session: DebugSessionInfo }`           | Full snapshot on every state, owner or stop change: replace the session by `id`. `stop` is set only while `state === "stopped"` and the snapshot is built (it can be `stopped` without `stop` for a few ms). |
+| `workbench.debug.output`          | `{ sessionID, rows: ConsoleRow[] }`       | New console rows, batched every ~32 ms. Append by `seq`, ignoring rows you already have (the evaluate response is also published here).                                                                      |
+| `workbench.investigation.updated` | `{ investigation: InvestigationSummary }` | Replace by `id`; fetch the detail route for evidence and the report.                                                                                                                                         |
+
+### Semantics the panels need
+
+- **State**: `starting → running ⇄ stopped → terminated | failed` (`error` says why on `failed`). Program exit, `stop`,
+  the 10-minute limit (unless a human owns the session) and project close all end in `terminated`.
+- **Owner** (`idle | agent | human | terminating`): only the owner sends control commands; anyone may read while
+  stopped. "Take over" = owner `human` (always allowed); "Hand to agent" = `agent`; "Release" = `idle`. Every change
+  is also a console row `owner X → Y`.
+- **Debug panel**: call stack = `stop.frames` (`line` is 1-based); variables = `stop.locals`, then
+  `variables?ref=` for anything with `variablesReference > 0`. `stop.reason` is `breakpoint`, `exception`, `step`,
+  `pause`, `entry`, …; `stop.exception` holds `{ id, description }`. Values are redacted (`[REDACTED]`) and capped at
+  512 characters. `capabilities` lists the DAP capabilities the adapter reported (e.g. hide conditional breakpoints
+  without `supportsConditionalBreakpoints`).
+- **Debug Console**: load `output?after=0`, then follow `workbench.debug.output`. Row `kind`: `stdout`/`stderr`
+  (`by: "program"`), `console` (`by: "adapter"`), `eval` + `result`/`exception` (`by: "agent" | "human"`), `stop`,
+  `exception` (`by: "adapter"`, with `location`), `system`. Telemetry never appears. Completions: send the input
+  and the 1-based cursor column.
+- **Run tab**: when `ptyID` is set, the program runs in that PTY: attach with the existing PTY routes
+  (`POST /pty/:ptyID/connect-token`, then the `/pty/:ptyID/connect` WebSocket) for live I/O and stdin. Its output is
+  also mirrored into console rows (`stdout`, ANSI stripped). Without `ptyID` (debugpy's default internal console),
+  the `stdout`/`stderr` rows are the program's output.
+- **Investigations**: `status` follows `created → reproducing → debugging → diagnosing → patching → verifying →
+resolved`, plus `blocked`, `needs_human`, `interrupted`, `failed`, `cancelled`. `reason` on the summary is the
+  latest checkpoint reason; supervisor stops start with the rule (`S1:` … `S8:`). Evidence `class` is `observed` or
+  `verified` (set by the server); notes in the record are the agent's inferences. Offer "Resume" on
+  `interrupted`/`needs_human`/`blocked` and "Cancel" on anything not ended.
+
+### Wave 2 runs
+
+- Goal 1 commit: `test/workbench` + debug HTTP test 119 pass / 1 skip; `test/tool test/server test/session` 1063 pass /
+  9 skip / 1 todo / 0 fail.
+- Goal 2 commit: workbench 124 pass / 2 skip (DAP-18 C and Rust launches, "Developer Mode off"); full suites
+  1063 pass / 9 skip / 1 todo / 0 fail.
+- Goal 3 commit: workbench 124 pass / 2 skip (the real debugpy tests included, now with the `ptyID` check); full
+  suites 1062 pass / 9 skip / 1 todo / 1 fail — `httpapi-v2-pty` "retains exited sessions", the known load-flaky PTY
+  test, 4/4 when rerun alone; `bun run test:httpapi` 234 pass in all three modes (its `opencode/eager-eagle` and
+  `opencode/nimble-orchid` branches deleted, `git worktree prune` run); typecheck clean in `packages/opencode`,
+  `packages/schema` and `packages/app`; `bun run generate` in `packages/client`: no diff.
+- No new `~/Library/Logs/DiagnosticReports/Python-*.ips` after any of these runs (11 before the fix, 11 now).

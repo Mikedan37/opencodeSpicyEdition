@@ -59,75 +59,9 @@ export function allowed(from: Status, to: Status) {
   return false
 }
 
-const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
-
-export const Note = Schema.Struct({
-  kind: Schema.Literals(["hypothesis", "question"]),
-  text: Schema.String,
-  at: Schema.Finite,
-})
-
-const Attempt = Schema.Struct({
-  n: NonNegativeInt,
-  // Hash over the attempt's edited files and their content hashes (S3).
-  patchHash: Schema.String,
-  changes: Schema.Array(Schema.Struct({ file: Schema.String, hash: Schema.String })),
-  errorFingerprints: Schema.Array(Schema.String),
-  errorCount: NonNegativeInt,
-  checkIDs: Schema.Array(Schema.String),
-  passed: Schema.optional(Schema.Boolean),
-  at: Schema.Finite,
-})
-
-export const Info = Schema.Struct({
-  id: Workbench.InvestigationID,
-  projectID: Schema.String,
-  directory: Schema.String,
-  sessionID: Schema.optional(Schema.String),
-  agentID: Schema.optional(Schema.String),
-  title: Schema.String,
-  status: Workbench.InvestigationStatus,
-  policy: Workbench.RecoveryPolicy,
-  // How to reproduce. Never replayed automatically; resume asks first.
-  target: Schema.optional(DebugLaunch.StartInput),
-  attempts: Schema.Array(Attempt),
-  evidence: Schema.Array(Workbench.EvidenceID),
-  // Model-written, so inferred.
-  notes: Schema.Array(Note),
-  checkpoints: Schema.Array(
-    Schema.Struct({
-      status: Workbench.InvestigationStatus,
-      at: Schema.Finite,
-      reason: Schema.optional(Schema.String),
-      evidenceID: Schema.optional(Workbench.EvidenceID),
-    }),
-  ),
-  // Recorded for orphan cleanup after a restart: killed only when pid and start time still match.
-  processes: Schema.Array(
-    Schema.Struct({ pid: NonNegativeInt, command: Schema.String, startedAt: Schema.optional(Schema.String) }),
-  ),
-  debugSessions: Schema.Array(Workbench.DebugSessionID),
-  steps: NonNegativeInt,
-  crashes: NonNegativeInt,
-  // Budget window start (S6): creation or the last resume.
-  since: Schema.Finite,
-  // Event order, so "after the last patch" never depends on clock resolution.
-  seq: NonNegativeInt,
-  lastPatch: Schema.optional(NonNegativeInt),
-  checkPassed: Schema.optional(NonNegativeInt),
-  reproPassed: Schema.optional(NonNegativeInt),
-  unverified: Schema.Array(Schema.String),
-  // The opencode process that owns the active work; another live process's records are left alone.
-  host: Schema.Struct({
-    pid: NonNegativeInt,
-    startedAt: Schema.optional(Schema.String),
-    // One per service instance; a process can hold more than one (server routes and AppRuntime).
-    token: Schema.optional(Schema.String),
-  }),
-  createdAt: Schema.Finite,
-  updatedAt: Schema.Finite,
-}).annotate({ identifier: "WorkbenchInvestigationRecord" })
-export type Info = typeof Info.Type
+// The record and its detail view are part of the shared contract.
+export const Info = Workbench.Investigation
+export type Info = Workbench.Investigation
 export type Draft = Types.DeepMutable<Info>
 
 /** A problem as the verification engine reports it. */
@@ -168,12 +102,8 @@ export type Event =
   | { readonly type: "repro"; readonly passed: boolean; readonly summary: string; readonly runID?: Workbench.RunID }
   | { readonly type: "permission.denied"; readonly permission: string }
 
-export const Full = Schema.Struct({
-  investigation: Info,
-  evidence: Schema.Array(Workbench.Evidence),
-  report: Schema.String,
-}).annotate({ identifier: "WorkbenchInvestigationFull" })
-export type Full = typeof Full.Type
+export const Full = Workbench.InvestigationDetail
+export type Full = Workbench.InvestigationDetail
 
 export interface Interface {
   readonly list: () => Effect.Effect<Workbench.InvestigationSummary[]>

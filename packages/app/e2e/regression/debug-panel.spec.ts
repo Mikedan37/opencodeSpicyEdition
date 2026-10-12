@@ -365,18 +365,18 @@ test("editor gutter: paused line with values, breakpoint dots, F9, frame selecti
   await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
   await expectSessionTitle(page, title)
 
-  // The stop opens app.py; the paused line is marked and shows the values named on it
+  // The stop opens app.py in the editor; the paused line is marked and shows the values named on it
   mock.emit(updated({ state: "stopped", stop: stopAt(1) }))
   const panel = page.locator("#review-panel")
   await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
-  const viewer = panel.locator('[data-component="file"][data-mode="text"]')
-  await expect(viewer.locator('[data-line="4"][data-spicy-exec]')).toHaveCount(1)
-  await expect(viewer.locator('[data-column-number="4"][data-spicy-exec]')).toHaveCount(1)
-  await expect(viewer.locator("[data-debug-values]")).toHaveText("x = 1")
+  const editor = panel.locator('[data-component="workbench-editor"][data-path="app.py"]')
+  await expect(editor.locator('.cm-line[data-spicy-exec][data-line="4"]')).toHaveCount(1)
+  await expect(editor.locator(".cm-lineNumbers .cm-spicy-exec-gutter")).toHaveText("4")
+  await expect(editor.locator("[data-debug-values]")).toHaveText("x = 1")
 
-  // F9 on the selected (paused) line adds a breakpoint dot; the server reported it unverified
+  // F9 (the editor not focused) on the paused line adds a breakpoint dot; the server reported it unverified
   await page.keyboard.press("F9")
-  await expect(viewer.locator('[data-column-number="4"][data-spicy-breakpoint]')).toHaveAttribute(
+  await expect(editor.locator('[data-spicy-breakpoint][data-line="4"]')).toHaveAttribute(
     "data-spicy-breakpoint",
     "unverified",
   )
@@ -384,21 +384,61 @@ test("editor gutter: paused line with values, breakpoint dots, F9, frame selecti
   // Another frame moves the marker; values are only known for the top frame
   await panel.locator('[data-workbench-side-tab="debug"]').click()
   await panel.getByRole("button", { name: "Open app.py at line 12" }).click()
-  await expect(viewer.locator('[data-line="12"][data-spicy-exec]')).toHaveCount(1)
-  await expect(viewer.locator('[data-line="4"][data-spicy-exec]')).toHaveCount(0)
-  await expect(viewer.locator("[data-debug-values]")).toHaveCount(0)
+  await expect(editor.locator('.cm-line[data-spicy-exec][data-line="12"]')).toHaveCount(1)
+  await expect(editor.locator('.cm-line[data-spicy-exec][data-line="4"]')).toHaveCount(0)
+  await expect(editor.locator("[data-debug-values]")).toHaveCount(0)
 
   // F9 on line 12 adds a second breakpoint; F9 again removes it
   await page.keyboard.press("F9")
-  await expect(viewer.locator('[data-column-number="12"][data-spicy-breakpoint]')).toHaveCount(1)
+  await expect(editor.locator('[data-spicy-breakpoint][data-line="12"]')).toHaveCount(1)
   await page.keyboard.press("F9")
-  await expect(viewer.locator('[data-column-number="12"][data-spicy-breakpoint]')).toHaveCount(0)
-  await expect(viewer.locator('[data-column-number="4"][data-spicy-breakpoint]')).toHaveCount(1)
+  await expect(editor.locator('[data-spicy-breakpoint][data-line="12"]')).toHaveCount(0)
+  await expect(editor.locator('[data-spicy-breakpoint][data-line="4"]')).toHaveCount(1)
   expect(mock.breakpoints.at(-1)).toEqual({ file: `${directory}/app.py`, breakpoints: [{ line: 4 }] })
+
+  // A click in the gutter sets a breakpoint on that line and a second click clears it, here and on the server
+  await editor.locator(".cm-lineNumbers .cm-gutterElement", { hasText: /^9$/ }).click()
+  await expect(editor.locator('[data-spicy-breakpoint][data-line="9"]')).toHaveCount(1)
+  await expect
+    .poll(() => mock.breakpoints.at(-1))
+    .toEqual({ file: `${directory}/app.py`, breakpoints: [{ line: 4 }, { line: 9 }] })
+  await editor.locator('.cm-spicy-glyphs [data-line="9"]').click()
+  await expect(editor.locator('[data-spicy-breakpoint][data-line="9"]')).toHaveCount(0)
 
   // Running clears the paused line
   mock.emit(updated({ state: "running" }))
-  await expect(viewer.locator("[data-spicy-exec]")).toHaveCount(0)
+  await expect(editor.locator("[data-spicy-exec]")).toHaveCount(0)
+})
+
+test("editor: a Problems event puts its lint marker in the gutter and under the code", async ({ page }) => {
+  const mock = await setup(page)
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  const panel = page.locator("#review-panel")
+  await page.getByRole("button", { name: "Toggle review" }).click()
+  await panel.getByRole("button", { name: "Open file" }).click()
+  await panel.locator('[data-slot="file-tree-v2-row"][data-path="app.py"]').click()
+  const editor = panel.locator('[data-component="workbench-editor"][data-path="app.py"]')
+  await expect(editor.locator(".cm-line").first()).toHaveText("import sys")
+  await expect(editor.locator("[data-spicy-glyph]")).toHaveCount(0)
+
+  mock.problems = [
+    {
+      id: "p1",
+      file: `${directory}/app.py`,
+      range: { start: { line: 4, character: 12 }, end: { line: 4, character: 16 } },
+      severity: "error",
+      message: '"range" is shadowed',
+      source: { kind: "lsp", tool: "pyright", producer: `lsp:pyright:${directory}` },
+      observedAt: 1,
+      stale: false,
+    },
+  ]
+  mock.emit({ type: "workbench.problems.updated", properties: {} })
+  await expect(editor.locator('[data-spicy-glyph="error"][data-line="5"]')).toHaveCount(1)
+  await expect(editor.locator(".cm-lintRange-error")).toHaveText("list")
+  await editor.locator(".cm-lintRange-error").hover()
+  await expect(page.locator(".cm-tooltip-lint")).toContainText('"range" is shadowed')
 })
 
 test("a stop brings its file forward over the Review tab but leaves the Debug tab in front", async ({ page }) => {
@@ -501,6 +541,8 @@ async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
     evaluations: [] as unknown[],
     scopes: [] as number[],
     breakpoints: [] as unknown[],
+    // GET /workbench/problems
+    problems: [] as unknown[],
     emit(...items: Record<string, unknown>[]) {
       pending.push(...items.map((item) => ({ directory, payload: { id: `evt_${Math.random()}`, ...item } })))
     },
@@ -540,7 +582,8 @@ async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
       },
     ],
     pageMessages: () => ({ items: [] }),
-    fileList: () => [],
+    fileList: (path) =>
+      path ? [] : [{ name: "app.py", path: "app.py", absolute: `${directory}/app.py`, type: "file", ignored: false }],
     ...(options.vcsDiff ? { vcsDiff: options.vcsDiff } : {}),
     fileContent: (path) => {
       if (path === ".vscode/launch.json")
@@ -568,6 +611,15 @@ async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
     const path = url.pathname
     const body = request.postDataJSON() as Record<string, unknown> | null
     if (path === "/workbench/debug/sessions" && request.method() === "GET") return json(route, mock.sessions)
+    // The editor reads files through the editor's own route.
+    if (path === "/workbench/file" && url.searchParams.get("path") === "app.py")
+      return json(route, { content: source, hash: "h1" })
+    if (path === "/workbench/problems")
+      return json(route, {
+        problems: mock.problems,
+        counts: { error: mock.problems.length, warning: 0, info: 0, hint: 0 },
+        producers: [],
+      })
     if (path === "/workbench/debug/sessions" && request.method() === "POST") {
       if (mock.startError) return json(route, { message: mock.startError }, 503)
       mock.starts.push(body)

@@ -269,8 +269,18 @@ async function createProject(directory: string, modelURL: string) {
   )
 }
 
-// A real `opencode serve` from this checkout, with its own data, config, state and cache dirs.
+// A real `opencode serve` from this checkout, with its own data, config, state and cache dirs. The real-server specs
+// (review-agent-changes, editor-save) share the app's default server port, so a busy port is waited for.
 async function startServer(root: string, port: number) {
+  for (let attempt = 0; ; attempt++) {
+    const started = await spawnServer(root, port).catch((error: unknown) => error as Error)
+    if (!(started instanceof Error)) return started
+    if (attempt >= 90 || !/EADDRINUSE|in use|ServeError/i.test(started.message)) throw started
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+}
+
+async function spawnServer(root: string, port: number) {
   const env: Record<string, string | undefined> = {
     ...process.env,
     XDG_DATA_HOME: path.join(root, "data"),

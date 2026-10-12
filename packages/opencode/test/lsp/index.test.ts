@@ -229,3 +229,104 @@ describe("lsp.spawn", () => {
     { config: { lsp: true } },
   )
 })
+
+// spicy: REG-02 / REG-09 failure reporting, crash recovery and bounded restarts
+const sleep = (ms: number) => Effect.promise(() => new Promise((resolve) => setTimeout(resolve, ms)))
+
+const statuses = Effect.fn("LSPTest.statuses")(function* () {
+  const lsp = yield* LSP.Service
+  return (yield* lsp.status()).map((item) => `${item.id}:${item.status}`)
+})
+
+describe("lsp failure recovery", () => {
+  it.instance(
+    "drops a server that crashes, reports it as error and restarts it after backoff",
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        const lsp = yield* LSP.Service
+        const file = path.join(dir, "sample.repro")
+        yield* Effect.promise(() => Bun.write(file, "one\n"))
+        yield* lsp.touchFile(file)
+        expect(yield* statuses()).toEqual(["fake:connected"])
+
+        // The fake server exits on didChange.
+        yield* Effect.promise(() => Bun.write(file, "two\n"))
+        yield* lsp.touchFile(file)
+        for (let i = 0; i < 40 && (yield* statuses())[0] !== "fake:error"; i++) yield* sleep(25)
+        expect(yield* statuses()).toEqual(["fake:error"])
+        expect(yield* lsp.diagnostics()).toEqual({})
+
+        // Still in backoff: no restart yet.
+        yield* lsp.touchFile(file)
+        expect(yield* statuses()).toEqual(["fake:error"])
+
+        yield* sleep(1_100)
+        yield* lsp.touchFile(file)
+        expect(yield* statuses()).toEqual(["fake:connected"])
+      }),
+    {
+      config: {
+        lsp: {
+          fake: {
+            command: [process.execPath, fakeServerPath],
+            extensions: [".repro"],
+            env: { FAKE_LSP_EXIT_ON_CHANGE: "1" },
+          },
+        },
+      },
+    },
+  )
+
+  it.instance(
+    "a server that dies during initialize is reported quickly and retried a bounded number of times",
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        const lsp = yield* LSP.Service
+        const file = path.join(dir, "sample.stub")
+        const starts = path.join(dir, "starts.log")
+        yield* Effect.promise(() => Bun.write(file, "x\n"))
+        yield* Effect.promise(() => Bun.write(starts, ""))
+        const count = () =>
+          Effect.promise(() =>
+            Bun.file(starts)
+              .text()
+              .then((text) => text.length),
+          )
+
+        const started = Date.now()
+        yield* lsp.touchFile(file)
+        expect(Date.now() - started).toBeLessThan(3_000)
+        expect(yield* statuses()).toEqual(["stub:error"])
+        expect(yield* count()).toBe(1)
+
+        yield* sleep(1_100)
+        yield* lsp.touchFile(file)
+        expect(yield* count()).toBe(2)
+        yield* sleep(2_100)
+        yield* lsp.touchFile(file)
+        expect(yield* count()).toBe(3)
+        yield* sleep(4_100)
+        yield* lsp.touchFile(file)
+        expect(yield* count()).toBe(3)
+        expect(yield* lsp.hasClients(file)).toBe(false)
+        expect(yield* statuses()).toEqual(["stub:error"])
+      }),
+    {
+      config: () => ({
+        lsp: {
+          stub: {
+            command: [
+              process.execPath,
+              "-e",
+              `require("fs").appendFileSync(require("path").join(process.cwd(), "starts.log"), "x"); process.stderr.write("error: Unknown binary 'stub' in official toolchain\\n"); process.exit(1)`,
+            ],
+            extensions: [".stub"],
+          },
+        },
+      }),
+    },
+    20_000,
+  )
+})

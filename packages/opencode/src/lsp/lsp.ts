@@ -14,6 +14,8 @@ import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LspEvent } from "@opencode-ai/schema/lsp-event"
+import { EffectBridge } from "@/effect/bridge" // spicy: REG-09 crash watcher
+import { errorMessage } from "@/util/error" // spicy: REG-02 failure reasons
 
 export const Event = LspEvent
 
@@ -109,11 +111,26 @@ const filterExperimentalServers = (servers: Record<string, LSPServer.Info>, flag
 
 type LocInput = { file: string; line: number; character: number }
 
+// spicy: a server that fails to start or crashes is retried on a later touch with exponential backoff, at most
+// MAX_FAILURES times per instance (REG-02/REG-09)
+const MAX_FAILURES = 3
+const RESTART_BACKOFF_MS = 1_000
+
+type Broken = {
+  serverID: string
+  root: string
+  reason: string
+  // 0 = unavailable (spawn found nothing to run): never retried and not reported, as before. >0 = failures so far.
+  failures: number
+  retryAt: number
+}
+
 interface State {
   clients: LSPClient.Info[]
   servers: Record<string, LSPServer.Info>
-  broken: Set<string>
+  broken: Map<string, Broken> // spicy: was Set<string>, now keeps the reason and retry schedule
   spawning: Map<string, Promise<LSPClient.Info | undefined>>
+  bridge: EffectBridge.Shape // spicy: lets the crash watcher log and publish
 }
 
 export interface Interface {
@@ -141,6 +158,26 @@ const layer = Layer.effect(
     const config = yield* Config.Service
     const flags = yield* RuntimeFlags.Service
     const events = yield* EventV2Bridge.Service
+
+    // spicy: record a failed start or crash, log why, and refresh status consumers (REG-02/REG-09)
+    const fail = (s: State, input: { key: string; serverID: string; root: string; reason: string }) => {
+      const failures = (s.broken.get(input.key)?.failures ?? 0) + 1
+      s.broken.set(input.key, {
+        serverID: input.serverID,
+        root: input.root,
+        reason: input.reason,
+        failures,
+        retryAt: Date.now() + RESTART_BACKOFF_MS * 2 ** (failures - 1),
+      })
+      s.bridge.fork(
+        Effect.logWarning("LSP server failed", {
+          serverID: input.serverID,
+          root: input.root,
+          reason: input.reason,
+          failures,
+        }).pipe(Effect.andThen(events.publish(Event.Updated, {})), Effect.ignore),
+      )
+    }
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("LSP.state")(function* (ctx) {
@@ -191,13 +228,15 @@ const layer = Layer.effect(
         const s: State = {
           clients: [],
           servers,
-          broken: new Set(),
+          broken: new Map(),
           spawning: new Map(),
+          bridge: yield* EffectBridge.make(),
         }
 
         yield* Effect.addFinalizer(() =>
           Effect.promise(async () => {
-            await Promise.all(s.clients.map((client) => client.shutdown()))
+            // spicy: empty the list first so the crash watcher ignores these intentional exits
+            await Promise.all(s.clients.splice(0).map((client) => client.shutdown()))
           }),
         )
 
@@ -215,14 +254,17 @@ const layer = Layer.effect(
         let updated = 0
 
         async function schedule(server: LSPServer.Info, root: string, key: string) {
+          // spicy: failures keep their reason and are retried with backoff (REG-02/REG-09)
+          const failed = { key, serverID: server.id, root }
           const handle = await server
             .spawn(root, ctx, flags)
             .then((value) => {
-              if (!value) s.broken.add(key)
+              if (!value)
+                s.broken.set(key, { serverID: server.id, root, reason: "unavailable", failures: 0, retryAt: Infinity })
               return value
             })
-            .catch(() => {
-              s.broken.add(key)
+            .catch((error) => {
+              fail(s, { ...failed, reason: errorMessage(error) })
               return undefined
             })
 
@@ -233,8 +275,11 @@ const layer = Layer.effect(
             root,
             directory: ctx.directory,
             instance: ctx,
-          }).catch(async () => {
-            s.broken.add(key)
+          }).catch(async (error) => {
+            fail(s, {
+              ...failed,
+              reason: errorMessage(error instanceof LSPClient.InitializeError ? error.cause : error),
+            })
             await Process.stop(handle.process)
             return undefined
           })
@@ -248,6 +293,12 @@ const layer = Layer.effect(
           }
 
           s.clients.push(client)
+          // spicy: a server that dies is dropped with its diagnostics; a later touch restarts it (REG-09)
+          void client.exited.then((reason) => {
+            if (!s.clients.includes(client)) return
+            s.clients = s.clients.filter((item) => item !== client)
+            fail(s, { ...failed, reason })
+          })
           return client
         }
 
@@ -256,7 +307,7 @@ const layer = Layer.effect(
 
           const root = await server.root(file, ctx)
           if (!root) continue
-          if (s.broken.has(root + server.id)) continue
+          if (blocked(s.broken.get(root + server.id))) continue // spicy: REG-09
 
           const match = s.clients.find((x) => x.root === root && x.serverID === server.id)
           if (match) {
@@ -322,6 +373,17 @@ const layer = Layer.effect(
           status: "connected",
         })
       }
+      // spicy: failed starts and crashes without a live replacement report "error"; the reason is logged (REG-02)
+      for (const item of s.broken.values()) {
+        if (item.failures === 0) continue
+        if (s.clients.some((client) => client.root === item.root && client.serverID === item.serverID)) continue
+        result.push({
+          id: item.serverID,
+          name: item.serverID,
+          root: path.relative(ctx.directory, item.root),
+          status: "error",
+        })
+      }
       return result
     })
 
@@ -334,7 +396,7 @@ const layer = Layer.effect(
           if (server.extensions.length && !server.extensions.includes(extension)) continue
           const root = await server.root(file, ctx)
           if (!root) continue
-          if (s.broken.has(root + server.id)) continue
+          if (blocked(s.broken.get(root + server.id))) continue // spicy: REG-09
           return true
         }
         return false
@@ -495,6 +557,12 @@ const layer = Layer.effect(
     })
   }),
 )
+
+// spicy: skip unavailable servers, servers out of attempts, and servers still in backoff (REG-09)
+function blocked(entry: Broken | undefined) {
+  if (!entry) return false
+  return entry.failures === 0 || entry.failures >= MAX_FAILURES || Date.now() < entry.retryAt
+}
 
 export * as Diagnostic from "./diagnostic"
 

@@ -191,8 +191,9 @@ function createDebug() {
     end,
     openStart,
     consoleFilter: { state: consoleFilter, set: setConsoleFilter },
-    // Terminal snapshots of program PTYs, so the Run tab restores a terminal it unmounted.
-    terminals: new Map<string, Partial<LocalPTY> & { id: string }>(),
+    // Terminal snapshots of program PTYs, so the Run tab restores a terminal it unmounted. `whole`: the snapshot was
+    // attached when the program ended, so it holds all of the output.
+    terminals: new Map<string, Partial<LocalPTY> & { id: string; whole?: boolean }>(),
     // The line each mounted file viewer shows selected, by project-relative path (debug-file.tsx registers them).
     viewers,
   }

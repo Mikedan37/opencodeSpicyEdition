@@ -289,6 +289,77 @@ test("run tab: the program's terminal stays after exit with its code; an interna
   await expect(page.locator('[data-workbench-tab="debug"]')).toHaveAttribute("aria-selected", "true")
 })
 
+test("run tab after the program ended: replays the debugger's copy of its output, or says it is gone", async ({
+  page,
+}) => {
+  const mock = await setup(page)
+  const program = "pty_program"
+  mock.sessions = [session({ ptyID: program })]
+  const state = { exited: false, sockets: 0 }
+  await page.route(`**/api/pty/${program}*`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        location: { directory, project: { id: projectID, directory } },
+        data: {
+          id: program,
+          title: "app.py",
+          command: "python3",
+          args: [],
+          cwd: directory,
+          status: state.exited ? "exited" : "running",
+          pid: 2,
+        },
+      }),
+    }),
+  )
+  // The /pty routes don't attach to an exited PTY: the server closes the socket with 4404
+  await page.routeWebSocket(new RegExp(`/api/pty/${program}/connect`), (socket) => {
+    state.sockets++
+    if (state.exited) return socket.close({ code: 4404, reason: "session exited" })
+    socket.send("loading orders\r\n")
+  })
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="run"]').click()
+  const run = page.locator('[data-component="workbench-run"]')
+  const terminal = run.locator(`[data-run-pty="${program}"] [data-component="terminal"]`)
+  await expect(terminal).toBeVisible()
+  await expect.poll(() => state.sockets).toBe(1)
+
+  // The program writes more and ends while another tab is in front
+  await page.locator('[data-workbench-tab="debug"]').click()
+  await expect(terminal).toHaveCount(0)
+  state.exited = true
+  mock.emit(
+    { type: "pty.exited", properties: { id: program, exitCode: 1 } },
+    updated({ state: "terminated", ptyID: program }),
+    output(row(1, "stdout", "program", "loading orders\n"), row(2, "stderr", "program", "ValueError: bad order\n")),
+  )
+  await expect(page.locator('[data-component="workbench-debug-console"]')).toContainText("ValueError: bad order")
+  await page.locator('[data-workbench-tab="run"]').click()
+  await expect(run.locator('[data-slot="run-status"]')).toHaveText("Exited with code 1")
+  const replay = run.locator("[data-run-replay]")
+  await expect(replay).toContainText("The program has ended")
+  await expect(replay).toContainText("loading orders")
+  await expect(replay).toContainText("ValueError: bad order")
+  await expect(terminal).toHaveCount(0)
+  expect(state.sockets).toBe(1)
+
+  // After a reload the exit was never seen: the terminal tries, the PTY is gone, and the debugger's copy is gone too
+  mock.sessions = [session({ state: "terminated", ptyID: program })]
+  mock.backlog = null
+  await page.reload()
+  await expectSessionTitle(page, title)
+  // The bottom panel and its tab are restored
+  await page.locator('[data-workbench-tab="run"]').click()
+  await expect(replay).toContainText("Output is no longer available")
+  await expect(terminal).toHaveCount(0)
+  expect(state.sockets).toBeGreaterThan(1)
+})
+
 test("editor gutter: paused line with values, breakpoint dots, F9, frame selection", async ({ page }) => {
   const mock = await setup(page)
   mock.sessions = [session()]
@@ -418,7 +489,8 @@ async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
   const mock = {
     // What GET /workbench/debug/sessions and GET .../output return; tests set them before navigating.
     sessions: [] as unknown[],
-    backlog: [] as unknown[],
+    // null: the server no longer has the session's output (404)
+    backlog: [] as unknown[] | null,
     // Reply to POST .../evaluate; defaults to a plain result.
     evaluate: undefined as ((body: Record<string, unknown>) => unknown) | undefined,
     completions: [] as string[],
@@ -572,7 +644,8 @@ async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
         ...(body?.exceptions ? { exceptions: body.exceptions } : {}),
       })
     }
-    if (action === "output") return json(route, mock.backlog)
+    if (action === "output")
+      return mock.backlog ? json(route, mock.backlog) : json(route, { message: "debug session not found" }, 404)
     return json(route, { message: path }, 404)
   })
 

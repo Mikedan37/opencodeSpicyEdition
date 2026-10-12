@@ -1,5 +1,6 @@
 // spicy: a minimal Chrome DevTools Protocol client for driving the desktop renderer from scripts/spicy-smoke.ts.
-// Only selectors (data attributes, roles, element types) are used to find elements, never visible text.
+// Elements are found by selectors (data attributes, roles, element types); visible text only where an element has
+// nothing else to go by (menu items, plain buttons).
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void }
 
@@ -8,6 +9,18 @@ export const ALT = 1
 export const CTRL = 2
 export const META = 4
 export const SHIFT = 8
+
+// A page expression for the element a selector names. " >>> " steps into the shadow root of the element before it
+// (pierre renders file lines in one), and the first visible match wins, so hidden tabs that stay mounted are skipped.
+export function query(selector: string, text?: string) {
+  return `((selector, text) => {
+    const found = selector.split(" >>> ").reduce(
+      (scopes, part) => scopes.flatMap((scope) => [...(scope.shadowRoot ?? scope).querySelectorAll(part)]),
+      [document],
+    ).filter((el) => text === undefined || el.textContent.includes(text))
+    return found.find((el) => el.getClientRects().length > 0) ?? found[0] ?? null
+  })(${JSON.stringify(selector)}, ${JSON.stringify(text)})`
+}
 
 export async function connectRenderer(port: number, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs
@@ -71,27 +84,32 @@ async function connect(url: string) {
     }
   }
 
-  // A real mouse click at the element's centre (pointer events included), after scrolling it into view.
-  const click = async (selector: string) => {
+  // A real mouse click at the centre of the element `target` evaluates to (pointer events included), after scrolling it
+  // into view. Waits until the element exists, is enabled and has a size.
+  const clickOn = async (target: string, label: string) => {
     const box = await waitFor<{ x: number; y: number }>(
       `(() => {
-        const el = document.querySelector(${JSON.stringify(selector)})
+        const el = ${target}
         if (!el || el.disabled) return null
         el.scrollIntoView({ block: "center", inline: "center" })
         const rect = el.getBoundingClientRect()
         if (!rect.width || !rect.height) return null
         return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
       })()`,
-      `clickable ${selector}`,
+      label,
     )
     for (const type of ["mouseMoved", "mousePressed", "mouseReleased"])
       await send("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 1 })
   }
 
+  // `text` narrows the selector to elements whose text contains it.
+  const click = (selector: string, text?: string) =>
+    clickOn(query(selector, text), `clickable ${selector}${text === undefined ? "" : ` with "${text}"`}`)
+
   // Focus a field and insert text as the keyboard would (input events fire).
   const type = async (selector: string, text: string) => {
     await waitFor(
-      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); el?.focus(); return !!el && document.activeElement === el })()`,
+      `(() => { const el = ${query(selector)}; el?.focus(); return !!el && document.activeElement === el })()`,
       `focus ${selector}`,
     )
     await send("Input.insertText", { text })
@@ -118,7 +136,7 @@ async function connect(url: string) {
 
   await send("Page.enable")
   await send("Runtime.enable")
-  return { send, evaluate, waitFor, click, type, press, screenshot, close: () => ws.close() }
+  return { send, evaluate, waitFor, click, clickOn, type, press, screenshot, close: () => ws.close() }
 }
 
 export type Renderer = Awaited<ReturnType<typeof connect>>

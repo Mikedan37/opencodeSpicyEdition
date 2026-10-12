@@ -799,7 +799,8 @@ export async function kill(pids: readonly number[]) {
     }
   }
   const alive = pids.filter((pid) => signal(pid, "SIGTERM"))
-  for (let attempt = 0; attempt < 10 && alive.some((pid) => signal(pid, 0)); attempt++) await Bun.sleep(50)
+  for (let attempt = 0; attempt < 10 && alive.some((pid) => signal(pid, 0)); attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 50))
   for (const pid of alive) signal(pid, "SIGKILL")
 }
 

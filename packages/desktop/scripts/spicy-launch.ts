@@ -40,7 +40,10 @@ export type Mode = "built" | "dev"
 export const DESKTOP_DIR = path.resolve(import.meta.dir, "..")
 // Unpackaged runs use the dev app id (src/main/index.ts), so userData is <appData>/ai.opencode.desktop.dev.
 const APP_ID = "ai.opencode.desktop.dev"
-const KEEP_ENV = ["PATH", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL"]
+const KEEP_ENV = ["USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL"]
+// Not the caller's PATH: it can hold the owner's own opencode (~/.opencode/bin) and agent CLIs (~/.local/bin), which
+// the app would then find and run. Homebrew first for node, python3 (debugpy), rg, ruff and mypy.
+const PATH = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 const SWITCHES = [
   "--use-mock-keychain",
   "--mute-audio",
@@ -84,6 +87,7 @@ export async function launch(options: LaunchOptions = {}) {
   const port = options.port || (await freePort())
   const env: Record<string, string> = {
     ...Object.fromEntries(KEEP_ENV.flatMap((key) => (process.env[key] ? [[key, process.env[key]!]] : []))),
+    PATH,
     HOME: home,
     CFFIXED_USER_HOME: home,
     ZDOTDIR: home,

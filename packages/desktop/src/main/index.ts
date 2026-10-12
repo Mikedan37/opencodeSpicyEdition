@@ -237,14 +237,15 @@ const main = Effect.gen(function* () {
     setAppQuitting()
     // spicy: quit once the sidecar has stopped, as relaunch and update installs already do. Quitting terminates its
     // utility process, so its server's shutdown never ran: Agent HQ sessions stayed "working" and a history file being
-    // written could be lost. Once the sidecar has stopped the quit goes through. Waiting here rather than in
-    // before-quit keeps the sidecar running when a window cancels the quit.
+    // written could be lost. Once the sidecar has stopped the app exits. Waiting here rather than in before-quit keeps
+    // the sidecar running when a window cancels the quit. app.exit, not app.quit: a second app.quit() after a prevented
+    // will-quit never finishes on macOS (observed), and by now every window has closed and every will-quit listener ran.
     if (!server && !stopping) return void stopSidecars()
     event.preventDefault()
     const started = Date.now()
     void stopSidecars().finally(() => {
       logger.log("sidecar stopped before quit", { ms: Date.now() - started })
-      app.quit()
+      app.exit(0)
     })
   })
 

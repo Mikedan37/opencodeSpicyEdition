@@ -297,7 +297,13 @@ export const ApplyPatchTool = Tool.define(
         metadata: {
           diff: totalDiff,
           files,
-          diagnostics,
+          // spicy: REG-08, only the patched files
+          ...LSP.Diagnostic.metadata(
+            diagnostics,
+            fileChanges
+              .filter((change) => change.type !== "delete")
+              .map((change) => FSUtil.normalizePath(change.movePath ?? change.filePath)),
+          ),
         },
         output,
       }

@@ -76,6 +76,7 @@ export const WriteTool = Tool.define(
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = FSUtil.normalizePath(filepath)
           let projectDiagnosticsCount = 0
+          const reported = [normalizedFilepath] // spicy: REG-08, the files whose diagnostics go into metadata
           for (const [file, issues] of Object.entries(diagnostics)) {
             const current = file === normalizedFilepath
             if (!current && projectDiagnosticsCount >= MAX_PROJECT_DIAGNOSTICS_FILES) continue
@@ -86,13 +87,14 @@ export const WriteTool = Tool.define(
               continue
             }
             projectDiagnosticsCount++
+            reported.push(file) // spicy: REG-08
             output += `\n\nLSP errors detected in other files:\n${block}`
           }
 
           return {
             title: path.relative(instance.worktree, filepath),
             metadata: {
-              diagnostics,
+              ...LSP.Diagnostic.metadata(diagnostics, reported), // spicy: REG-08
               filepath,
               exists: exists,
             },

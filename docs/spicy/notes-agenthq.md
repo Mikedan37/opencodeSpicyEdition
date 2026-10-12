@@ -333,13 +333,17 @@ recipient's (message) project.
   `<agent> (Agent HQ)`; `result.summary` = the last assistant message); session `failed`/`disconnected` →
   `failed`; `cancelled` → `cancelled`; `interrupted` (restart) → `failed` with "send it a message or start the
   task again".
-- Review gate: `GET .../review` is a dry run (`TaskReview`: branch, base = the project's current branch, commits,
-  per-file additions/deletions, `clean`, `mergeable`, `reason`; conflicts come from `git merge-tree`, nothing is
-  touched). `POST .../approve` (only from `review`) commits leftover worktree changes, refuses with 409 if the
-  project has uncommitted changes to tracked files (untracked files do not count; git refuses itself if they
-  would be overwritten), runs `git merge --no-ff` of the branch into the project's current branch (commit
-  `Merge task: <title>`), aborts and returns 409 on any merge failure, and on success removes the worktree and
-  branch and marks the task `done`. A task without a worktree just becomes `done`. Nothing else ever merges.
+- Review gate: `GET .../review` is a dry run (`TaskReview`: branch, `head` = the branch commit it describes, base =
+  the project's current branch, commits, per-file additions/deletions, `clean`, `mergeable`, `reason`; conflicts
+  come from `git merge-tree`; the project is not touched). It first commits the agent's leftover worktree changes
+  on the task branch, unless the agent is working. `POST .../approve { head }` (only from `review`) merges exactly
+  that commit: 409 while the task's session is working or has a pending permission, 409 when the branch is no
+  longer at `head` after committing leftovers (the task changed since the review), 409 if the project has
+  uncommitted changes to tracked files (untracked files do not count; git refuses itself if they would be
+  overwritten). It runs `git merge --no-ff <head>` into the project's current branch (commit `Merge task:
+  <title>`), aborts and returns 409 on any merge failure, and on success removes the worktree and branch, clears
+  `worktree` from the task and marks it `done`. A task without a worktree needs no `head` and just becomes `done`
+  (still refused while its agent works). Nothing else ever merges. (Since wave 3, see below.)
 - Cancel: marks `cancelled` first, then cancels the running session; dependents become `blocked`. The worktree
   is kept for inspection; `DELETE` removes the task and its worktree (409 while another task depends on it).
 
@@ -364,19 +368,19 @@ Pending relays are in memory (an exchange in flight during a restart is not resu
 
 ### Routes (wave 2)
 
-| Method | Path                             | Body / query                                              | 200                                                              | Errors                                                |
-| ------ | -------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------- |
-| GET    | `/agenthq/tasks`                 |                                                           | `Task[]`, oldest first                                           |                                                       |
-| POST   | `/agenthq/tasks`                 | create input above                                        | `Task`                                                           | 400, 404 (assignee)                                   |
-| GET    | `/agenthq/tasks/:taskID`         |                                                           | `Task`                                                           | 404                                                   |
-| PATCH  | `/agenthq/tasks/:taskID`         | edit input above                                          | `Task`                                                           | 400, 404, 409                                         |
-| DELETE | `/agenthq/tasks/:taskID`         |                                                           | `true`                                                           | 404, 409                                              |
-| POST   | `/agenthq/tasks/:taskID/start`   |                                                           | `Task` (`running`, `result.sessionID`, `worktree` when isolated) | 400, 404, 409, 502                                    |
-| POST   | `/agenthq/tasks/:taskID/cancel`  |                                                           | `Task`                                                           | 404                                                   |
-| GET    | `/agenthq/tasks/:taskID/review`  |                                                           | `TaskReview`                                                     | 404                                                   |
-| POST   | `/agenthq/tasks/:taskID/approve` |                                                           | `Task` (`done`)                                                  | 404, 409 (not in review, dirty project, merge failed) |
-| GET    | `/agenthq/messages`              | `?taskID=&agentID=` (agentID matches sender or recipient) | `AgentMessage[]`, oldest first                                   |                                                       |
-| POST   | `/agenthq/messages`              | send input above                                          | `AgentMessage` (`delivered`, or `failed` + `reason`)             | 400, 404                                              |
+| Method | Path                             | Body / query                                                | 200                                                              | Errors                                                                                     |
+| ------ | -------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| GET    | `/agenthq/tasks`                 |                                                             | `Task[]`, oldest first                                           |                                                                                            |
+| POST   | `/agenthq/tasks`                 | create input above                                          | `Task`                                                           | 400, 404 (assignee)                                                                        |
+| GET    | `/agenthq/tasks/:taskID`         |                                                             | `Task`                                                           | 404                                                                                        |
+| PATCH  | `/agenthq/tasks/:taskID`         | edit input above                                            | `Task`                                                           | 400, 404, 409                                                                              |
+| DELETE | `/agenthq/tasks/:taskID`         |                                                             | `true`                                                           | 404, 409                                                                                   |
+| POST   | `/agenthq/tasks/:taskID/start`   |                                                             | `Task` (`running`, `result.sessionID`, `worktree` when isolated) | 400, 404, 409, 502                                                                         |
+| POST   | `/agenthq/tasks/:taskID/cancel`  |                                                             | `Task`                                                           | 404                                                                                        |
+| GET    | `/agenthq/tasks/:taskID/review`  |                                                             | `TaskReview`                                                     | 404                                                                                        |
+| POST   | `/agenthq/tasks/:taskID/approve` | `{ head? }` (the review's `head`; required with a worktree) | `Task` (`done`)                                                  | 404, 409 (not in review, agent working, changed since review, dirty project, merge failed) |
+| GET    | `/agenthq/messages`              | `?taskID=&agentID=` (agentID matches sender or recipient)   | `AgentMessage[]`, oldest first                                   |                                                                                            |
+| POST   | `/agenthq/messages`              | send input above                                            | `AgentMessage` (`delivered`, or `failed` + `reason`)             | 400, 404                                                                                   |
 
 409 bodies are `{"_tag":"ConflictError","message":"<reason>"}`; the rest as in wave 1.
 
@@ -535,6 +539,31 @@ with exactly: done"):
 
 Afterwards: no bridge process left, no project written under `~/.claude/projects`, no new DiagnosticReports.
 
+## Approve merges exactly what the human reviewed (wave 3 follow-up)
+
+The bug: approve committed whatever was in the worktree at that moment and merged whatever the branch pointed at.
+A message to a task in `review` starts a new turn in its session, so commits made after the human's dry run, or
+a half-finished turn, could be merged unreviewed.
+
+The rule, in `src/agenthq/orchestrator.ts`:
+
+- `GET .../review` commits the agent's leftovers first (never mid-turn) and reports the branch commit it
+  describes as `head`. Its commits, files and merge check are computed against `head`, not the branch name.
+  While the session works or waits on a permission it reports `mergeable: false` with "The agent is still
+  working; review again when it finishes".
+- `POST .../approve` takes `{ head }`. It refuses with 409 "The agent is still working; review again when it
+  finishes" while the session is active (`starting`, `thinking`, `working`, `needs_approval`, `blocked`) or has a
+  pending permission, and with 409 "The task changed since you reviewed it; review again" when, after committing
+  leftovers, the branch is not at `head` (or `head` is missing for a task with a worktree). It merges the commit
+  `head` itself, so nothing newer than the review can land even inside the lock.
+- After a merge the saved task has no `worktree`.
+
+Contract (additive): `TaskReview.head?: string`; the approve route gains the payload `{ head?: string }`.
+
+App (minimal): `approveTask(id, head)` in `packages/app/src/workbench/client.ts`, `approve(id, head)` in
+`packages/app/src/agenthq/tasks.ts` (the store between the panel and the client), and the panel passes the head of
+the review on screen. A 409 shows verbatim and "Check again" reloads the review.
+
 ## Agent processes never get the server's credentials (wave 3 follow-up)
 
 `AgentProvider.agentEnv()` (`src/agenthq/provider.ts`) is the environment for every process a provider spawns:
@@ -597,3 +626,11 @@ Upstream-owned edits (wave 3 follow-up, each marked `// spicy:`): `packages/desk
 one line in `createSidecarEnv()`), `packages/desktop/src/main/background-cli.ts` (imports `bundledCli` and
 `executableName` from the new `bundled-cli.ts` instead of defining them). No upstream files were edited in wave 3
 itself.
+
+Approve fix tests (from `packages/opencode` unless noted):
+
+| Test                                                                | What it proves                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `orchestrator.test.ts` "approve merges exactly the reviewed commit" | After the review, a message to the task starts a turn that asks for permission: approve with the reviewed head is 409 "still working" and the review says so. The turn then adds `extra.txt`: approve with the old head is 409 "changed since you reviewed it", the project is untouched and the task stays in review. Reviewed again, the new head merges (`HEAD^2` is that commit, both files land) and the task has no `worktree`. Fails on the old orchestrator |
+| `orchestrator.test.ts` isolated tasks (updated)                     | `head` is the branch commit, approve with it merges it (`HEAD^2`), the record drops `worktree`; a dirty project and a conflicting branch are still refused                                                                                                                                                                                                                                                                                                          |
+| `packages/app` `tasks.test.ts`                                      | `approve(id, head)` passes the head to `approveTask`                                                                                                                                                                                                                                                                                                                                                                                                                |

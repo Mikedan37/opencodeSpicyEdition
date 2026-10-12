@@ -72,6 +72,7 @@ export const make = Effect.fn("AgentHQ.claudeCode.make")(function* (input: {
       prompt: Stream.toAsyncIterable(Stream.fromQueue(inbox)),
       options: {
         cwd: agent.workingDirectory ?? agent.projectDirectory,
+        env: AgentProvider.agentEnv(),
         pathToClaudeCodeExecutable: binary,
         ...(resume ? { resume } : { sessionId: sessionID }),
         ...(agent.model ? { model: agent.model } : {}),

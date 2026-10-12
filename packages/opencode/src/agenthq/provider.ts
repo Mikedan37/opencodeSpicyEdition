@@ -44,6 +44,17 @@ export interface Session {
   readonly close: Effect.Effect<void>
 }
 
+/**
+ * The environment for every process a provider spawns: this process's environment without the opencode server's
+ * credentials. Only the Workbench MCP server gets them, through its own `env`.
+ */
+export function agentEnv() {
+  const env = { ...process.env }
+  delete env.OPENCODE_SERVER_USERNAME
+  delete env.OPENCODE_SERVER_PASSWORD
+  return env
+}
+
 /** A stdio MCP server to give the agent: the Workbench tools (see ./workbench.ts). */
 export interface McpServer {
   readonly name: string

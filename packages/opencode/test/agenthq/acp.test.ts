@@ -170,6 +170,28 @@ describe("agenthq acp", () => {
         expect(session.providerSessionID?.startsWith("ses")).toBe(true)
         expect(yield* running).not.toBe("")
 
+        // The agent never inherits this server's credentials. Being opencode itself, it runs its own listener with a
+        // password of its own: unknown to the parent, and still required.
+        const pid = (yield* running).split("\n")[0]!
+        const environment = Bun.spawnSync(["ps", "-E", "-ww", "-p", pid, "-o", "command="]).stdout.toString()
+        const own = environment.match(/(?:^|\s)OPENCODE_SERVER_PASSWORD=(\S+)/)?.[1]
+        expect(own).toMatch(/^[0-9a-f-]{36}$/)
+        expect(environment).not.toContain(auth.password)
+        expect(environment).not.toMatch(/(?:^|\s)OPENCODE_SERVER_USERNAME=/)
+        const port = Bun.spawnSync(["lsof", "-a", "-p", pid, "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-Fn"])
+          .stdout.toString()
+          .match(/^n.*:(\d+)$/m)?.[1]
+        expect(port).toBeDefined()
+        const agentListener = (password?: string) =>
+          Effect.promise(() =>
+            fetch(`http://127.0.0.1:${port}/agenthq/agents`, {
+              headers: password ? { authorization: `Basic ${btoa(`opencode:${password}`)}` } : {},
+            }).then((response) => response.status),
+          )
+        expect(yield* agentListener()).toBe(401)
+        expect(yield* agentListener(auth.password)).toBe(401)
+        expect(yield* agentListener(own)).toBe(200)
+
         // Prompt → streamed reply with a tool that the agent must ask about.
         const before = (yield* llm.hits).length
         yield* llm.push(reply().tool("bash", { command: "echo acp-permission", description: "Echo a marker" }))

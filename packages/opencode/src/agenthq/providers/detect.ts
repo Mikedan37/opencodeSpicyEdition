@@ -43,10 +43,12 @@ export const status = Effect.fn("AgentHQ.detect.status")(function* (
   const proc = yield* AppProcess.Service
   const cli = CLIS[id]
   const run = (bin: string, args: string[]) =>
-    proc.run(ChildProcess.make(bin, args, { stdin: "ignore" }), { timeout: "3 seconds" }).pipe(
-      Effect.map((result) => (result.exitCode === 0 ? result.stdout.toString("utf8").trim() : "")),
-      Effect.orElseSucceed(() => ""),
-    )
+    proc
+      .run(ChildProcess.make(bin, args, { stdin: "ignore", env: AgentProvider.agentEnv() }), { timeout: "3 seconds" })
+      .pipe(
+        Effect.map((result) => (result.exitCode === 0 ? result.stdout.toString("utf8").trim() : "")),
+        Effect.orElseSucceed(() => ""),
+      )
   const base = { id, name: cli.name, auth: "unknown", capabilities: input.capabilities ?? none } as const
   const bin = binary(id, input.env)
   if (!bin) return { ...base, available: false, reason: `${cli.binary} not found on PATH` }

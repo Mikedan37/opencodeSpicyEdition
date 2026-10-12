@@ -245,6 +245,30 @@ describe("agenthq claude code adapter (scripted SDK)", () => {
     }),
   )
 
+  it.live("the claude process does not inherit the opencode server's credentials; only the bridge gets them", () =>
+    Effect.gen(function* () {
+      const saved = [process.env.OPENCODE_SERVER_USERNAME, process.env.OPENCODE_SERVER_PASSWORD] as const
+      process.env.OPENCODE_SERVER_USERNAME = "opencode"
+      process.env.OPENCODE_SERVER_PASSWORD = "parent-secret"
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (saved[0] === undefined) delete process.env.OPENCODE_SERVER_USERNAME
+          else process.env.OPENCODE_SERVER_USERNAME = saved[0]
+          if (saved[1] === undefined) delete process.env.OPENCODE_SERVER_PASSWORD
+          else process.env.OPENCODE_SERVER_PASSWORD = saved[1]
+        }),
+      )
+      const fake = scripted()
+      yield* start({ run: fake.run, workbench: bridge("/projects/app") })
+      // `env` replaces the claude process's whole environment: everything else is still there.
+      const env = fake.seen.options!.env!
+      expect(Object.keys(env)).not.toContain("OPENCODE_SERVER_USERNAME")
+      expect(Object.keys(env)).not.toContain("OPENCODE_SERVER_PASSWORD")
+      expect(env.PATH).toBe(process.env.PATH)
+      expect(fake.seen.mcp[0]?.["opencode-workbench"]).toMatchObject({ env: { OPENCODE_SERVER_PASSWORD: "s3cret" } })
+    }),
+  )
+
   it.live("a Workbench server that fails to connect is reported without its secret", () =>
     Effect.gen(function* () {
       const fake = scripted({ "opencode-workbench": "MCP error: auth s3cret rejected" })

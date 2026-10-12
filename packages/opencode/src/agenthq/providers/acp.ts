@@ -70,6 +70,9 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
       .spawn(
         ChildProcess.make(launch.command, [...launch.args], {
           cwd,
+          // Never this server's credentials. An agent that is opencode itself (`opencode acp`) runs a listener of
+          // its own, which keeps a password that way; other agents ignore it.
+          env: { ...AgentProvider.agentEnv(), OPENCODE_SERVER_PASSWORD: crypto.randomUUID() },
           stdin: { stream: Stream.fromQueue(stdin) },
           forceKillAfter: "3 seconds",
         }),

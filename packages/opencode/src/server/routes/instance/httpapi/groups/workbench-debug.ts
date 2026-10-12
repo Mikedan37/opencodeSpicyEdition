@@ -3,9 +3,12 @@
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import { SessionID } from "@/session/schema"
+import { Parameters as DebugToolParameters } from "@/workbench/tool/debug"
 import {
   ApiNotFoundError,
   ConflictError,
+  ForbiddenError,
   InvalidRequestError,
   ServiceUnavailableError,
   TimeoutError,
@@ -36,6 +39,7 @@ export const WorkbenchDebugPaths = {
   investigation: "/workbench/investigations/:investigationID",
   resume: "/workbench/investigations/:investigationID/resume",
   cancel: "/workbench/investigations/:investigationID/cancel",
+  agent: "/workbench/debug/agent",
 } as const
 
 const params = { debugSessionID: Workbench.DebugSessionID }
@@ -48,6 +52,21 @@ const errors = [
   TimeoutError,
 ]
 const Count = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))
+
+// One action of the agent's debug tool, for agents outside opencode (the Workbench MCP bridge). Same fields as the
+// in-process tool; the session is where permission asks appear and what owns the debug session and investigation.
+export const AgentPayload = Schema.Struct({
+  sessionID: SessionID.annotate({
+    description: "opencode session the outside agent works in: debug.* permission asks appear there",
+  }),
+  ...DebugToolParameters.fields,
+})
+
+export const AgentResult = Schema.Struct({
+  title: Schema.String,
+  output: Schema.String,
+  metadata: Schema.Record(Schema.String, Schema.Unknown),
+}).annotate({ identifier: "WorkbenchDebugAgentResult" })
 
 export const BreakpointsPayload = Schema.Struct({
   file: Schema.optional(Schema.String).annotate({ description: "Replace every breakpoint in this file" }),
@@ -171,6 +190,18 @@ export const WorkbenchDebugApi = HttpApi.make("workbench-debug")
           success: described(Workbench.DebugSessionInfo, "Ended session"),
           error: errors,
         }).annotateMerge(op("workbench.debug.stop", "Stop", "End the session and kill the program's process tree.")),
+        HttpApiEndpoint.post("agent", WorkbenchDebugPaths.agent, {
+          query: WorkspaceRoutingQuery,
+          payload: AgentPayload,
+          success: described(AgentResult, "What the debug tool returned"),
+          error: [...errors, ForbiddenError],
+        }).annotateMerge(
+          op(
+            "workbench.debug.agent",
+            "Debug as an agent",
+            "Run one action of the agent's debug tool for an agent outside opencode. debug.* permissions apply and are asked in the given session; nothing is approved here.",
+          ),
+        ),
         HttpApiEndpoint.get("investigations", WorkbenchDebugPaths.investigations, {
           query: WorkspaceRoutingQuery,
           success: described(Schema.Array(Workbench.InvestigationSummary), "Investigations of this project"),

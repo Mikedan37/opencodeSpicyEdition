@@ -559,6 +559,38 @@ describe("LSPClient provisional pull reports (REG-01)", () => {
     expect(result.elapsed).toBeLessThan(1_500)
   })
 
+  test("an empty report from a static pull provider is final at once", async () => {
+    const { spawn } = require("child_process")
+    const handle = {
+      process: spawn(process.execPath, [path.join(__dirname, "../fixture/lsp/fake-lsp-server.js")], {
+        stdio: "pipe",
+        env: { ...process.env, FAKE_LSP_STATIC_PULL: "1" },
+      }),
+    }
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "clean.js")
+    await Bun.write(file, "export {}\n")
+    const elapsed = await withTestInstance({
+      directory: tmp.path,
+      fn: async (ctx) => {
+        const client = await LSPClient.create({
+          serverID: "fake",
+          server: handle as unknown as LSPServer.Handle,
+          root: tmp.path,
+          directory: tmp.path,
+          instance: ctx,
+        })
+        const version = await client.notify.open({ path: file })
+        const started = Date.now()
+        await client.waitForDiagnostics({ path: file, version, mode: "document" })
+        const result = Date.now() - started
+        await client.shutdown()
+        return result
+      },
+    })
+    expect(elapsed).toBeLessThan(1_000)
+  })
+
   test("a server that never refreshes holds an empty first report only until warm-up ends", async () => {
     const result = await openWithSourcekitPattern({ diagnostics: [], provisionalMs: 0, mode: "document" })
     expect(result.diagnostics).toEqual([])

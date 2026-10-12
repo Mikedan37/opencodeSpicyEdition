@@ -121,6 +121,9 @@ function handle(raw) {
         textDocumentSync: {
           change: 2,
         },
+        ...(process.env.FAKE_LSP_STATIC_PULL
+          ? { diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false } }
+          : {}),
       },
     })
     return

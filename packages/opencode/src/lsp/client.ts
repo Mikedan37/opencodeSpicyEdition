@@ -284,13 +284,16 @@ export async function create(input: {
     // spicy: report why the process died rather than "connection got disposed" (REG-02)
     throw new InitializeError({ serverID: input.serverID, cause: exitReason ? new Error(exitReason) : err })
   })
-  // spicy: an empty pull report is provisional until the server's first refresh, during warm-up (REG-01)
-  const warmupUntil = Date.now() + DIAGNOSTICS_WARMUP_MS
-  const provisional = (filePath: string) =>
-    !refreshed && Date.now() < warmupUntil && mergedDiagnostics(filePath).length === 0
 
   const syncKind = getSyncKind(initialized.capabilities)
   const hasStaticPullDiagnostics = Boolean(initialized.capabilities?.diagnosticProvider)
+  // spicy: servers that register pull diagnostics at runtime (sourcekit-lsp does on the first Swift didOpen, while
+  // its package still loads) may answer early pulls with an empty report and refresh once the real one exists.
+  // Until that first refresh, during warm-up, their empty report is provisional; static providers (eslint,
+  // rust-analyzer) keep the fast path (REG-01).
+  const warmupUntil = Date.now() + DIAGNOSTICS_WARMUP_MS
+  const provisional = (filePath: string) =>
+    !hasStaticPullDiagnostics && !refreshed && Date.now() < warmupUntil && mergedDiagnostics(filePath).length === 0
 
   await connection.sendNotification("initialized", {})
 

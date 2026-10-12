@@ -21,8 +21,8 @@ Plan: [SPICY_IDE_MASTER_PLAN.md](SPICY_IDE_MASTER_PLAN.md). Upstream edits: [../
 | P1 Problem store, LSP hook, events, routes | `spicy-problems` | integration-tested (merged `f8c5092c5`) | `GET /workbench/problems`; `workbench.problems.updated` via EventV2Bridge; DIAG-01..04 pass. Notes: `docs/spicy/notes-problems.md` |
 | P2 Verification engine, `check` tool, turn-end gate | `spicy-problems` | integration-tested (merged `f8c5092c5`) | Checkers tsc/clang/swift/cargo/go/ruff/mypy with golden captures; test runners go/cargo/bun/node; gate (max 2 repairs, env `OPENCODE_VERIFY_GATE`); VER-01..06, 08..13 pass. Missing: `POST /workbench/check`, `GET /workbench/runs/:id`, pytest/swift test (VER-14), VER-07 |
 | P3 Problems + Output tabs | `spicy-ui` | Problems tab unit-tested (merged `c1414caa0`); Output tab in progress (wave 2) | Problems: grouped, filtered, stale badge, click → file line; refetch on `workbench.problems.updated` |
-| P4 DAP core, adapters, console backend, `debug` tool | `spicy-dap` | planned | |
-| P5 Investigations, supervisor, control ownership | `spicy-dap` | planned | |
+| P4 DAP core, adapters, console backend, `debug` tool | `spicy-dap` | integration-tested (merged `f1a10267c`); lldb-dap launch blocked (Developer Mode off) | debugpy full loop; capability gating; limits; process-tree cleanup; runInTerminal → PTY; debug routes; DAP-01..16, CON-02/04/06/08, CTL-01..05, SEC-02/03/07 pass; DAP-18 skipped with reason. Notes: `docs/spicy/notes-dap.md` |
+| P5 Investigations, supervisor, control ownership | `spicy-dap` | integration-tested (merged `f1a10267c`) | JSON-store records, transition table, supervisor S1–S8 (pure), recovery kills only pid+start-time matches; INV-01/02/04–14 pass. Wiring verification runs into investigations: in progress |
 | P6 Debug UI, Debug Console, Run tabs | `spicy-ui` | planned | |
 | P7 Activity and evidence view | `spicy-ui` | planned | |
 | Workbench MCP bridge | wave 2 | planned | |
@@ -40,7 +40,7 @@ Plan: [SPICY_IDE_MASTER_PLAN.md](SPICY_IDE_MASTER_PLAN.md). Upstream edits: [../
 | Claude Code adapter | `spicy-agenthq` | in progress: owner approved SDK 0.3.293 + one real test session | |
 | Codex adapter | wave 2 | blocked: `codex` not installed | |
 
-Merged tree (`f8c5092c5`): `bun test test/lsp test/workbench test/agenthq test/tool test/session test/server test/agent` 1244 pass, 9 skip (pre-existing), 1 todo, 0 fail; `test:httpapi` 220/220; typecheck clean.
+Merged tree (`f1a10267c`, after P4/P5): 1309 pass, 10 skip (9 pre-existing + DAP-18), 1 todo; one PTY test flaky under parallel load (passes alone, also on `dev`); `test:httpapi` 234/234. Earlier merged tree (`f8c5092c5`): `bun test test/lsp test/workbench test/agenthq test/tool test/session test/server test/agent` 1244 pass, 9 skip (pre-existing), 1 todo, 0 fail; `test:httpapi` 220/220; typecheck clean.
 
 ## Orchestration and IDE polish
 

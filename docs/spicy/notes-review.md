@@ -63,6 +63,7 @@ returns the changeset after the decision and publishes `review.changeset.updated
 | ------ | ----------------------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------- | -------- |
 | GET    | `/review/changesets`                            | query `ownerKind?` (`opencode-session` \| `agenthq-session`), `ownerID?`, `agentID?` | `ChangeSet[]` with at least one file, newest `updatedAt` first |          |
 | GET    | `/review/changesets/:changesetID`               |                                                                                      | `ChangeSet`                                                    | 404      |
+| GET    | `/review/changesets/:changesetID/content`       | query `path`                                                                         | `Content`                                                      | 404      |
 | POST   | `/review/changesets/:changesetID/hunks/:hunkID` | `{ "action": "accept" \| "reject" }`                                                 | `ChangeSet`                                                    | 404, 409 |
 | POST   | `/review/changesets/:changesetID/files`         | `{ "path": "src/a.ts", "action": "accept" \| "reject" }`                             | `ChangeSet`                                                    | 404, 409 |
 | POST   | `/review/changesets/:changesetID/all`           | `{ "action": "accept" \| "reject" }`                                                 | `ChangeSet`                                                    | 404, 409 |
@@ -75,6 +76,10 @@ returns the changeset after the decision and publishes `review.changeset.updated
 - `files`/`all` act on every pending hunk of the file(s); deciding something already decided is a no-op.
 - `all` with `reject` applies what it can; if some file fails (changed while rejecting) the others stay
   rejected, the update is published, and the response is 409 naming the files.
+- `content` returns both sides of one file byte for byte with the pending hunks of the same read (the app
+  diffs `before`/`after` and pins the hunk actions with `hunks`). Use it instead of `/file/content`, which
+  trims the text (a leading blank line or the final newline would shift every hunk). For a file with
+  nothing pending it returns `{ path, binary: false, hunks: [] }`.
 
 Error bodies (exact):
 
@@ -115,7 +120,21 @@ Error bodies (exact):
         }
       ],
       "state": "partial",
-      "undoable": false
+      "undoable": false,
+      "accepted": 1,
+      "rejected": 0,
+      "decided": [
+        {
+          "id": "8a1f0c2d3e4b5a69",
+          "oldStart": 2,
+          "oldLines": 1,
+          "newStart": 2,
+          "newLines": 1,
+          "patch": "@@ -2,1 +2,1 @@\n-two\n+TWO\n",
+          "state": "accepted",
+          "at": 1791792680000
+        }
+      ]
     }
   ],
   "counts": { "files": 1, "pending": 1, "accepted": 1, "rejected": 0, "additions": 1, "deletions": 1 },
@@ -133,8 +152,25 @@ Error bodies (exact):
 - `state`: `pending` (hunks, nothing decided yet), `partial` (hunks left, some decided), `accepted`
   (nothing pending, at least one hunk accepted), `rejected` (nothing pending, only rejects).
 - `undoable`: `POST …/undo` with this path can restore the content before this file's last reject.
+- `accepted`/`rejected`: hunks of this file decided so far. `decided`: the latest decided hunks (at most 50,
+  oldest first), each the hunk as it was when decided plus `state` (`accepted`/`rejected`) and `at`; an undo
+  drops the rejects it reverts.
 - `counts`: `files` = files with pending hunks, `pending` = pending hunks, `accepted`/`rejected` = hunks
   decided so far, `additions`/`deletions` = pending lines.
+
+### `Content` (JSON)
+
+```json
+{
+  "path": "a.txt",
+  "binary": false,
+  "before": "one\ntwo\n…",
+  "after": "one\nTWO\n…",
+  "hunks": [{ "id": "8a1f0c2d3e4b5a69", "oldStart": 2, "oldLines": 1, "newStart": 2, "newLines": 1, "patch": "…" }]
+}
+```
+
+`before` is omitted for an added file, `after` for a deleted one, both for binary files.
 
 ## Events
 
@@ -176,7 +212,7 @@ is already one).
 
 ## Tests
 
-`packages/opencode/test/review/review.test.ts`: REV-01..05 and REV-07 run real OpenCode sessions with the
+`packages/opencode/test/review/review.test.ts`: REV-01..05, REV-07 and REV-08 run real OpenCode sessions with the
 fake model (`test/lib/llm-server.ts`) through the real server routes in temp git repos; REV-06 drives the
 Agent HQ hook directly (no external adapter exists yet).
 
@@ -189,11 +225,12 @@ Agent HQ hook directly (no external adapter exists yet).
 | REV-05 | server restart (second app lifetime) → identical changesets; rejecting a hunk reads the persisted baseline                                                                                                                                                |
 | REV-06 | external provider turn: snapshot at the user message; reported `file.changed` shows up live with `agentID`; reject mid-turn → 409; turn end finds the unreported file; reject all restores both; OpenCode-provider sessions are ignored by the hook       |
 | REV-07 | forking a session re-publishes its patch parts → no fork changeset, the accepted file is not re-baselined (fails without the busy gate)                                                                                                                   |
+| REV-08 | the content route: both sides byte for byte (a leading blank line and the final newline survive) with the hunks of the same read; unknown path → 404; nothing pending → no sides                                                                          |
 
-`test:httpapi` scenarios for all six routes (seeded document + shadow store; list, get, accept file,
+`test:httpapi` scenarios for all seven routes (seeded document + shadow store; list, get, accept file,
 reject all, undo → 200; stale hunk → 409).
 
-Results (from `packages/opencode`, 2026-10-12):
+Results (from `packages/opencode`, 2026-10-12; first round, before the UI work):
 
 | Command                                                                                                                   | Result                                                                                                                                                                                                                     |
 | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -202,6 +239,11 @@ Results (from `packages/opencode`, 2026-10-12):
 | `bun run test:httpapi` (coverage, auth, effect)                                                                           | 226 pass, 0 fail, 0 skip, 0 missing in each mode, exit 0                                                                                                                                                                   |
 | `bun run typecheck` (opencode, schema)                                                                                    | clean                                                                                                                                                                                                                      |
 | `bun run generate` (packages/client)                                                                                      | no diff                                                                                                                                                                                                                    |
+
+Second round (with the UI additions: decided log, `content` route), on `spicy-ide` fe1c8528b + this work:
+`bun test --timeout 60000 test/agenthq test/session test/server test/workbench test/review` 891 pass, 12 skip,
+1 todo, 0 fail; `test/review` 8 pass; `bun run test:httpapi` 256 pass, 0 fail, 0 missing in each mode;
+`bun run typecheck` clean in opencode, schema, session-ui and app.
 
 ## Gaps and limits
 
@@ -229,3 +271,104 @@ Results (from `packages/opencode`, 2026-10-12):
   events already broke; review adds two events (now 71 server / 101 latest).
 - The legacy JS SDK was not regenerated (same as the other wave-1 groups); regenerate once after
   integration.
+
+## App UI: Agent changes review (wave 2)
+
+Built on the routes above, in the app's new layout (the default). Two places, one state
+(`packages/app/src/review/context.tsx`, per workspace, mounted next to the Workbench providers):
+
+- **Review panel, "Agent changes" mode** (the panel's change-mode dropdown, next to Git / Branch / Last turn).
+  The file list groups files by changeset, one per agent session, headed by the agent's name: the Agent HQ
+  identity (name and avatar) for Agent HQ sessions on any provider (an `agenthq-session` owner's `agentID`, or
+  the Agent HQ session whose `providerSessionID` is the opencode session), "OpenCode" plus the session title
+  otherwise. The header shows Pending / Accepted / Rejected hunk counts with Accept all and Reject all; each file
+  row shows its pending hunk count and state. The preview is the file's diff (the panel's diff style and expand
+  mode apply) with a bar under every pending hunk (Pending, Accept, Reject), the file's actions (Open file,
+  Accept file, Reject file, Undo reject) and "Reviewed changes": every decided hunk with its state and patch.
+- **File view**: a file with pending agent changes opens as an inline unified diff of the whole file
+  (removed lines red, added green) with the same hunk bars, under a sticky review bar: agent, pending count,
+  previous / next changed file ("File n of m"), Accept file, Reject file, Undo reject. With nothing pending
+  the file view renders exactly as before (the seam is one wrapper; the review code is a lazy chunk).
+- **Content**: diffs come from `GET …/content` (exact text and the hunks of the same read), refetched when
+  the changeset, its listed hunk ids or the open file's text change.
+- **Live**: `review.changeset.updated` / `.removed` from the workspace event stream; a decision also applies
+  its reply. A copy with an older `updatedAt` never replaces a newer one. One decision per file at a time.
+- **409s** are explained inline (file or changeset level) until the next decision or Dismiss, and the
+  changesets reload: "You edited these lines since. Showing the current changes.", "The agent is still
+  editing. Try again when it finishes.", "The file changed while you were reviewing it. …", "There is nothing
+  to undo for this file.", "The file changed after the reject, so the reject can't be undone.", "Some files
+  could not be updated: …". Other failures show "The review could not be updated: …".
+- **Keyboard** (app command system, category Review, rebindable like every command): Next agent change
+  `alt+F5`, Previous `shift+alt+F5` (VS Code's next/previous change), Accept agent change `mod+shift+Y`,
+  Reject agent change `mod+shift+K`; Accept / Reject agent changes in file and Review agent changes (opens the
+  panel in this mode) have no default key. They act on the focused hunk: showing a file focuses its first
+  hunk, clicking a bar focuses it, and next/previous cross files (the panel selects the file; an active file
+  view opens the next file's tab). The spicy-ui `EDITABLE_KEYBIND_IDS` seam is not needed: these shortcuts
+  have modifiers, which the command system already lets through inside text inputs.
+
+### Files
+
+Fork-owned: `packages/app/src/review/{model.ts,model.test.ts,context.tsx,view.tsx}`,
+`packages/app/e2e/regression/review-agent-changes.spec.ts`; additions to `packages/app/src/workbench/client.ts`
+(review routes; `WorkbenchRequestError.status`) and `packages/app/src/workbench/en.ts` (`review.*` copy).
+Backend additions for the UI: `File.accepted` / `rejected` / `decided` and `GET …/content` (`Review.Content`),
+with REV-01/02/08 and a `test:httpapi` scenario.
+
+Upstream-owned files touched (each edit marked `spicy:`; please add to `SPICY.md`):
+
+| File                                           | Change                                                                                                                                                                                                                | Why                        |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `packages/app/src/pages/session.tsx`           | import; `ChangeMode` + `"agent"`; `<ReviewProvider>` inside `<WorkbenchProviders>`; `useReview()`; `"agent"` option (new layout); its label; `reviewDiffs` branch; `<Show>` picking `ReviewChangesPanel` for the mode | the mode, state and panel  |
+| `packages/app/src/context/layout.tsx`          | `ReviewChangeMode` + `"agent"`; persisted mode accepts it                                                                                                                                                             | remember the mode          |
+| `packages/app/src/pages/session/file-tabs.tsx` | import; `<ReviewFileGate>` around the new-layout file render                                                                                                                                                          | inline review in file view |
+
+No edits to `session-ui`, `review-panel-v2.tsx`, `workbench/panel.tsx`, `terminal-panel-v2.tsx` or keybind
+code: the agent mode reuses the `SessionReviewV2` / `SessionReviewV2Sidebar` shells, the panel state and the
+pierre `File` component.
+
+### UI tests
+
+| Test                                                                                                                                                                                                                                        | Result                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bun test --conditions=solid --preload ./happydom.ts ./src/review` (app)                                                                                                                                                                    | 10 pass: hunk anchors, 409 reasons, path ownership, file stepping, agent naming for both owner kinds; state: load, events, older copies ignored, coalesced reloads, unavailable server, one decision per file, 409 → explained + reload, other failures → explained only |
+| `e2e/regression/review-agent-changes.spec.ts` (real server, fake model)                                                                                                                                                                     | pass, 3/3 with `--repeat-each=3 --workers=1`                                                                                                                                                                                                                             |
+| existing e2e: review-open-file, review-tab-switch, review-state-persistence, review-line-comment, review-image-flash, review-terminal-stacked, file-browser-sidebar-tab-switch, open-file-expand-folder, terminal-tab-switch, agenthq-panel | 17 pass                                                                                                                                                                                                                                                                  |
+| app `bun run test:unit`                                                                                                                                                                                                                     | 508 pass / 23 fail / 16 errors; baseline on this commit 498 / 23 / 16 (+10 new); the same failing tests (`jsxDEV` on bun 1.4.3)                                                                                                                                          |
+| app `bun run typecheck`                                                                                                                                                                                                                     | clean                                                                                                                                                                                                                                                                    |
+
+The e2e starts `opencode serve` from this checkout (isolated XDG dirs, port `PLAYWRIGHT_SERVER_PORT`, so the
+app's default server is that one too) and an OpenAI-compatible stub that scripts the model: a session writes
+two hunks in `a.txt` and one in `b.txt`; an Agent HQ agent "Ada" (OpenCode provider) writes `c.txt` after the
+test answers its permission request (nothing is auto-approved). It checks: two changesets named "Ada" and
+"OpenCode"; both files pending; two inline hunk bars; accepting the focused hunk with `mod+shift+Y`; editing the
+second hunk's line on disk, then rejecting the listed hunk → inline "You edited these lines since" and the
+current hunk shown; rejecting that → `a.txt` holds exactly the accepted change; opening `b.txt` from the
+preview → review bar and inline hunk in the file view; rejecting it there → `b.txt` restored; row states
+accepted / rejected. Run from `packages/app`:
+
+```sh
+PLAYWRIGHT_PORT=3318 PLAYWRIGHT_SERVER_PORT=4318 bunx playwright test e2e/regression/review-agent-changes.spec.ts
+```
+
+(The emulated "Desktop Chrome" device reports `navigator.platform = "Win32"`, so the spec presses `Control+…`.)
+Screenshots: `packages/app/e2e/test-results/<test>/1-review-panel.png` … `5-all-reviewed.png` (gitignored).
+
+Benchmarks (AGENTS.md rule; production builds; `first-navigation`, `session-tab-switch`, `review-pane-scaling`):
+interleaved pairs with only the three upstream seams reverted vs applied, machine load average 25–48 from other
+agents. Session tab switching and the review pane differ in both directions within run-to-run noise (e.g. v2
+closed cold first paint 18.9 → 19.1 ms, review pane 1000 files 214.7 → 195.4 ms). First navigation, 6
+samples each: 38.5 → 38.1, 35.8 → 36.0, 48.8 → 48.5 ms (stable destination). A non-interleaved earlier pair
+looked slower, which the interleaved runs did not reproduce.
+
+### UI gaps
+
+- New layout only: the old layout (and mobile) has no "Agent changes" mode; the option is hidden there.
+- Line comments are not offered in the agent diff or the inline file diff.
+- Hunk bars sit at the server's hunk positions; pierre computes its own diff of the same texts, so in an
+  ambiguous case a bar can sit next to a differently grouped change (the decision still targets the right
+  hunk).
+- The review panel picks up edits made outside the app only with the next changeset update or 409; the file
+  view refetches when its text changes.
+- A path outside the open directory (an instance opened on a worktree subfolder) cannot open a file tab.
+- Agent names come from the Agent HQ roster loaded in this window; an identity it doesn't know shows as
+  "OpenCode".

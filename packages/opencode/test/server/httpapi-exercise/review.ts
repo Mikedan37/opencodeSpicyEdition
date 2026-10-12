@@ -92,6 +92,23 @@ export const reviewScenarios: Scenario[] = [
       "status",
     ),
   http.protected
+    .get("/review/changesets/{changesetID}/content", "review.changesets.content")
+    .seeded((ctx) => seed(ctx))
+    .at((ctx) => ({
+      path: `${route("/review/changesets/{changesetID}/content", { changesetID: ID })}?path=${FILE}`,
+      headers: ctx.headers(),
+    }))
+    .json(
+      200,
+      (body) => {
+        object(body)
+        check(body.after === "hello\n" && body.before === undefined, "returns the added file's text")
+        array(body.hunks)
+        check(body.hunks.length === 1, "with its pending hunk")
+      },
+      "status",
+    ),
+  http.protected
     .post("/review/changesets/{changesetID}/hunks/{hunkID}", "review.changesets.hunk")
     .seeded((ctx) => seed(ctx))
     .at((ctx) => decision(ctx, "/hunks/hunk_stale", { action: "reject" }))

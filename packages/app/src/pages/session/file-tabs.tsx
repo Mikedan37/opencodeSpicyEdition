@@ -4,6 +4,7 @@ import { Dynamic } from "solid-js/web"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import type { FileSearchHandle } from "@opencode-ai/session-ui/file"
 import { useFileComponent } from "@opencode-ai/ui/context/file"
+import { ReviewFileGate } from "@/review/context" // spicy: agent changes review
 import { cloneSelectedLineRange, previewSelectedLines } from "@opencode-ai/session-ui/pierre/selection-bridge"
 import { createLineCommentController } from "@opencode-ai/session-ui/line-comment-annotations"
 import { createLineCommentControllerV2 } from "@opencode-ai/session-ui/v2/line-comment-annotations-v2"
@@ -786,7 +787,12 @@ function SessionFileViewV2(props: { tab: string }) {
     <div class="mt-3 relative h-full min-h-0">
       <ScrollView class="h-full" viewportRef={scrollSync.setViewport} onScroll={scrollSync.handleScroll as any}>
         <Switch>
-          <Match when={state()?.loaded}>{renderFile(contents())}</Match>
+          <Match when={state()?.loaded}>
+            {/* spicy: pending agent changes render inline with Accept / Reject (src/review) */}
+            <ReviewFileGate path={path()} contents={contents()} tab={props.tab}>
+              {renderFile(contents())}
+            </ReviewFileGate>
+          </Match>
           <Match when={state()?.loading}>
             <div class="px-6 py-4 text-text-weak">{language.t("common.loading")}...</div>
           </Match>

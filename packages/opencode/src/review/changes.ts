@@ -38,6 +38,7 @@ import { Snapshot } from "@/snapshot"
 import { Storage } from "@/storage/storage"
 
 const UNDO_LIMIT = 100
+const LOG_LIMIT = 50
 // Larger files, binary files and files that are not UTF-8 are reviewed as one whole-file hunk.
 const TEXT_LIMIT = 1024 * 1024
 const DIFF_TIMEOUT = 2_000
@@ -65,6 +66,8 @@ export interface Interface {
   /** Changesets of the current instance's worktree that list at least one file, newest first. */
   readonly list: (filter?: Filter) => Effect.Effect<Review.ChangeSet[]>
   readonly get: (id: Review.ChangeSetID) => Effect.Effect<Review.ChangeSet, NotFoundError>
+  /** Both sides of a file and its pending hunks, from one read (the UI's diff source). */
+  readonly content: (id: Review.ChangeSetID, file: string) => Effect.Effect<Review.Content, NotFoundError>
   readonly hunk: (
     id: Review.ChangeSetID,
     hunkID: string,
@@ -106,6 +109,7 @@ interface Decided {
   accepted: number
   rejected: number
   status: Review.File["status"]
+  log?: Review.DecidedHunk[] // newest last, at most LOG_LIMIT
 }
 
 interface Stored {
@@ -441,10 +445,13 @@ const layer = Layer.effect(
       id: string,
       item: Inspected,
       action: Review.Action,
-      block?: Block,
+      index?: number,
     ) {
       const stored = doc.changesets[id]
-      const count = block ? 1 : item.hunks.length
+      // `index` picks one hunk; whole-file items (added, deleted, binary) have no blocks and decide as a file.
+      const block = index === undefined ? undefined : item.lines?.blocks[index]
+      const hunks = index === undefined ? item.hunks : item.hunks.slice(index, index + 1)
+      const count = hunks.length
       if (action === "accept") {
         const next =
           block && item.lines
@@ -469,6 +476,9 @@ const layer = Layer.effect(
       decided.status = item.status
       if (action === "accept") decided.accepted += count
       if (action === "reject") decided.rejected += count
+      const at = Date.now()
+      const state = action === "accept" ? ("accepted" as const) : ("rejected" as const)
+      decided.log = [...(decided.log ?? []), ...hunks.map((hunk) => ({ ...hunk, state, at }))].slice(-LOG_LIMIT)
     })
 
     // Writes `next` over a file whose hunks were computed from `item.after`, never over anything else.
@@ -550,6 +560,27 @@ const layer = Layer.effect(
       return yield* view(where, doc, id)
     })
 
+    const content = Effect.fn("ReviewChanges.content")(function* (id: Review.ChangeSetID, target: string) {
+      const where = yield* here
+      const doc = yield* load(where)
+      const stored = doc.changesets[id]
+      if (!stored) return yield* new NotFoundError({ message: `Changeset not found: ${id}` })
+      const entry = doc.files[target]
+      if (!entry || (entry.owner !== id && !stored.decided[target]))
+        return yield* new NotFoundError({ message: `File not in changeset ${id}: ${target}` })
+      const item = entry.owner === id ? yield* inspect(where, target, entry) : undefined
+      if (!item) return { path: target, binary: false, hunks: [] } satisfies Review.Content
+      const before = item.binary || item.before === null ? undefined : text(item.before)
+      const after = item.binary || item.after === null ? undefined : text(item.after)
+      return {
+        path: target,
+        binary: item.binary,
+        hunks: item.hunks,
+        ...(before === undefined ? {} : { before }),
+        ...(after === undefined ? {} : { after }),
+      } satisfies Review.Content
+    })
+
     const hunk = Effect.fn("ReviewChanges.hunk")(function* (
       id: Review.ChangeSetID,
       hunkID: string,
@@ -565,7 +596,7 @@ const layer = Layer.effect(
               message: `hunk ${hunkID} no longer matches the working tree; reload the changeset`,
             })
           const index = item.hunks.findIndex((h) => h.id === hunkID)
-          yield* decide(where, doc, id, item, action, item.lines?.blocks[index])
+          yield* decide(where, doc, id, item, action, index)
         }),
       )
     })
@@ -624,7 +655,10 @@ const layer = Layer.effect(
           yield* put(abs, content, target)
           doc.undo.splice(index, 1)
           const decided = stored.decided[target]
-          if (decided) decided.rejected = Math.max(0, decided.rejected - last.hunks)
+          if (decided) {
+            decided.rejected = Math.max(0, decided.rejected - last.hunks)
+            decided.log = dropLastRejects(decided.log ?? [], last.hunks)
+          }
           const entry = doc.files[target]
           if (entry) entry.settled = blobID(content) === entry.base
         }),
@@ -687,7 +721,7 @@ const layer = Layer.effect(
       ),
     )
 
-    return Service.of({ list, get, hunk, file, all, undo, observeAgent })
+    return Service.of({ list, get, content, hunk, file, all, undo, observeAgent })
   }),
 )
 
@@ -779,7 +813,16 @@ function present(
         ? "rejected"
         : "accepted",
     undoable,
+    accepted,
+    rejected,
+    decided: decided?.log ?? [],
   }
+}
+
+// Undo restores the content before a file's last reject, so that reject's hunks leave the log.
+function dropLastRejects(log: Review.DecidedHunk[], count: number) {
+  const indexes = log.flatMap((item, index) => (item.state === "rejected" ? [index] : [])).slice(-count)
+  return log.filter((_, index) => !indexes.includes(index))
 }
 
 // UTF-8 text that round-trips byte for byte, or undefined.

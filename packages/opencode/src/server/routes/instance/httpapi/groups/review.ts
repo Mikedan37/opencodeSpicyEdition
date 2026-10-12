@@ -22,6 +22,7 @@ export const ListQuery = Schema.Struct({
 export const ActionPayload = Schema.Struct({ action: Review.Action })
 export const FilePayload = Schema.Struct({ path: Schema.String, action: Review.Action })
 export const UndoPayload = Schema.Struct({ path: Schema.String })
+export const ContentQuery = Schema.Struct({ ...WorkspaceRoutingQueryFields, path: Schema.String })
 
 const params = { changesetID: Review.ChangeSetID }
 const changeset = described(Review.ChangeSet, "The changeset after the decision")
@@ -43,6 +44,12 @@ export const ReviewApi = HttpApi.make("review").add(
         success: described(Review.ChangeSet, "The changeset"),
         error: [ApiNotFoundError],
       }).annotateMerge(doc("review.changesets.get", "Get a review changeset")),
+      HttpApiEndpoint.get("content", `${root}/:changesetID/content`, {
+        params,
+        query: ContentQuery,
+        success: described(Review.Content, "Both sides of the file and its pending hunks"),
+        error: [ApiNotFoundError],
+      }).annotateMerge(doc("review.changesets.content", "Get a changed file's baseline and current text")),
       HttpApiEndpoint.post("hunk", `${root}/:changesetID/hunks/:hunkID`, {
         params: { ...params, hunkID: Schema.String },
         query: WorkspaceRoutingQuery,

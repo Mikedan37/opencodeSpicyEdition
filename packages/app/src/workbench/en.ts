@@ -163,6 +163,8 @@ export const dict = {
     "The program's terminal closed when it ended, and the debugger's copy of its output could not be loaded.",
   "workbench.run.empty": "The program wrote no output",
   "workbench.editor.label": "Editor for {{file}}",
+  "workbench.editor.category": "Editor",
+  "workbench.editor.save": "Save file",
   "workbench.editor.saveFailed": "{{file}} was not saved",
   "workbench.editor.conflict": "{{file}} changed on disk since you opened it. Your edits are not saved yet.",
   "workbench.editor.reload": "Reload from disk",

@@ -1,14 +1,17 @@
-import { createContext, For, onCleanup, useContext, type ParentProps } from "solid-js"
+import { createContext, createRoot, For, onCleanup, useContext, type ParentProps } from "solid-js"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogFooter, DialogHeader, DialogTitleGroup, DialogV2 } from "@opencode-ai/ui/v2/dialog-v2"
 import { getFilename } from "@opencode-ai/core/util/path"
+import { useCommand } from "@/context/command"
 import { useFile } from "@/context/file"
 import { useLanguage } from "@/context/language"
-import { tabCloseGuards } from "@/context/layout"
+import { tabCloseGuards, useLayout } from "@/context/layout"
+import { useSessionKey } from "@/pages/session/session-layout"
 import { showToast } from "@/utils/toast"
 import { errorText } from "./client"
-import { createEditorStore } from "./editor"
+import { createEditorStore, guardUnload } from "./editor"
+import { EDITOR_KEYS } from "./keys"
 import { useWorkbench } from "./panel"
 
 type Choice<T extends string> = { id: T; label: string; variant: "neutral" | "ghost" | "danger" }
@@ -18,7 +21,11 @@ function createEditor() {
   const file = useFile()
   const dialog = useDialog()
   const language = useLanguage()
+  const command = useCommand()
+  const layout = useLayout()
+  const { sessionKey } = useSessionKey()
   const store = createEditorStore(workbench.client)
+  guardUnload(store.anyDirty, window)
 
   // Resolves with the chosen action, or undefined when the dialog is dismissed.
   const ask = <T extends string>(input: { title: string; description: string; choices: Choice<T>[] }) =>
@@ -91,6 +98,28 @@ function createEditor() {
   }
   tabCloseGuards.add(guard)
   onCleanup(() => tabCloseGuards.delete(guard))
+
+  // Cmd+S saves the side panel's active file tab, wherever the focus is. The tab is read at keypress in a root that is
+  // disposed right away, so this provider keeps no per-session memos.
+  const activeFile = () =>
+    createRoot((dispose) => {
+      const tab = layout.tabs(sessionKey()).active()
+      dispose()
+      return tab ? file.pathFromTab(tab) : undefined
+    })
+  command.register("editor", () => [
+    {
+      id: EDITOR_KEYS.save,
+      title: language.t("workbench.editor.save"),
+      category: language.t("workbench.editor.category"),
+      keybind: "mod+s",
+      onSelect: () => {
+        const path = activeFile()
+        const text = path && store.dirty(path) ? store.text(path) : undefined
+        if (path && text !== undefined) void save(path, text)
+      },
+    },
+  ])
 
   return { store, ask, save }
 }

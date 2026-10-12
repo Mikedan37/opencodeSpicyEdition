@@ -1,0 +1,12 @@
+{
+  "command": [
+    "go",
+    "vet",
+    "."
+  ],
+  "cwd": "/ROOT/govet",
+  "execClass": "inert",
+  "exitCode": 1,
+  "stdout": "",
+  "stderr": "main.go:7:14: fmt.Printf format %d has arg name of wrong type string\n"
+}

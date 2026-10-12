@@ -1,0 +1,15 @@
+{
+  "command": [
+    "clang",
+    "-o",
+    "/dev/null",
+    "-fdiagnostics-format=sarif",
+    "-Wno-sarif-format-unstable",
+    "main.c"
+  ],
+  "cwd": "/ROOT/link-c",
+  "execClass": "inert",
+  "exitCode": 1,
+  "stdout": "",
+  "stderr": "\n{\n  \"$schema\": \"https://docs.oasis-open.org/sarif/sarif/v2.1.0/cos02/schemas/sarif-schema-2.1.0.json\",\n  \"runs\": [\n    {\n      \"artifacts\": [],\n      \"columnKind\": \"unicodeCodePoints\",\n      \"invocations\": [\n        {\n          \"executionSuccessful\": true\n        }\n      ],\n      \"results\": [],\n      \"tool\": {\n        \"driver\": {\n          \"fullName\": \"\",\n          \"informationUri\": \"https://clang.llvm.org/docs/UsersManual.html\",\n          \"language\": \"en-US\",\n          \"name\": \"clang\",\n          \"rules\": [],\n          \"version\": \"Apple clang version 21.0.0 (clang-2100.3.34.2)\"\n        }\n      }\n    }\n  ],\n  \"version\": \"2.1.0\"\n}\n\nUndefined symbols for architecture arm64:\n  \"_helper\", referenced from:\n      _main in main-de98b4.o\nld: symbol(s) not found for architecture arm64\nclang: error: linker command failed with exit code 1 (use -v to see invocation)\n"
+}

@@ -1,0 +1,12 @@
+Run the project's native checkers (type checkers, compilers, linters) on changed files and report problems.
+
+Checks map each file to its unit and run only those units: the nearest tsconfig.json (tsc), C/C++ folder or compile_commands.json entry (clang; folders whose sources define main() are also linked), Swift package or folder (swift build / swiftc -typecheck), Cargo crate (cargo check), Go package (go build, then go vet) and Python project (ruff, mypy when installed).
+
+Usage:
+- Call it before you report that a change is done, and after fixing reported errors.
+- With no arguments it checks the files changed since the user's last message.
+- `files` checks specific files; `unit` checks every source file under a folder (or one file).
+- `tests: true` also runs the tests of the affected packages (go test, cargo test, bun test, node --test; changed test files narrow bun and node runs).
+- Checks that can run project code (tests, Cargo build scripts and proc macros, Swift package plugins and macros, mypy plugins) ask for the verify.exec permission first.
+- A timed out, skipped, cancelled or unavailable check is not a pass. Files that no passing check covers are listed as unverified.
+- The result comes from the checkers; it cannot be edited or supplied as an argument.

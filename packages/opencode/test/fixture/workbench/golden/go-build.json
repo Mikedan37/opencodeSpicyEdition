@@ -1,0 +1,15 @@
+{
+  "command": [
+    "go",
+    "build",
+    "-json",
+    "-o",
+    "/dev/null",
+    "."
+  ],
+  "cwd": "/ROOT/go",
+  "execClass": "inert",
+  "exitCode": 1,
+  "stdout": "{\"ImportPath\":\"example.com/zoo\",\"Action\":\"build-output\",\"Output\":\"# example.com/zoo\\n\"}\n{\"ImportPath\":\"example.com/zoo\",\"Action\":\"build-output\",\"Output\":\"./main.go:6:18: cannot use \\\"one\\\" (untyped string constant) as int value in variable declaration\\n\"}\n{\"ImportPath\":\"example.com/zoo\",\"Action\":\"build-fail\"}\n",
+  "stderr": ""
+}

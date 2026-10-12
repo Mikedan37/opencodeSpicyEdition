@@ -56,6 +56,7 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
+import { WorkbenchGate } from "@/workbench/verify/gate" // spicy: turn-end verification gate
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -140,6 +141,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const gate = yield* WorkbenchGate.Service // spicy:
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -1125,6 +1127,8 @@ const layer = Layer.effect(
                 callID: orphan.callID,
               })
             }
+            // spicy: turn-end gate after a turn this loop ran; "continue" means it added a repair message
+            if (step > 0 && (yield* gate.run({ sessionID, session, messages: msgs })) === "continue") continue
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
             break
           }
@@ -1625,6 +1629,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     RuntimeFlags.node,
     Database.node,
+    WorkbenchGate.node, // spicy:
   ],
 })
 

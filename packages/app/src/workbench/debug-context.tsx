@@ -1,7 +1,6 @@
 import { createContext, createEffect, createRoot, on, onCleanup, useContext, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Option, Schema } from "effect"
-import { Pty } from "@opencode-ai/schema/pty"
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import type { LocalPTY } from "@/context/terminal"
@@ -24,7 +23,9 @@ import { useWorkbench } from "./panel"
 const events = {
   updated: Schema.decodeUnknownOption(Workbench.Event.DebugUpdated.data),
   output: Schema.decodeUnknownOption(Workbench.Event.DebugOutput.data),
-  exited: Schema.decodeUnknownOption(Pty.Event.Exited.data),
+  // pty.exited's payload (schema/src/pty.ts), declared here: in dev, importing that module from the session page
+  // requests `/…/schema/src/pty.ts`, which e2e specs routing `**/pty*` answer with JSON, and the page fails to load.
+  exited: Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String, exitCode: Schema.Number })),
 }
 
 function createDebug() {

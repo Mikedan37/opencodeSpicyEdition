@@ -6,16 +6,14 @@
 import { describe, expect } from "bun:test"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Flag } from "@opencode-ai/core/flag/flag"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Effect, Layer } from "effect"
 import fs from "fs/promises"
-import net from "node:net"
 import path from "path"
-import { Server } from "../../src/server/server"
 import { resetDatabase } from "../fixture/db"
-import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
+import { tmpdirScoped } from "../fixture/fixture"
+import { auth, freePort, listener } from "../fixture/agenthq/listener"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { reply, TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
@@ -43,41 +41,7 @@ type EventOf<T extends AgentHQ.AgentEvent["type"]> = Extract<AgentHQ.AgentEvent,
 const ofType = <T extends AgentHQ.AgentEvent["type"]>(list: readonly Envelope[], type: T) =>
   list.flatMap((item) => (item.event.type === type ? [item.event as EventOf<T>] : []))
 
-const auth = { username: "opencode", password: "ahq-bridge-secret" }
 const TOOLS = ["workbench_problems", "workbench_check", "workbench_doctor"].map((name) => `opencode-workbench_${name}`)
-
-// An explicit free port: port 0 would try 4096 first, which a developer's own opencode may be using.
-const freePort = () =>
-  new Promise<number>((resolve) => {
-    const probe = net.createServer().listen(0, "127.0.0.1", () => {
-      const { port } = probe.address() as net.AddressInfo
-      probe.close(() => resolve(port))
-    })
-  })
-
-/** A real listener with a password; Agent HQ hands its URL to the Workbench bridge. */
-const listener = Effect.acquireRelease(
-  Effect.promise(async () => {
-    const saved = {
-      flag: [Flag.OPENCODE_SERVER_USERNAME, Flag.OPENCODE_SERVER_PASSWORD],
-      env: [process.env.OPENCODE_SERVER_USERNAME, process.env.OPENCODE_SERVER_PASSWORD],
-    }
-    Flag.OPENCODE_SERVER_USERNAME = process.env.OPENCODE_SERVER_USERNAME = auth.username
-    Flag.OPENCODE_SERVER_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD = auth.password
-    return { saved, server: await Server.listen({ hostname: "127.0.0.1", port: await freePort() }) }
-  }),
-  ({ saved, server }) =>
-    Effect.promise(async () => {
-      await server.stop(true)
-      await disposeAllInstances()
-      ;[Flag.OPENCODE_SERVER_USERNAME, Flag.OPENCODE_SERVER_PASSWORD] = saved.flag
-      const [username, password] = saved.env
-      if (username === undefined) delete process.env.OPENCODE_SERVER_USERNAME
-      else process.env.OPENCODE_SERVER_USERNAME = username
-      if (password === undefined) delete process.env.OPENCODE_SERVER_PASSWORD
-      else process.env.OPENCODE_SERVER_PASSWORD = password
-    }),
-)
 
 /** A launcher script for `opencode acp` with isolated HOME/XDG dirs and the fake model as its only provider. */
 const launcher = (llmUrl: string) =>

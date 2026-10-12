@@ -35,12 +35,13 @@ import { createWorkbenchClient } from "./client"
 import { DebugProvider } from "./debug-context"
 import { createProblemsState, type ProblemFilter } from "./problems"
 import { createRunsState, isFinished } from "./runs"
-import { Glyph, PanelState, PLAY_GLYPH, TONE_CLASS } from "./ui"
+import { PanelState, TONE_CLASS } from "./ui"
 
 const AgentsPanel = lazy(() => import("@/agenthq/agents-panel"))
 const ProblemsPanel = lazy(() => import("./problems-panel"))
 const OutputPanel = lazy(() => import("./output-panel"))
 const DebugConsolePanel = lazy(() => import("./debug-console"))
+const DebugRunPanel = lazy(() => import("./debug-run"))
 
 const runEvents = {
   updated: Schema.decodeUnknownOption(Workbench.Event.RunUpdated.data),
@@ -255,11 +256,7 @@ export function WorkbenchTabContent(props: { tab: WorkbenchTab }) {
             <DebugConsolePanel />
           </Match>
           <Match when={props.tab === "run"}>
-            <PanelState
-              icon={<Glyph path={PLAY_GLYPH} />}
-              title={language.t("workbench.run.title")}
-              description={language.t("workbench.run.description")}
-            />
+            <DebugRunPanel />
           </Match>
         </Switch>
       </Suspense>

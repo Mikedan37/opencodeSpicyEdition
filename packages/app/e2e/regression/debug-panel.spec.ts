@@ -216,6 +216,51 @@ test("debug console: backlog and live rows merge, filters, attribution, evaluate
   await expect(input).toHaveAttribute("placeholder", "Pause the program to evaluate expressions")
 })
 
+test("run tab: the program's terminal stays after exit with its code; an internal console points to the console", async ({
+  page,
+}) => {
+  const mock = await setup(page)
+  const program = "pty_program"
+  mock.sessions = [session({ ptyID: program })]
+  const sockets: string[] = []
+  await page.route(`**/api/pty/${program}*`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        location: { directory, project: { id: projectID, directory } },
+        data: { id: program, title: "app.py", command: "python3", args: [], cwd: directory, status: "running", pid: 2 },
+      }),
+    }),
+  )
+  await page.routeWebSocket(new RegExp(`/api/pty/${program}/connect`), (socket) => {
+    sockets.push(socket.url())
+    socket.send("hello from the program\r\n")
+  })
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="run"]').click()
+  const run = page.locator('[data-component="workbench-run"]')
+  const terminal = run.locator(`[data-run-pty="${program}"] [data-component="terminal"]`)
+  await expect(terminal).toBeVisible()
+  await expect.poll(() => sockets.length).toBe(1)
+  await expect(run.locator('[data-slot="run-status"]')).toHaveText("Running")
+
+  mock.emit(
+    { type: "pty.exited", properties: { id: program, exitCode: 3 } },
+    updated({ state: "terminated", ptyID: program }),
+  )
+  await expect(run.locator('[data-slot="run-status"]')).toHaveText("Exited with code 3")
+  await expect(terminal).toBeVisible()
+
+  // debugpy's default internal console has no terminal: the tab points to the Debug Console
+  mock.emit(updated({ id: "dbg_two", startedAt: 1_700_000_000_500 }))
+  await expect(run).toContainText("This program writes to the Debug Console")
+  await run.getByRole("button", { name: "Show Debug Console" }).click()
+  await expect(page.locator('[data-workbench-tab="debug"]')).toHaveAttribute("aria-selected", "true")
+})
+
 function row(seq: number, kind: string, by: string, text: string) {
   return { seq, at: seq, kind, by, text }
 }

@@ -7,6 +7,7 @@ import type { ConfigWorkbenchV1 } from "@opencode-ai/core/v1/config/workbench"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { Filesystem } from "@/util/filesystem"
 import { lazy } from "@/util/lazy"
+import { Process } from "@/util/process"
 import type { Doctor } from "../doctor"
 import type { WorkbenchProblems } from "../problems/store"
 import { WorkbenchParse } from "./parse"
@@ -519,10 +520,12 @@ async function onPath(name: string) {
 
 // Whether a command starts and exits 0 within 5 s (a dead binary fails to spawn).
 async function runs(command: string[]) {
-  const proc = await Promise.resolve()
-    .then(() => Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore", timeout: 5_000 }))
-    .catch(() => undefined)
-  return proc ? (await proc.exited) === 0 : false
+  return Promise.resolve()
+    .then(() => Process.spawn(command, { abort: AbortSignal.timeout(5_000) }).exited)
+    .then(
+      (code) => code === 0,
+      () => false,
+    )
 }
 
 function relative(unit: Unit, only?: RegExp) {

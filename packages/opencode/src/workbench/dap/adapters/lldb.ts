@@ -2,6 +2,8 @@
 // it macOS shows an admin password prompt, so the session is refused up front instead.
 import path from "path"
 import { Option, Schema } from "effect"
+import { which } from "@opencode-ai/core/util/which"
+import { Filesystem } from "@/util/filesystem"
 import { Process } from "@/util/process"
 
 export const DEVELOPER_MODE_OFF = "Developer Mode off — run sudo DevToolsSecurity -enable"
@@ -15,7 +17,7 @@ export async function resolve(): Promise<{ binary: string } | { error: string }>
     const found = out?.code === 0 ? out.text.trim() : ""
     if (found) return { binary: found }
   }
-  const found = Bun.which("lldb-dap")
+  const found = which("lldb-dap")
   if (found) return { binary: found }
   return { error: "lldb-dap was not found (install Xcode or LLVM)" }
 }
@@ -52,7 +54,7 @@ export async function rust(cwd: string) {
   const etc = path.join(sysroot, "lib", "rustlib", "etc")
   const lookup = path.join(etc, "lldb_lookup.py")
   const commands = path.join(etc, "lldb_commands")
-  if (!(await Bun.file(lookup).exists()) || !(await Bun.file(commands).exists())) return undefined
+  if (!(await Filesystem.exists(lookup)) || !(await Filesystem.exists(commands))) return undefined
   return [`command script import "${lookup}"`, `command source -s 0 "${commands}"`]
 }
 

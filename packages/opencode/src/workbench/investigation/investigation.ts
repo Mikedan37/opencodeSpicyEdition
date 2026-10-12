@@ -2,6 +2,8 @@
 // Status moves only on events the server recorded (debug stops, edits, check and repro results),
 // through an explicit transition table, with the supervisor able to block or hand it to the user.
 // Evidence is written only here; the model can add notes (inferred), never evidence.
+import { createHash } from "crypto"
+import { readFile } from "fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Workbench } from "@opencode-ai/schema/workbench"
@@ -516,12 +518,10 @@ const layer = Layer.effect(
       )
       if (!active.length) return
       const hash = yield* Effect.promise(() =>
-        Bun.file(file)
-          .arrayBuffer()
-          .then(
-            (buffer) => new Bun.CryptoHasher("sha256").update(buffer).digest("hex"),
-            () => "deleted",
-          ),
+        readFile(file).then(
+          (buffer) => createHash("sha256").update(buffer).digest("hex"),
+          () => "deleted",
+        ),
       )
       yield* Effect.forEach(active, (item) => record(item.id, { type: "patch", file, hash }), { discard: true })
     })
@@ -750,7 +750,7 @@ function observe(draft: Draft, event: Event, now: number): Workbench.Evidence | 
       ...attempt.changes.filter((item) => item.file !== event.file),
       { file: event.file, hash: event.hash },
     ].toSorted((a, b) => a.file.localeCompare(b.file))
-    attempt.patchHash = new Bun.CryptoHasher("sha256")
+    attempt.patchHash = createHash("sha256")
       .update(attempt.changes.map((item) => `${item.file}:${item.hash}`).join("\n"))
       .digest("hex")
     draft.lastPatch = draft.seq

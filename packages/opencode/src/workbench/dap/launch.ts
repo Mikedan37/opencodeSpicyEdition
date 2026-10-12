@@ -145,7 +145,7 @@ const cargo = (program: string, directory: string) =>
 const rustTest = Effect.fnUntraced(function* (input: StartInput, ctx: Context, breakpoints: Spec["breakpoints"]) {
   const target = path.resolve(ctx.directory, input.program ?? ".")
   const crate = path.basename(target) === "Cargo.toml" ? path.dirname(target) : target
-  if (!(yield* Effect.promise(() => Bun.file(path.join(crate, "Cargo.toml")).exists())))
+  if (!(yield* Effect.promise(() => Filesystem.exists(path.join(crate, "Cargo.toml")))))
     return yield* invalid(`rust-test needs a crate folder; no Cargo.toml in ${crate}`)
   return {
     adapter: "lldb-dap",
@@ -173,11 +173,7 @@ function defaults(adapter: Adapter, test: boolean) {
 
 const fromLaunchJson = Effect.fnUntraced(function* (input: StartInput, ctx: Context, breakpoints: Spec["breakpoints"]) {
   const file = path.join(ctx.directory, ".vscode", "launch.json")
-  const text = yield* Effect.promise(() =>
-    Bun.file(file)
-      .text()
-      .catch(() => undefined),
-  )
+  const text = yield* Effect.promise(() => Filesystem.readText(file).catch(() => undefined))
   if (text === undefined) return yield* invalid(`no ${path.relative(ctx.directory, file)} in this project`)
   const errors: ParseError[] = []
   const json = parse(text, errors, { allowTrailingComma: true }) as

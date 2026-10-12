@@ -1,8 +1,13 @@
-// debugpy: find a Python that actually runs (PATH may hold dead binaries, e.g. an x86_64
-// python3 on Apple silicon) and a debugpy it can import, else VS Code's bundled copy.
+// debugpy: pick the Python to debug with, then a debugpy it can import, else VS Code's bundled copy.
+// Order: launch.json `python`, the project's .venv/venv, $VIRTUAL_ENV, Homebrew, then other Pythons on
+// PATH. Every candidate is run before use (PATH may hold dead binaries, e.g. an x86_64 python3 on Apple
+// silicon). Apple's own Pythons (/usr/bin/python3 and the Xcode or Command Line Tools copies behind it)
+// are never used: they run as signed app bundles, and debugging under them crashed Python with a
+// "Python quit unexpectedly" dialog on the user's screen.
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
+import { Option, Schema } from "effect"
 import { Process } from "@/util/process"
 
 export type Resolved = {
@@ -15,13 +20,29 @@ export type Resolved = {
 }
 
 const PROBE = [
-  "import sys, importlib.util as u",
+  "import sys, os, json, importlib.util as u",
   "try:",
   "    import debugpy; d = debugpy.__version__",
   "except Exception:",
-  "    d = '-'",
-  "print(sys.version.split()[0], d, int(u.find_spec('pytest') is not None))",
+  "    d = None",
+  "print(json.dumps({'version': sys.version.split()[0], 'debugpy': d, 'pytest': u.find_spec('pytest') is not None,",
+  "    'executable': os.path.realpath(sys.executable), 'base': os.path.realpath(sys.base_prefix)}))",
 ].join("\n")
+
+const decodeProbe = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      version: Schema.String,
+      debugpy: Schema.NullOr(Schema.String),
+      pytest: Schema.Boolean,
+      executable: Schema.String,
+      base: Schema.String,
+    }),
+  ),
+)
+
+export const APPLE_REFUSED =
+  "Apple's system Python (/usr/bin/python3, Xcode, Command Line Tools) is not used for debugging: it crashes under debugpy"
 
 const cache = new Map<string, Resolved>()
 
@@ -33,39 +54,64 @@ export async function resolve(input: {
   const hit = cache.get(key)
   if (hit) return hit
   const tried: string[] = []
-  const runnable: { python?: string; pytest: boolean } = { pytest: false }
-  for (const candidate of candidates(input.directory, input.python)) {
-    if (!(await fs.stat(candidate).catch(() => undefined))?.isFile()) continue
-    const result = await probe(candidate)
-    tried.push(result ? `${candidate} (${result.version})` : `${candidate} (does not run)`)
-    if (!result) continue
-    if (result.debugpy)
-      return remember(key, {
-        python: candidate,
-        command: [candidate, "-m", "debugpy.adapter"],
-        env: {},
-        debugpy: result.debugpy,
-        source: "installed",
-        pytest: result.pytest,
-      })
-    if (!runnable.python) Object.assign(runnable, { python: candidate, pytest: result.pytest })
+  const chosen = await choose(candidates(input.directory, input.python), tried)
+  if (!chosen) {
+    const apple = tried.some((item) => item.endsWith("(Apple system Python, not used)"))
+    return {
+      error: apple
+        ? `no suitable Python for debugpy. ${APPLE_REFUSED}; install Python from Homebrew (brew install python) or point a project .venv at one (tried ${tried.join(", ")})`
+        : `no runnable Python found (tried ${tried.join(", ") || "nothing"})`,
+    }
   }
-  if (!runnable.python) return { error: `no runnable Python found (tried ${tried.join(", ") || "nothing"})` }
+  if (chosen.debugpy)
+    return remember(key, {
+      python: chosen.python,
+      command: [chosen.python, "-m", "debugpy.adapter"],
+      env: {},
+      debugpy: chosen.debugpy,
+      source: "installed",
+      pytest: chosen.pytest,
+    })
   for (const libs of await bundles()) {
-    const result = await probe(runnable.python, { PYTHONPATH: libs })
+    const result = await probe(chosen.python, { PYTHONPATH: libs })
     if (result?.debugpy)
       return remember(key, {
-        python: runnable.python,
-        command: [runnable.python, "-m", "debugpy.adapter"],
+        python: chosen.python,
+        command: [chosen.python, "-m", "debugpy.adapter"],
         env: { PYTHONPATH: libs },
         debugpy: result.debugpy,
         source: "vscode",
-        pytest: runnable.pytest,
+        pytest: chosen.pytest,
       })
   }
   return {
-    error: `debugpy is not available for ${runnable.python}; install it (python3 -m pip install debugpy) or the VS Code Python Debugger extension`,
+    error: `debugpy is not available for ${chosen.python}; install it (python3 -m pip install debugpy) or the VS Code Python Debugger extension`,
   }
+}
+
+/** The first candidate that exists, is not an Apple Python and runs. Apple ones are never executed. */
+async function choose(list: readonly string[], tried: string[]) {
+  for (const candidate of list) {
+    if (!(await fs.stat(candidate).catch(() => undefined))?.isFile()) continue
+    const real = await fs.realpath(candidate).catch(() => candidate)
+    if (apple(candidate) || apple(real)) {
+      tried.push(`${candidate} (Apple system Python, not used)`)
+      continue
+    }
+    const result = await probe(candidate)
+    if (!result) {
+      tried.push(`${candidate} (does not run)`)
+      continue
+    }
+    // A virtual environment built on an Apple Python runs that Python.
+    if (apple(result.executable) || apple(result.base)) {
+      tried.push(`${candidate} (Apple system Python, not used)`)
+      continue
+    }
+    tried.push(`${candidate} (${result.version})`)
+    return { python: candidate, debugpy: result.debugpy, pytest: result.pytest }
+  }
+  return undefined
 }
 
 export function candidates(directory: string, preferred?: string) {
@@ -77,13 +123,22 @@ export function candidates(directory: string, preferred?: string) {
         path.join(directory, ".venv", "bin", "python"),
         path.join(directory, "venv", "bin", "python"),
         process.env.VIRTUAL_ENV ? path.join(process.env.VIRTUAL_ENV, "bin", "python") : undefined,
-        ...dirs.flatMap((dir) => [path.join(dir, "python3"), path.join(dir, "python")]),
         "/opt/homebrew/bin/python3",
+        ...dirs.flatMap((dir) => [path.join(dir, "python3"), path.join(dir, "python")]),
         "/usr/local/bin/python3",
-        "/usr/bin/python3",
       ].filter((item): item is string => typeof item === "string"),
     ),
   ]
+}
+
+/** Apple's Pythons: /usr/bin (the shims), the system framework, Command Line Tools and any Xcode app. */
+export function apple(file: string) {
+  return (
+    file.startsWith("/usr/bin/") ||
+    file.startsWith("/System/Library/") ||
+    file.startsWith("/Library/Developer/CommandLineTools/") ||
+    /^\/Applications\/Xcode[^/]*\.app\//.test(file)
+  )
 }
 
 /** VS Code's ms-python.debugpy extension ships debugpy under bundled/libs. Newest first. */
@@ -117,9 +172,7 @@ async function probe(python: string, env?: Record<string, string>) {
     env,
   }).catch(() => undefined)
   if (!out || out.code !== 0) return undefined
-  const [version, debugpy, pytest] = out.text.trim().split(/\s+/)
-  if (!version) return undefined
-  return { version, debugpy: debugpy && debugpy !== "-" ? debugpy : undefined, pytest: pytest === "1" }
+  return Option.getOrUndefined(decodeProbe(out.text.trim().split("\n").at(-1) ?? ""))
 }
 
 function remember(key: string, value: Resolved) {

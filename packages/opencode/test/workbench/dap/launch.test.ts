@@ -3,6 +3,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { Effect } from "effect"
+import { Debugpy } from "../../../src/workbench/dap/adapters/debugpy"
 import { DebugLaunch } from "../../../src/workbench/dap/launch"
 
 const ok = (input: DebugLaunch.StartInput, directory: string) =>
@@ -103,5 +104,37 @@ describe("launch specs", () => {
     expect(pid.message).toContain("python -m debugpy --listen 127.0.0.1:PORT")
     const lldb = await Effect.runPromise(DebugLaunch.attach({ adapter: "lldb-dap", pid: 42 }, { directory: "/repo" }))
     expect(lldb).toMatchObject({ request: "attach", arguments: { pid: 42 } })
+  })
+})
+
+describe("debugpy interpreter selection", () => {
+  test("Apple's Pythons are recognized by path", () => {
+    expect(Debugpy.apple("/usr/bin/python3")).toBe(true)
+    expect(Debugpy.apple("/Applications/Xcode.app/Contents/Developer/usr/bin/python3")).toBe(true)
+    expect(Debugpy.apple("/Applications/Xcode-beta.app/Contents/Developer/usr/bin/python3")).toBe(true)
+    expect(Debugpy.apple("/Library/Developer/CommandLineTools/usr/bin/python3")).toBe(true)
+    expect(Debugpy.apple("/System/Library/Frameworks/Python.framework/Versions/2.7/bin/python")).toBe(true)
+    expect(Debugpy.apple("/opt/homebrew/bin/python3")).toBe(false)
+    expect(Debugpy.apple("/repo/.venv/bin/python")).toBe(false)
+  })
+
+  test("order: launch.json python, project venvs, Homebrew, then PATH; never an Apple Python", async () => {
+    const directory = await project()
+    const list = Debugpy.candidates(directory, "/custom/python")
+    expect(list.slice(0, 3)).toEqual([
+      "/custom/python",
+      path.join(directory, ".venv", "bin", "python"),
+      path.join(directory, "venv", "bin", "python"),
+    ])
+    expect(list.indexOf("/opt/homebrew/bin/python3")).toBeLessThan(
+      list.indexOf("/usr/bin/python3") === -1 ? Infinity : list.indexOf("/usr/bin/python3"),
+    )
+    // A project venv that points at Apple's Python is skipped without being run.
+    await fs.mkdir(path.join(directory, ".venv", "bin"), { recursive: true })
+    await fs.symlink("/usr/bin/python3", path.join(directory, ".venv", "bin", "python"))
+    const chosen = await Debugpy.resolve({ directory })
+    if ("error" in chosen) return expect(chosen.error).toContain("not used for debugging")
+    expect(chosen.python).not.toBe(path.join(directory, ".venv", "bin", "python"))
+    expect(Debugpy.apple(await fs.realpath(chosen.python))).toBe(false)
   })
 })

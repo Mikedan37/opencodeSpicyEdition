@@ -234,10 +234,12 @@ print("END", flush=True)
   )
 
   real(
-    name("DAP-15 runInTerminal: the program runs in a PTY and output before a crash survives"),
+    // The program ends with os._exit(1): no stdio flush, so its output survives only if the PTY line-buffered
+    // it. Never crash Python itself (abort, segfault): macOS shows the user a "Python quit unexpectedly" dialog.
+    name("DAP-15 runInTerminal: the program runs in a PTY and output before an abrupt exit survives"),
     () =>
       Effect.gen(function* () {
-        const directory = yield* write("crash.py", 'import os\nprint("alice 15.0")\nos.abort()\n')
+        const directory = yield* write("crash.py", 'import os\nprint("alice 15.0")\nos._exit(1)\n')
         yield* Effect.promise(() =>
           Bun.write(
             path.join(directory, ".vscode", "launch.json"),

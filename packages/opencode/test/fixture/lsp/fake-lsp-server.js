@@ -6,7 +6,7 @@ let lastChange = null
 let initializeParams = null
 let diagnosticRequestCount = 0
 let registeredCapability = false
-// sourcekit-lsp pattern: pulls answer an empty report until this time, then the server asks for a refresh
+// spicy: sourcekit-lsp pattern (REG-01): pulls answer an empty report until this time, then the server asks for a refresh
 let provisionalUntil = 0
 const pendingClientRequests = new Map()
 let pullConfig = {
@@ -19,7 +19,7 @@ let pullConfig = {
   workspaceDiagnostics: [],
   workspaceDiagnosticsByIdentifier: {},
   workspaceDelayMsByIdentifier: {},
-  provisionalMs: 0,
+  provisionalMs: 0, // spicy: REG-01
 }
 
 function encode(message) {
@@ -121,6 +121,7 @@ function handle(raw) {
         textDocumentSync: {
           change: 2,
         },
+        // spicy: static pull provider, like eslint (REG-01 fast path)
         ...(process.env.FAKE_LSP_STATIC_PULL
           ? { diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false } }
           : {}),
@@ -146,7 +147,7 @@ function handle(raw) {
 
   if (data.method === "textDocument/didOpen") {
     maybeRegister("didOpen")
-    // Push an error for the opened file, an error for other.repro and a warning for third.repro next to it.
+    // spicy: REG-08. Push an error for the opened file, an error for other.repro and a warning for third.repro.
     if (process.env.FAKE_LSP_PUBLISH_ON_OPEN) {
       const uri = data.params.textDocument.uri
       const sibling = (name) => uri.slice(0, uri.lastIndexOf("/") + 1) + name
@@ -166,6 +167,7 @@ function handle(raw) {
         diagnostics: [item("third file warning", 2)],
       })
     }
+    // spicy: REG-01
     if (pullConfig.provisionalMs) {
       provisionalUntil = Date.now() + pullConfig.provisionalMs
       setTimeout(() => {
@@ -177,7 +179,7 @@ function handle(raw) {
   }
 
   if (data.method === "textDocument/didChange") {
-    if (process.env.FAKE_LSP_EXIT_ON_CHANGE) process.exit(3)
+    if (process.env.FAKE_LSP_EXIT_ON_CHANGE) process.exit(3) // spicy: crash after start (REG-09)
     lastChange = data.params
     maybeRegister("didChange")
     return
@@ -218,7 +220,7 @@ function handle(raw) {
       workspaceDiagnostics: data.params?.workspaceDiagnostics ?? [],
       workspaceDiagnosticsByIdentifier: data.params?.workspaceDiagnosticsByIdentifier ?? {},
       workspaceDelayMsByIdentifier: data.params?.workspaceDelayMsByIdentifier ?? {},
-      provisionalMs: data.params?.provisionalMs ?? 0,
+      provisionalMs: data.params?.provisionalMs ?? 0, // spicy: REG-01
     }
     registeredCapability = false
     sendResponse(data.id, null)
@@ -252,6 +254,7 @@ function handle(raw) {
       data.id,
       {
         kind: "full",
+        // spicy: REG-01
         items: Date.now() < provisionalUntil ? [] : diagnosticsForIdentifier(data.params?.identifier ?? ""),
       },
       documentDelayForIdentifier(data.params?.identifier ?? ""),

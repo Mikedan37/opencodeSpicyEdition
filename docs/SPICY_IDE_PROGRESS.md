@@ -10,7 +10,7 @@ Plan: [SPICY_IDE_MASTER_PLAN.md](SPICY_IDE_MASTER_PLAN.md). Upstream edits: [../
 
 | Item | Status | Evidence |
 |---|---|---|
-| Shared contracts (`schema/src/workbench.ts`, `schema/src/agent-hq.ts`) registered in the event manifest | implemented | schema + opencode typecheck clean; `bun test test/lsp test/server` 358 pass |
+| Shared contracts (`schema/src/workbench.ts`, `schema/src/agent-hq.ts`) registered in the event manifest | integration-tested | schema + opencode typecheck clean; `bun test test/lsp test/server` 358 pass |
 | Permission defaults (`verify.exec`, `debug.*` ask, `debug.memory` deny) | implemented | `opencode/src/agent/agent.ts` |
 
 ## Debug Workbench
@@ -18,8 +18,8 @@ Plan: [SPICY_IDE_MASTER_PLAN.md](SPICY_IDE_MASTER_PLAN.md). Upstream edits: [../
 | Item | Owner branch | Status | Evidence |
 |---|---|---|---|
 | P0 LSP repairs + doctor | `spicy-lsp` | integration-tested (merged `fbef6f2ed`) | REG-01..10 + DIAG-10 fixed; Swift returns its error via `opencode debug lsp diagnostics` (was `[]`); dead servers fail in ~1 s (was 45.7 s); `opencode debug workbench doctor`; `bun test test/lsp test/workbench test/tool test/agent` 475 pass; real sourcekit test passes. Notes: `docs/spicy/notes-lsp.md` |
-| P1 Problem store, LSP hook, events, routes | `spicy-problems` | planned | |
-| P2 Verification engine, `check` tool, turn-end gate | `spicy-problems` | planned | |
+| P1 Problem store, LSP hook, events, routes | `spicy-problems` | integration-tested (merged `f8c5092c5`) | `GET /workbench/problems`; `workbench.problems.updated` via EventV2Bridge; DIAG-01..04 pass. Notes: `docs/spicy/notes-problems.md` |
+| P2 Verification engine, `check` tool, turn-end gate | `spicy-problems` | integration-tested (merged `f8c5092c5`) | Checkers tsc/clang/swift/cargo/go/ruff/mypy with golden captures; test runners go/cargo/bun/node; gate (max 2 repairs, env `OPENCODE_VERIFY_GATE`); VER-01..06, 08..13 pass. Missing: `POST /workbench/check`, `GET /workbench/runs/:id`, pytest/swift test (VER-14), VER-07 |
 | P3 Problems + Output tabs | `spicy-ui` | planned | |
 | P4 DAP core, adapters, console backend, `debug` tool | `spicy-dap` | planned | |
 | P5 Investigations, supervisor, control ownership | `spicy-dap` | planned | |
@@ -31,14 +31,16 @@ Plan: [SPICY_IDE_MASTER_PLAN.md](SPICY_IDE_MASTER_PLAN.md). Upstream edits: [../
 
 | Item | Owner branch | Status | Evidence |
 |---|---|---|---|
-| Registry + identities + persistence | `spicy-agenthq` | planned | |
-| OpenCode provider adapter | `spicy-agenthq` | planned | |
-| Session manager, events, recovery | `spicy-agenthq` | planned | |
-| `AgentHQApi` routes | `spicy-agenthq` | planned | |
+| Registry + identities + persistence | `spicy-agenthq` | integration-tested (merged `2867de790`) | JSON store, schema-validated, events; AHQ-01/02 pass |
+| OpenCode provider adapter | `spicy-agenthq` | integration-tested (fake model) | Runs in the identity's project instance; allow→ask for non-read-only tools; AHQ-03/04/05 pass |
+| Session manager, events, recovery | `spicy-agenthq` | integration-tested | Gap-free seq, compacted capped history, interrupted on restart; AHQ-06/07/10 pass |
+| `AgentHQApi` routes | `spicy-agenthq` | integration-tested | 11 routes; `test:httpapi` 220/220 after merge |
 | Agents tab: roster, create/edit, workspace, permissions, cancel | `spicy-ui` | planned | |
 | Cursor adapter (ACP) | wave 2 | blocked for real Cursor: installed `cursor-agent` 2025.09.12 has no ACP mode; testable against `opencode acp` | |
 | Claude Code adapter | wave 2 | planned (needs `@anthropic-ai/claude-agent-sdk`) | |
 | Codex adapter | wave 2 | blocked: `codex` not installed | |
+
+Merged tree (`f8c5092c5`): `bun test test/lsp test/workbench test/agenthq test/tool test/session test/server test/agent` 1244 pass, 9 skip (pre-existing), 1 todo, 0 fail; `test:httpapi` 220/220; typecheck clean.
 
 ## Orchestration and IDE polish
 

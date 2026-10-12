@@ -2,6 +2,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { app, utilityProcess } from "electron"
 import type { Details } from "electron"
+import { bundledCliEnv } from "./bundled-cli" // spicy: OPENCODE_BIN_PATH for Agent HQ's Workbench MCP bridge
 import { getLogger } from "./logging"
 import { getUserShell, loadShellEnv } from "./shell-env"
 import { getStore } from "./store"
@@ -216,6 +217,7 @@ function createSidecarEnv(): Record<string, string> {
   )
   delete env.DEBUG
   if (process.platform === "linux") delete env.LD_PRELOAD
+  Object.assign(env, bundledCliEnv(app.isPackaged, process.resourcesPath)) // spicy: Agent HQ's Workbench MCP bridge
   return env
 }
 

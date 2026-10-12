@@ -1,13 +1,12 @@
 import { execFile } from "node:child_process"
 import { existsSync } from "node:fs"
 import { chmod, copyFile, mkdir, rename, rm } from "node:fs/promises"
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { join } from "node:path" // spicy: dirname and fileURLToPath moved to bundled-cli.ts
 import { promisify } from "node:util"
 import { app } from "electron"
+import { bundledCli, executableName } from "./bundled-cli" // spicy: shared with the v1 sidecar
 
 const execFileAsync = promisify(execFile)
-const root = dirname(fileURLToPath(import.meta.url))
 const stateHome = process.env.XDG_STATE_HOME
 const desktopStateNames = ["ai.opencode.desktop.dev", "ai.opencode.desktop.beta", "ai.opencode.desktop"]
 
@@ -17,9 +16,7 @@ type Logger = {
 }
 
 export async function startBackgroundCli(logger: Logger, shellStateHome?: string) {
-  const bundled = app.isPackaged
-    ? join(process.resourcesPath, executableName())
-    : join(root, "../../resources", executableName())
+  const bundled = bundledCli(app.isPackaged, process.resourcesPath) // spicy: shared with the v1 sidecar
   logger.log("v2 CLI executable resolved", { bundled, packaged: app.isPackaged })
   const version = await run(bundled, ["--version"], logger)
   const binary = app.isPackaged ? await installCli(bundled, version, logger) : bundled
@@ -118,8 +115,4 @@ function endpoint(url: string | undefined) {
   if (!url || !URL.canParse(url)) return {}
   const parsed = new URL(url)
   return { url, hostname: parsed.hostname, port: parsed.port }
-}
-
-function executableName() {
-  return process.platform === "win32" ? "opencode-cli.exe" : "opencode-cli"
 }

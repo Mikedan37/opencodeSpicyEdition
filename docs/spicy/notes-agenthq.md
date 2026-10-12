@@ -711,7 +711,27 @@ login`". Without `codex-acp` or `npx` on PATH: "Codex needs Zed's codex-acp brid
 - Capabilities: the ACP adapter's (streaming, tool events, permission requests, cancel, MCP tools); the bridge
   advertises `loadSession` and `session/resume`, which the adapter uses to resume.
 - Upstream moved the bridge to `agentclientprotocol/codex-acp` (npm `@agentclientprotocol/codex-acp`); the
-  `@zed-industries` package is archived at 0.16.0, which is what is pinned.
+  `@zed-industries` package is archived at 0.16.0, which is what is pinned (see below for why not 2.2.2).
+
+### Why not `@agentclientprotocol/codex-acp` 2.2.2 (checked 2026-10-12)
+
+The maintained bridge cannot run Codex under `untrusted`, so Agent HQ stays on the archived 0.16.0. From its v2.2.2
+source:
+
+- It is a Node rewrite that drives `codex app-server`. It ignores command-line arguments other than `--version`,
+  `login` and `cli` (`src/index.ts` starts the ACP server without reading `process.argv`), so the three `-c`
+  overrides are dropped. Configuration comes from the `CODEX_CONFIG` (JSON) and `INITIAL_AGENT_MODE` environment
+  variables.
+- Every turn sends the session's agent mode as `approvalPolicy`, `approvalsReviewer` and `sandboxPolicy`
+  (`CodexAcpClient.sendPrompt`), which overrides any configured policy. The modes (`src/AgentMode.ts`) are
+  `read-only` (`on-request`, reviewer `user`, read-only sandbox), `workspace-write` (`on-request`, `user`,
+  workspace-write), `agent` (`on-request`, reviewer `auto_review`, workspace-write) and `agent-full-access`
+  (`never`, no sandbox).
+- The default mode is `agent`, which sends approvals to Codex's automatic reviewer instead of the human. The best it
+  allows is `INITIAL_AGENT_MODE=workspace-write`: the reviewer is the human, but `on-request` still applies edits
+  inside the workspace and runs sandboxed commands without asking.
+
+To move to it, it would need a mode that sends `untrusted`, or one that honours a configured approval policy.
 
 ## Cursor
 

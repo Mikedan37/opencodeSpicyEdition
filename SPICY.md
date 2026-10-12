@@ -29,9 +29,12 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 | `packages/app/src/pages/session/session-side-panel.tsx` | Debug tab trigger and content in the side panel tabs | Debugger side panel (v2 layout) |
 | `packages/app/src/context/language.tsx` | Merge the fork's English `workbench/en` dictionary into the base dictionary | Workbench strings; other locales fall back to English |
 | `packages/app/src/pages/session.tsx` | Wrap the session children in `WorkbenchProviders` and `ReviewProvider`; an `agent` review mode (new layout only) that renders `ReviewChangesPanel` | Workbench and Agent HQ state for the bottom panel; agent changes review |
-| `packages/app/src/context/layout.tsx` | `ReviewChangeMode` gains `agent` and persists it | Agent changes review mode |
+| `packages/app/src/context/layout.tsx` | `ReviewChangeMode` gains `agent` and persists it; `tabCloseGuards` hook in `close()` | Agent changes review mode; the editor asks Save / Don't save / Cancel before closing a dirty tab |
 | `packages/app/src/pages/session/file-tabs.tsx` | `ReviewFileGate` wraps the loaded file render | Pending agent changes show inline with Accept / Reject |
 | `packages/app/src/pages/session/terminal-panel-v2.tsx` | Workbench tab triggers and content share the terminal tab bar; a selected Workbench tab replaces the terminal view | Agents, Problems, Output, Debug Console, Run tabs |
+| `packages/app/src/pages/session/session-sortable-tab-v2.tsx` | Unsaved-changes dot on the tab | Editor dirty state |
+| `package.json` (root) | `overrides` pin `@lezer/lr` 1.4.10, `@lezer/css` 1.3.8, `@lezer/javascript` 1.5.5, `@lezer/markdown` 1.7.2 | CodeMirror's parsers had resolved to releases under two weeks old |
+| `packages/app/package.json`, `bun.lock` | CodeMirror 6 packages (exact versions) | Editable editor |
 | `packages/desktop/src/main/index.ts` | Keep a `--remote-debugging-port` given on the command line; skip `setAsDefaultProtocolClient` when `CFFIXED_USER_HOME` is set; `before-quit` waits for the sidecar to stop (bounded by the existing 6 s timeout) | Isolated launches (`scripts/spicy-launch.ts`) must not take over the system opencode:// handler; quitting used to kill the sidecar before its shutdown ran, leaving Agent HQ sessions `working` and losing a history being written |
 | `packages/desktop/src/main/windows.ts` | Log whether the Dock icon loaded | Smoke verifies the dev Dock icon |
 | `packages/desktop/src/main/server.ts` | `createSidecarEnv()` adds `OPENCODE_BIN_PATH` (bundled CLI) via `bundledCliEnv` | The v1 sidecar runs under Node and needs a CLI to start the Workbench MCP bridge for Agent HQ agents |

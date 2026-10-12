@@ -31,12 +31,7 @@ export function make(input: { readonly publish: (rows: Row[]) => void; readonly 
   }
 
   const push = (row: NewRow) => {
-    const next: Row = {
-      ...row,
-      text: DebugSnapshot.cap(Redact.text(row.text), LIMITS.row),
-      seq: ++state.seq,
-      at: Date.now(),
-    }
+    const next: Row = { ...detached(row), seq: ++state.seq }
     rows.push(next)
     state.bytes += Buffer.byteLength(next.text)
     while (state.bytes > limit && rows.length > 1) {
@@ -92,6 +87,11 @@ export function make(input: { readonly publish: (rows: Row[]) => void; readonly 
 
 export type Console = ReturnType<typeof make>
 
+/** A row as the console stores it (redacted, capped), outside the console: seq 0. */
+function detached(row: NewRow): Row {
+  return { ...row, text: DebugSnapshot.cap(Redact.text(row.text), LIMITS.row), seq: 0, at: Date.now() }
+}
+
 /** Runs an expression in a frame. This executes code inside the program; callers ask permission first. */
 export const evaluate = Effect.fnUntraced(function* (input: {
   readonly request: DapClient.Client["request"]
@@ -99,13 +99,17 @@ export const evaluate = Effect.fnUntraced(function* (input: {
   readonly adapter: string
   readonly expression: string
   readonly frameID?: number
+  readonly context?: Workbench.DebugEvaluateContext
   readonly by: "agent" | "human"
   readonly timeout?: number
 }) {
   // lldb-dap runs raw LLDB commands (platform shell, script) behind its escape prefix. Agents only get expressions.
   if (input.by === "agent" && input.adapter === "lldb-dap" && input.expression.trimStart().startsWith("`"))
     return yield* new DebugError({ kind: "unsupported", message: "LLDB command mode is not available to the agent" })
-  input.console.push({ kind: "eval", by: input.by, text: input.expression })
+  const context = input.context ?? "repl"
+  // Watch and hover results go back to the caller only: no console row, so no output event either.
+  const emit = context === "repl" ? input.console.push : detached
+  if (context === "repl") input.console.push({ kind: "eval", by: input.by, text: input.expression })
   return yield* input
     .request<{
       result?: string
@@ -116,13 +120,13 @@ export const evaluate = Effect.fnUntraced(function* (input: {
       {
         expression: input.expression,
         ...(input.frameID !== undefined ? { frameId: input.frameID } : {}),
-        context: "repl",
+        context,
       },
       input.timeout,
     )
     .pipe(
       Effect.map((body) =>
-        input.console.push({
+        emit({
           kind: "result",
           by: input.by,
           text: `${body.result ?? ""}`,
@@ -133,7 +137,7 @@ export const evaluate = Effect.fnUntraced(function* (input: {
         (error) => error.kind === "adapter" || error.kind === "timeout",
         (error) =>
           Effect.succeed(
-            input.console.push({
+            emit({
               kind: "exception",
               by: input.by,
               text:

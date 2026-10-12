@@ -30,6 +30,7 @@ export const WorkbenchDebugPaths = {
   control: `${root}/:debugSessionID/control`,
   breakpoints: `${root}/:debugSessionID/breakpoints`,
   variables: `${root}/:debugSessionID/variables`,
+  scopes: `${root}/:debugSessionID/scopes`,
   evaluate: `${root}/:debugSessionID/evaluate`,
   completions: `${root}/:debugSessionID/completions`,
   output: `${root}/:debugSessionID/output`,
@@ -149,11 +150,26 @@ export const WorkbenchDebugApi = HttpApi.make("workbench-debug")
         }).annotateMerge(
           op("workbench.debug.variables", "Read variables", "Children of a variable reference while stopped."),
         ),
+        HttpApiEndpoint.get("scopes", WorkbenchDebugPaths.scopes, {
+          params,
+          query: Schema.Struct({
+            ...WorkspaceRoutingQueryFields,
+            frameID: Schema.NumberFromString.check(Schema.isInt()),
+          }),
+          success: described(Schema.Array(Workbench.DebugScope), "Scopes of the frame"),
+          error: errors,
+        }).annotateMerge(
+          op(
+            "workbench.debug.scopes",
+            "Read frame scopes",
+            "Scopes (Locals, Globals, ...) of a frame of the current stop; their children come from the variables route.",
+          ),
+        ),
         HttpApiEndpoint.post("evaluate", WorkbenchDebugPaths.evaluate, {
           params,
           query: WorkspaceRoutingQuery,
-          payload: Schema.Struct({ expression: Schema.String, frameID: Schema.optional(Schema.Int) }),
-          success: described(Workbench.ConsoleRow, "Result row"),
+          payload: Workbench.DebugEvaluateInput,
+          success: described(Workbench.ConsoleRow, "Result row (seq 0 for watch and hover: not a console row)"),
           error: errors,
         }).annotateMerge(
           op("workbench.debug.evaluate", "Evaluate", "Run an expression in a stack frame (runs program code)."),

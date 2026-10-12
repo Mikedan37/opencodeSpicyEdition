@@ -515,6 +515,15 @@ const scenarios: Scenario[] = [
     }))
     .json(404, object, "status"),
   http.protected
+    .get("/workbench/debug/sessions/{debugSessionID}/scopes", "workbench.debug.scopes")
+    .at((ctx) => ({
+      path:
+        route("/workbench/debug/sessions/{debugSessionID}/scopes", { debugSessionID: "dbg_httpapi_missing" }) +
+        "?frameID=1",
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
     .post("/workbench/debug/sessions/{debugSessionID}/evaluate", "workbench.debug.evaluate")
     .at((ctx) => ({
       path: route("/workbench/debug/sessions/{debugSessionID}/evaluate", { debugSessionID: "dbg_httpapi_missing" }),

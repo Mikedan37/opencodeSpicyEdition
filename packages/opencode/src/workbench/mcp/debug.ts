@@ -73,7 +73,7 @@ const SPECS: {
     action: "inspect",
     title: "Debug: inspect variables",
     description:
-      "Read variables without running program code: the locals of the top (or `frame`) stack frame, a `path` like orders.bob, or a `ref` from an earlier result; 2 levels, 50 children per page (`start` pages). Works while the program is stopped, whoever drives it.",
+      "Read variables without running program code: the locals of the top stack frame or of `frame` (the #id in the frames line of the latest stop), a `path` like orders.bob, or a `ref` from an earlier result; 2 levels, 50 children per page (`start` pages). Works while the program is stopped, whoever drives it.",
     fields: ["session", "path", "ref", "frame", "start"],
     annotations: { readOnlyHint: true },
   },

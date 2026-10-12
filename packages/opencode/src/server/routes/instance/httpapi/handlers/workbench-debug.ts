@@ -121,6 +121,12 @@ export const workbenchDebugHandlers = HttpApiBuilder.group(InstanceHttpApi, "wor
           Effect.mapError(toApi),
         ),
       )
+      .handle("scopes", (ctx) =>
+        session(ctx.params.debugSessionID).pipe(
+          Effect.flatMap((item) => item.scopes(ctx.query.frameID, human)),
+          Effect.mapError(toApi),
+        ),
+      )
       .handle("evaluate", (ctx) =>
         session(ctx.params.debugSessionID).pipe(
           Effect.flatMap((item) => item.evaluate(ctx.payload, human)),

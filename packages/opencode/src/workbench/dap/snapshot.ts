@@ -40,6 +40,18 @@ export const variables = Effect.fnUntraced(function* (request: Request, ref: num
     .map(view)
 })
 
+/** A frame's scopes (Locals, Globals, Registers, ...); their children come from `variables`. */
+export const scopes = Effect.fnUntraced(function* (request: Request, frameID: number) {
+  const body = yield* request<{ scopes?: DapScope[] }>("scopes", { frameId: frameID })
+  return (body.scopes ?? []).slice(0, LIMITS.children).map(
+    (scope): Workbench.DebugScope => ({
+      name: cap(Redact.text(scope.name), LIMITS.chars),
+      variablesReference: Math.max(0, scope.variablesReference),
+      ...(scope.expensive ? { expensive: true } : {}),
+    }),
+  )
+})
+
 /** Children expanded to `depth` levels; only the first few expandable items of a level are opened. */
 export const tree = (
   request: Request,
@@ -141,7 +153,7 @@ export function text(input: {
       : []),
     ...(top ? [`at        ${where(top)} in ${top.name}`] : []),
     ...(snapshot.frames.length > 1
-      ? [`frames    ${snapshot.frames.map((frame) => `${frame.name} (${where(frame)})`).join(" <- ")}`]
+      ? [`frames    ${snapshot.frames.map((frame) => `#${frame.id} ${frame.name} (${where(frame)})`).join(" <- ")}`]
       : []),
     `locals    ${snapshot.locals.length ? snapshot.locals.map(line).join(" · ") : "(none)"}`,
     ...(input.owner ? [`owner     ${input.owner}`] : []),

@@ -254,6 +254,30 @@ export const ConsoleRow = Schema.Struct({
 }).annotate({ identifier: "WorkbenchConsoleRow" })
 export interface ConsoleRow extends Schema.Schema.Type<typeof ConsoleRow> {}
 
+// One scope of a stack frame (GET /workbench/debug/sessions/:id/scopes?frameID=), e.g. Locals or Globals. Its
+// children come from the variables route with `variablesReference`; open `expensive` scopes only on demand.
+export const DebugScope = Schema.Struct({
+  name: Schema.String, // redacted and capped at 512 characters
+  variablesReference: NonNegativeInt,
+  expensive: optional(Schema.Boolean),
+}).annotate({ identifier: "WorkbenchDebugScope" })
+export interface DebugScope extends Schema.Schema.Type<typeof DebugScope> {}
+
+// Where an evaluation comes from. watch and hover results are only returned: no console row, no
+// workbench.debug.output event, and the returned row has seq 0. They still run program code.
+export const DebugEvaluateContext = Schema.Literals(["watch", "repl", "hover"])
+export type DebugEvaluateContext = typeof DebugEvaluateContext.Type
+
+// Body of POST /workbench/debug/sessions/:id/evaluate.
+export const DebugEvaluateInput = Schema.Struct({
+  expression: Schema.String,
+  frameID: optional(Schema.Int.annotate({ description: "A frame of the current stop; default: the top frame" })),
+  context: optional(
+    DebugEvaluateContext.annotate({ description: "Default repl, the only one that adds console rows" }),
+  ),
+}).annotate({ identifier: "WorkbenchDebugEvaluateInput" })
+export interface DebugEvaluateInput extends Schema.Schema.Type<typeof DebugEvaluateInput> {}
+
 // ---------------------------------------------------------------- investigations
 
 export const InvestigationStatus = Schema.Literals([

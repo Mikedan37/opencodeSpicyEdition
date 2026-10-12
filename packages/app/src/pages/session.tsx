@@ -103,6 +103,7 @@ import { legacySessionHref, requireServerKey, sessionHref } from "@/utils/sessio
 import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
 import { createSessionOwnership } from "./session/session-ownership"
 import { createSessionLineage } from "./session/session-lineage"
+import { WorkbenchProviders } from "@/workbench/panel" // spicy: Workbench + Agent HQ (see SPICY.md)
 
 type FollowupItem = FollowupDraft & { id: string }
 type FollowupEdit = Pick<FollowupItem, "id" | "prompt" | "context">
@@ -319,7 +320,10 @@ function SessionProviders(props: ParentProps) {
     <TerminalProvider>
       <FileProvider>
         <PromptProvider>
-          <CommentsProvider>{props.children}</CommentsProvider>
+          <CommentsProvider>
+            {/* spicy: Workbench + Agent HQ state for the bottom panel tabs */}
+            <WorkbenchProviders>{props.children}</WorkbenchProviders>
+          </CommentsProvider>
         </PromptProvider>
       </FileProvider>
     </TerminalProvider>

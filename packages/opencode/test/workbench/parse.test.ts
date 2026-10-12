@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test"
 import path from "path"
 import { WorkbenchCheckers } from "@/workbench/verify/checkers"
 import { WorkbenchParse } from "@/workbench/verify/parse"
+import { tmpdir } from "../fixture/fixture"
+import { write, zoo } from "../fixture/workbench/zoo"
 
 // VER-01 / VER-13: outputs captured from the installed tools (macOS arm64, 2026-10-12) with the exact commands the
 // checkers plan, on the bug zoo in test/fixture/workbench/zoo.ts. Paths under the capture root read /ROOT.
-type Golden = { command: string[]; cwd: string; exitCode: number; stdout: string; stderr: string }
+type Golden = { command: string[]; cwd: string; exitCode: number; stdout: string; stderr: string; report?: string }
 
 const golden = (name: string) =>
   Bun.file(path.join(__dirname, "../fixture/workbench/golden", `${name}.json`)).json() as Promise<Golden>
@@ -17,6 +19,7 @@ const parse = async (name: string, parser: (output: WorkbenchParse.Output) => un
     stderr: WorkbenchParse.stripAnsi(item.stderr),
     exitCode: item.exitCode,
     cwd: item.cwd,
+    report: item.report,
   })
 }
 
@@ -239,6 +242,64 @@ describe("VER-01 parser golden files", () => {
         severity: "error",
         message: "tests::empty: attempt to divide by zero",
         code: "tests::empty",
+      },
+    ])
+  })
+
+  // VER-14: pytest --junitxml and swift test --parallel --xunit-output (reports read from the run's report directory)
+  test("pytest JUnit: the innermost traceback line in the project", async () => {
+    expect(await parse("pytest", WorkbenchParse.pytest)).toEqual([
+      {
+        kind: "test",
+        file: "/ROOT/pytest/test_avg.py",
+        range: at(4, 0),
+        severity: "error",
+        message: "test_average: assert 3.0 == 4\n+  where 3.0 = average([2, 4])",
+        code: "test_avg::test_average",
+      },
+      {
+        kind: "test",
+        file: "/ROOT/pytest/avg.py",
+        range: at(1, 0),
+        severity: "error",
+        message: "test_empty: ZeroDivisionError: division by zero",
+        code: "test_avg::test_empty",
+      },
+    ])
+  })
+
+  test("swift test: xUnit names the failures, the console says where", async () => {
+    const item = await golden("swift-test")
+    // XCTest results reach xUnit only with --parallel; neither report carries a location
+    expect(item.command).toContain("--parallel")
+    expect(item.report).toContain('<failure message="failure"></failure>')
+    // swift-testing prints a bare file name, so the parser looks it up in the package: use a real copy
+    await using tmp = await tmpdir()
+    await write(path.join(tmp.path, "swift-test"), zoo["swift-test"])
+    const real = (text: string) => text.replaceAll("/ROOT", tmp.path)
+    const problems = WorkbenchParse.swiftTest({
+      stdout: real(item.stdout),
+      stderr: real(item.stderr),
+      exitCode: item.exitCode,
+      cwd: real(item.cwd),
+      report: real(item.report ?? ""),
+    })
+    expect(problems).toEqual([
+      {
+        kind: "test",
+        file: path.join(tmp.path, "swift-test/Tests/AvgTests/AvgSwiftTesting.swift"),
+        range: at(4, 2),
+        severity: "error",
+        message: "emptyList(): Expectation failed: average([]) == 1",
+        code: "emptyList()",
+      },
+      {
+        kind: "test",
+        file: path.join(tmp.path, "swift-test/Tests/AvgTests/AvgTests.swift"),
+        range: at(5, 0),
+        severity: "error",
+        message: 'testAverage: XCTAssertEqual failed: ("3") is not equal to ("4")',
+        code: "testAverage",
       },
     ])
   })

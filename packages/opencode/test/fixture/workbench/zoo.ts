@@ -249,6 +249,59 @@ mod tests {
 }
 `,
   },
+  // VER-14: pytest (JUnit) and swift test (xUnit, one XCTest and one swift-testing failure)
+  pytest: {
+    "pyproject.toml": `[project]
+name = "avg"
+version = "0.1.0"
+`,
+    "avg.py": `def average(xs):
+    return sum(xs) / len(xs)
+`,
+    "test_avg.py": `from avg import average
+
+
+def test_average():
+    assert average([2, 4]) == 4
+
+
+def test_empty():
+    assert average([]) == 0
+`,
+  },
+  "swift-test": {
+    "Package.swift": `// swift-tools-version:5.9
+import PackageDescription
+
+let package = Package(
+  name: "Avg",
+  targets: [
+    .target(name: "Avg"),
+    .testTarget(name: "AvgTests", dependencies: ["Avg"]),
+  ]
+)
+`,
+    "Sources/Avg/Avg.swift": `public func average(_ xs: [Int]) -> Int {
+  xs.reduce(0, +) / max(xs.count, 1)
+}
+`,
+    "Tests/AvgTests/AvgTests.swift": `import XCTest
+@testable import Avg
+
+final class AvgTests: XCTestCase {
+  func testAverage() {
+    XCTAssertEqual(average([2, 4]), 4)
+  }
+}
+`,
+    "Tests/AvgTests/AvgSwiftTesting.swift": `import Testing
+@testable import Avg
+
+@Test func emptyList() {
+  #expect(average([]) == 1)
+}
+`,
+  },
 } satisfies Record<string, Record<string, string>>
 
 export async function write(dir: string, files: Record<string, string>) {

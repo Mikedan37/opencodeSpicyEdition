@@ -339,6 +339,62 @@ describe("workbench verification engine", () => {
     }),
   )
 
+  needs("pytest")("VER-14 [pytest] tests run through the JUnit report; no tests is not a pass", () =>
+    Effect.gen(function* () {
+      const dir = (yield* TestInstance).directory
+      yield* Effect.promise(() => write(path.join(dir, "app"), zoo.pytest))
+      yield* Effect.promise(() => write(path.join(dir, "lib"), { "pyproject.toml": "", "lib.py": "VALUE = 1\n" }))
+      const all = (units: ReadonlyArray<string>) => Effect.succeed([...units])
+      const verify = yield* WorkbenchVerify.Service
+      const result = yield* verify.run({
+        files: [path.join(dir, "app/avg.py"), path.join(dir, "lib/lib.py")],
+        trigger: "agent",
+        tests: true,
+        approve: all,
+      })
+      const pytest = result.report.checks.filter((check) => check.run.checker === "pytest")
+      expect(pytest.map((check) => [path.relative(dir, check.run.unit), check.run.status, check.run.reason])).toEqual([
+        ["app", "failed", undefined],
+        ["lib", "skipped", "no tests collected"],
+      ])
+      expect(
+        result.problems
+          .filter((item) => item.tool === "pytest")
+          .map((item) => [path.relative(dir, item.file ?? ""), item.range?.start.line, item.code]),
+      ).toEqual([
+        ["app/test_avg.py", 4, "test_avg::test_average"],
+        ["app/avg.py", 1, "test_avg::test_empty"],
+      ])
+    }),
+  )
+
+  needs("swift")(
+    "VER-14 [swift] swift test runs through its xUnit reports after a clean build",
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        yield* Effect.promise(() => write(dir, zoo["swift-test"]))
+        const verify = yield* WorkbenchVerify.Service
+        const result = yield* verify.run({
+          files: [path.join(dir, "Sources/Avg/Avg.swift")],
+          trigger: "agent",
+          tests: true,
+          approve: (units) => Effect.succeed([...units]),
+        })
+        expect(result.report.checks.map((check) => [check.run.checker, check.run.status])).toEqual([
+          ["swift", "passed"],
+          ["swift-test", "failed"],
+        ])
+        expect(
+          result.problems.map((item) => [path.relative(dir, item.file ?? ""), item.range?.start.line, item.code]),
+        ).toEqual([
+          ["Tests/AvgTests/AvgSwiftTesting.swift", 4, "emptyList()"],
+          ["Tests/AvgTests/AvgTests.swift", 5, "testAverage"],
+        ])
+      }),
+    180_000,
+  )
+
   needs("swift")("VER-06 [swift] a package with a plugin is exec-class", () =>
     Effect.gen(function* () {
       const dir = (yield* TestInstance).directory

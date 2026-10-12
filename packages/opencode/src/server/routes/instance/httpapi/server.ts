@@ -106,6 +106,8 @@ import { sessionLocationLayer } from "@opencode-ai/server/middleware/session-loc
 import { PtyEnvironment } from "@opencode-ai/server/pty-environment"
 import { schemaErrorLayer as v2SchemaErrorLayer } from "@opencode-ai/server/middleware/schema-error"
 import { workspaceHandlers } from "./handlers/workspace"
+import { workbenchDebugHandlers } from "./handlers/workbench-debug" // spicy: Workbench debug routes
+import { WorkbenchDebug } from "@/workbench/dap/service" // spicy: Workbench debug routes
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
 import { disposeMiddleware } from "./lifecycle"
@@ -168,6 +170,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     syncHandlers,
     tuiHandlers,
     workspaceHandlers,
+    workbenchDebugHandlers, // spicy: Workbench debug routes
   ]),
 )
 
@@ -266,6 +269,7 @@ const app = LayerNode.group([
   ProjectV2.node,
   ProjectCopy.node,
   PtyTicket.node,
+  WorkbenchDebug.node, // spicy: Workbench debug routes
 ])
 
 export function createRoutes(

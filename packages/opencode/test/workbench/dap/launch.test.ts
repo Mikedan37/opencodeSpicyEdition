@@ -1,0 +1,107 @@
+import { describe, expect, test } from "bun:test"
+import fs from "fs/promises"
+import os from "os"
+import path from "path"
+import { Effect } from "effect"
+import { DebugLaunch } from "../../../src/workbench/dap/launch"
+
+const ok = (input: DebugLaunch.StartInput, directory: string) =>
+  Effect.runPromise(DebugLaunch.resolve(input, { directory }))
+const fail = (input: DebugLaunch.StartInput, directory: string) =>
+  Effect.runPromise(DebugLaunch.resolve(input, { directory }).pipe(Effect.flip)).then((error) => error.message)
+
+async function project(launch?: string) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-launch-"))
+  if (launch) await Bun.write(path.join(directory, ".vscode", "launch.json"), launch)
+  return directory
+}
+
+describe("launch specs", () => {
+  test("variables: workspaceFolder, file, env; unknown or missing ones are errors", () => {
+    process.env.OPENCODE_LAUNCH_TEST = "from-env"
+    expect(
+      DebugLaunch.substitute(
+        {
+          program: "${workspaceFolder}/a.py",
+          args: ["${file}", "${env:OPENCODE_LAUNCH_TEST}", "${env:OPENCODE_UNSET_X}"],
+        },
+        { workspaceFolder: "/repo", file: "/repo/b.py" },
+      ),
+    ).toEqual({ program: "/repo/a.py", args: ["/repo/b.py", "from-env", ""] })
+    expect(DebugLaunch.substitute({ program: "${file}" }, { workspaceFolder: "/repo" })).toBe(
+      "${file} needs the file parameter",
+    )
+    expect(DebugLaunch.substitute({ pid: "${command:pickProcess}" }, {})).toBe(
+      "unsupported variable ${command:pickProcess}",
+    )
+  })
+
+  test("plain programs pick the adapter by type", async () => {
+    const directory = await project()
+    const py = await ok(
+      { program: "app.py", args: ["--n", "2"], breakpoints: [{ file: "app.py", line: 3 }] },
+      directory,
+    )
+    expect(py).toMatchObject({
+      adapter: "debugpy",
+      program: path.join(directory, "app.py"),
+      arguments: {
+        program: path.join(directory, "app.py"),
+        args: ["--n", "2"],
+        console: "internalConsole",
+        justMyCode: true,
+      },
+      breakpoints: [{ file: path.join(directory, "app.py"), line: 3 }],
+      exceptions: ["uncaught"],
+    })
+    const native = await ok({ program: "build/avg" }, directory)
+    expect(native).toMatchObject({
+      adapter: "lldb-dap",
+      arguments: { runInTerminal: true, console: "integratedTerminal", commandEscapePrefix: "`" },
+      exceptions: [],
+    })
+    const test = await ok({ preset: "python-test", program: "tests/test_avg.py" }, directory)
+    expect(test).toMatchObject({
+      adapter: "debugpy",
+      arguments: { module: "pytest", args: [path.join(directory, "tests/test_avg.py")] },
+      exceptions: ["uncaught", "userUnhandled"],
+    })
+    const none = await fail({}, directory)
+    expect(none).toBe("give a program, a launch.json configuration or a preset")
+  })
+
+  test("launch.json: JSONC, named configurations, preLaunchTask is noted, unsupported types refused", async () => {
+    const directory = await project(`{
+      // comments and trailing commas are fine
+      "configurations": [
+        { "name": "run", "type": "python", "request": "launch", "program": "\${workspaceFolder}/main.py", "preLaunchTask": "build", },
+        { "name": "node", "type": "node", "request": "launch", "program": "x.js" },
+      ],
+    }`)
+    const run = await ok({ configuration: "run", args: ["x"] }, directory)
+    expect(run).toMatchObject({
+      adapter: "debugpy",
+      name: "run",
+      program: path.join(directory, "main.py"),
+      arguments: { args: ["x"], program: path.join(directory, "main.py") },
+      notes: ['preLaunchTask "build" was not run'],
+    })
+    const node = await fail({ configuration: "node" }, directory)
+    expect(node).toContain('type "node" is not supported')
+    const missing = await fail({ configuration: "nope" }, directory)
+    expect(missing).toBe('no configuration named "nope" (have: run, node)')
+  })
+
+  test("attach: debugpy only by port on 127.0.0.1, lldb-dap by pid", async () => {
+    const debugpy = await Effect.runPromise(
+      DebugLaunch.attach({ adapter: "debugpy", port: 5678 }, { directory: "/repo" }),
+    )
+    expect(debugpy.arguments).toMatchObject({ request: "attach", connect: { host: "127.0.0.1", port: 5678 } })
+    const pid = await Effect.runPromise(
+      DebugLaunch.attach({ adapter: "debugpy", pid: 42 }, { directory: "/repo" }).pipe(Effect.flip),
+    )
+    expect(pid.message).toContain("python -m debugpy --listen 127.0.0.1:PORT")
+    const lldb = await Effect.runPromise(DebugLaunch.attach({ adapter: "lldb-dap", pid: 42 }, { directory: "/repo" }))
+    expect(lldb).toMatchObject({ request: "attach", arguments: { pid: 42 } })
+  })
+})

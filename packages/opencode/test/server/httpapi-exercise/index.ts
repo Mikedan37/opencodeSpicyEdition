@@ -480,6 +480,76 @@ const scenarios: Scenario[] = [
     .get("/pty/{ptyID}/connect", "pty.connect")
     .at((ctx) => ({ path: route("/pty/{ptyID}/connect", { ptyID: "pty_httpapi_missing" }), headers: ctx.headers() }))
     .status(404, undefined, "none"),
+  // spicy: Workbench debug routes. No scenario starts a real adapter; session routes probe a missing id.
+  http.protected.get("/workbench/debug/sessions", "workbench.debug.list").json(200, array),
+  http.protected
+    .post("/workbench/debug/sessions", "workbench.debug.start")
+    .at((ctx) => ({ path: "/workbench/debug/sessions", headers: ctx.headers(), body: {} }))
+    .json(400, object, "status"),
+  http.protected
+    .post("/workbench/debug/sessions/{debugSessionID}/control", "workbench.debug.control")
+    .at((ctx) => ({
+      path: route("/workbench/debug/sessions/{debugSessionID}/control", { debugSessionID: "dbg_httpapi_missing" }),
+      headers: ctx.headers(),
+      body: { action: "continue" },
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/workbench/debug/sessions/{debugSessionID}/breakpoints", "workbench.debug.breakpoints")
+    .at((ctx) => ({
+      path: route("/workbench/debug/sessions/{debugSessionID}/breakpoints", { debugSessionID: "dbg_httpapi_missing" }),
+      headers: ctx.headers(),
+      body: { file: "a.py", breakpoints: [{ line: 1 }] },
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .get("/workbench/debug/sessions/{debugSessionID}/variables", "workbench.debug.variables")
+    .at((ctx) => ({
+      path:
+        route("/workbench/debug/sessions/{debugSessionID}/variables", { debugSessionID: "dbg_httpapi_missing" }) +
+        "?ref=1",
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/workbench/debug/sessions/{debugSessionID}/evaluate", "workbench.debug.evaluate")
+    .at((ctx) => ({
+      path: route("/workbench/debug/sessions/{debugSessionID}/evaluate", { debugSessionID: "dbg_httpapi_missing" }),
+      headers: ctx.headers(),
+      body: { expression: "1 + 1" },
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .get("/workbench/debug/sessions/{debugSessionID}/completions", "workbench.debug.completions")
+    .at((ctx) => ({
+      path:
+        route("/workbench/debug/sessions/{debugSessionID}/completions", { debugSessionID: "dbg_httpapi_missing" }) +
+        "?text=x",
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .get("/workbench/debug/sessions/{debugSessionID}/output", "workbench.debug.output")
+    .at((ctx) => ({
+      path: route("/workbench/debug/sessions/{debugSessionID}/output", { debugSessionID: "dbg_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/workbench/debug/sessions/{debugSessionID}/owner", "workbench.debug.owner")
+    .at((ctx) => ({
+      path: route("/workbench/debug/sessions/{debugSessionID}/owner", { debugSessionID: "dbg_httpapi_missing" }),
+      headers: ctx.headers(),
+      body: { owner: "human" },
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .delete("/workbench/debug/sessions/{debugSessionID}", "workbench.debug.stop")
+    .at((ctx) => ({
+      path: route("/workbench/debug/sessions/{debugSessionID}", { debugSessionID: "dbg_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
   http.protected.get("/experimental/console", "experimental.console.get").json(),
   http.protected.get("/experimental/console/orgs", "experimental.console.listOrgs").json(),
   http.protected

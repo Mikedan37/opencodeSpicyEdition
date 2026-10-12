@@ -6,6 +6,7 @@ import { KeybindV2 } from "@opencode-ai/ui/v2/keybind-v2"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { useFile } from "@/context/file"
+import { useEditorOptional } from "@/workbench/editor-context" // spicy: unsaved-changes dot
 import { useLanguage } from "@/context/language"
 import { useCommand } from "@/context/command"
 import { FileVisual } from "./session-sortable-tab"
@@ -18,6 +19,7 @@ export function SortableTabV2(props: {
   onTabDoubleClick?: (tab: string) => void
 }): JSX.Element {
   const file = useFile()
+  const editor = useEditorOptional() // spicy: the IDE editor's unsaved-changes dot
   const language = useLanguage()
   const command = useCommand()
   const closeTabKeybind = createMemo(() => command.keybindParts("tab.close"))
@@ -67,6 +69,16 @@ export function SortableTabV2(props: {
           onDblClick={() => props.onTabDoubleClick?.(props.tab)}
         >
           <Show when={content()}>{(value) => value()}</Show>
+          {/* spicy: unsaved changes in the IDE editor */}
+          <Show when={path() && editor?.store.dirty(path()!)}>
+            <span
+              data-slot="tab-unsaved"
+              role="img"
+              aria-label={language.t("workbench.editor.unsaved")}
+              title={language.t("workbench.editor.unsaved")}
+              class="ml-1.5 size-1.5 shrink-0 rounded-full bg-v2-text-text-base"
+            />
+          </Show>
         </Tabs.Trigger>
       </div>
     </div>

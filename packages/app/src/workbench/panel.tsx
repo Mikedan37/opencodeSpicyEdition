@@ -34,6 +34,7 @@ import { useSessionKey } from "@/pages/session/session-layout"
 import { Persist, persisted } from "@/utils/persist"
 import { createWorkbenchClient } from "./client"
 import { DebugProvider } from "./debug-context"
+import { EditorProvider } from "./editor-context"
 import { createProblemsState, type ProblemFilter } from "./problems"
 import { createInvestigationsState } from "./investigations"
 import { createRunsState, isFinished } from "./runs"
@@ -192,7 +193,9 @@ export function WorkbenchProviders(props: ParentProps) {
   return (
     <AgentHQProvider>
       <WorkbenchProvider>
-        <DebugProvider>{props.children}</DebugProvider>
+        <DebugProvider>
+          <EditorProvider>{props.children}</EditorProvider>
+        </DebugProvider>
       </WorkbenchProvider>
     </AgentHQProvider>
   )

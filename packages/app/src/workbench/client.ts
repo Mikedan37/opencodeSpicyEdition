@@ -73,6 +73,10 @@ const DebugCompletion = Schema.Struct({
 export type DebugCompletion = typeof DebugCompletion.Type
 export type DebugAction = "continue" | "pause" | "next" | "stepIn" | "stepOut"
 
+// The IDE editor's file access (groups/workbench.ts `FileText` / `FileWritten`): exact text and the hash of its bytes.
+const FileText = Schema.Struct({ content: Schema.String, hash: Schema.String })
+const FileWritten = Schema.Struct({ hash: Schema.String })
+
 // Agent HQ orchestration (groups/agenthq.ts; docs/spicy/notes-agenthq.md "Routes (wave 2)"). `description: null`
 // clears it on edit.
 export type TaskDraft = {
@@ -114,6 +118,8 @@ const decoders = {
   investigations: Schema.decodeUnknownOption(Schema.Array(Workbench.InvestigationSummary)),
   investigation: Schema.decodeUnknownOption(Workbench.InvestigationDetail),
   investigationSummary: Schema.decodeUnknownOption(Workbench.InvestigationSummary),
+  fileText: Schema.decodeUnknownOption(FileText),
+  fileWritten: Schema.decodeUnknownOption(FileWritten),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -184,6 +190,10 @@ export function createWorkbenchClient(input: {
     respond: (id: string, requestID: string, optionID: string) =>
       call("POST", `${session(id)}/permissions/${encodeURIComponent(requestID)}`, { optionID }),
     problems: () => decoded(decoders.problems, "GET", "/workbench/problems"),
+    // 409 when the file no longer hashes to baseHash (null: it must not exist); 403 outside the project.
+    readFile: (path: string) => decoded(decoders.fileText, "GET", `/workbench/file?path=${encodeURIComponent(path)}`),
+    writeFile: (body: { path: string; content: string; baseHash: string | null }) =>
+      decoded(decoders.fileWritten, "PUT", "/workbench/file", body),
     runs: () => decoded(decoders.runs, "GET", "/workbench/runs"),
     run: (id: string) => decoded(decoders.run, "GET", `/workbench/runs/${encodeURIComponent(id)}`),
     check: (body: CheckInput = {}) => decoded(decoders.report, "POST", "/workbench/check", body),

@@ -34,6 +34,14 @@ export interface Hunk extends Schema.Schema.Type<typeof Hunk> {}
 export const FileState = Schema.Literals(["pending", "partial", "accepted", "rejected"])
 export type FileState = typeof FileState.Type
 
+// A hunk as it was when the human decided it (positions refer to the file at that moment).
+export const DecidedHunk = Schema.Struct({
+  ...Hunk.fields,
+  state: Schema.Literals(["accepted", "rejected"]),
+  at: Schema.Finite,
+})
+export interface DecidedHunk extends Schema.Schema.Type<typeof DecidedHunk> {}
+
 export const File = Schema.Struct({
   path: Schema.String,
   status: Schema.Literals(["added", "modified", "deleted"]),
@@ -44,6 +52,9 @@ export const File = Schema.Struct({
   hunks: Schema.Array(Hunk), // pending hunks only
   state: FileState,
   undoable: Schema.Boolean, // POST .../undo can restore the content before this file's last reject
+  accepted: NonNegativeInt, // hunks of this file decided so far
+  rejected: NonNegativeInt,
+  decided: Schema.Array(DecidedHunk), // the latest decided hunks (at most 50), oldest first; undo drops its rejects
 })
 export interface File extends Schema.Schema.Type<typeof File> {}
 
@@ -66,6 +77,18 @@ export const ChangeSet = Schema.Struct({
   updatedAt: Schema.Finite,
 }).annotate({ identifier: "ReviewChangeSet" })
 export interface ChangeSet extends Schema.Schema.Type<typeof ChangeSet> {}
+
+// GET .../content: both sides of a file with pending hunks, read together with those hunks, byte-exact text (unlike
+// the trimmed /file/content). Sides are omitted when the file did not exist (before) or no longer exists (after), and
+// for binary files.
+export const Content = Schema.Struct({
+  path: Schema.String,
+  binary: Schema.Boolean,
+  before: optional(Schema.String),
+  after: optional(Schema.String),
+  hunks: Schema.Array(Hunk), // pending hunks, positions relative to before/after
+}).annotate({ identifier: "ReviewContent" })
+export interface Content extends Schema.Schema.Type<typeof Content> {}
 
 export const Action = Schema.Literals(["accept", "reject"])
 export type Action = typeof Action.Type

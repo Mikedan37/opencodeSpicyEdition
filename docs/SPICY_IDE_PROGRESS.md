@@ -17,7 +17,7 @@ Plan: [SPICY_IDE_MASTER_PLAN.md](SPICY_IDE_MASTER_PLAN.md). Upstream edits: [../
 
 | Item | Owner branch | Status | Evidence |
 |---|---|---|---|
-| P0 LSP repairs + doctor | `spicy-lsp` | planned | |
+| P0 LSP repairs + doctor | `spicy-lsp` | integration-tested (merged `fbef6f2ed`) | REG-01..10 + DIAG-10 fixed; Swift returns its error via `opencode debug lsp diagnostics` (was `[]`); dead servers fail in ~1 s (was 45.7 s); `opencode debug workbench doctor`; `bun test test/lsp test/workbench test/tool test/agent` 475 pass; real sourcekit test passes. Notes: `docs/spicy/notes-lsp.md` |
 | P1 Problem store, LSP hook, events, routes | `spicy-problems` | planned | |
 | P2 Verification engine, `check` tool, turn-end gate | `spicy-problems` | planned | |
 | P3 Problems + Output tabs | `spicy-ui` | planned | |
@@ -53,4 +53,4 @@ Plan: [SPICY_IDE_MASTER_PLAN.md](SPICY_IDE_MASTER_PLAN.md). Upstream edits: [../
 - macOS Developer Mode off: lldb-dap cannot launch (Swift/C/C++/Rust debugging, E2E-02/03, DAP-18).
 - `rust-analyzer` component missing (`rustup component add rust-analyzer`).
 - `codex` not installed; `cursor-agent` needs an update for ACP.
-- pytest, gopls, Delve, pyright not installed.
+- gopls, Delve, pyright, typescript-language-server (global) not installed. pytest exists as a CLI (8.3.4 on PATH, 9.0.2 in /opt/homebrew/bin) but is not importable by Homebrew python3.

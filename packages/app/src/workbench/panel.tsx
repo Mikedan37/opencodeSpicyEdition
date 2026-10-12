@@ -35,6 +35,7 @@ import { Persist, persisted } from "@/utils/persist"
 import { createWorkbenchClient } from "./client"
 import { DebugProvider } from "./debug-context"
 import { createProblemsState, type ProblemFilter } from "./problems"
+import { createInvestigationsState } from "./investigations"
 import { createRunsState, isFinished } from "./runs"
 import { PanelState, TONE_CLASS } from "./ui"
 
@@ -43,13 +44,15 @@ const ProblemsPanel = lazy(() => import("./problems-panel"))
 const OutputPanel = lazy(() => import("./output-panel"))
 const DebugConsolePanel = lazy(() => import("./debug-console"))
 const DebugRunPanel = lazy(() => import("./debug-run"))
+const ActivityPanel = lazy(() => import("./activity-panel"))
 
 const runEvents = {
   updated: Schema.decodeUnknownOption(Workbench.Event.RunUpdated.data),
   output: Schema.decodeUnknownOption(Workbench.Event.RunOutput.data),
+  investigation: Schema.decodeUnknownOption(Workbench.Event.InvestigationUpdated.data),
 }
 
-export const WORKBENCH_TABS = ["agents", "problems", "output", "debug", "run"] as const
+export const WORKBENCH_TABS = ["agents", "problems", "output", "debug", "run", "activity"] as const
 export type WorkbenchTab = (typeof WORKBENCH_TABS)[number]
 // Tab values share the terminal tab bar with PTY ids, so they carry a prefix no PTY id has.
 const PREFIX = "workbench:"
@@ -80,6 +83,8 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
     onCleanup(problems.dispose)
     void problems.refresh()
     const runs = createRunsState(client)
+    const investigations = createInvestigationsState(client)
+    void investigations.load()
     const stop = sdk().event.listen((event) => {
       const details = event.details as { type?: string; properties?: unknown }
       if (details.type === "workbench.problems.updated") return problems.invalidate()
@@ -87,6 +92,10 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
         return Option.map(runEvents.updated(details.properties), (data) => runs.update(data.run))
       if (details.type === "workbench.run.output")
         return Option.map(runEvents.output(details.properties), (data) => runs.output(data))
+      if (details.type === "workbench.investigation.updated")
+        return Option.map(runEvents.investigation(details.properties), (data) =>
+          investigations.update(data.investigation),
+        )
     })
     onCleanup(stop)
     const [problemFilter, setProblemFilter] = createStore({
@@ -173,6 +182,7 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       client,
       problems,
       runs,
+      investigations,
       problemFilter: { state: problemFilter, set: setProblemFilter },
     }
   },
@@ -194,16 +204,21 @@ export function WorkbenchTabTriggers() {
   const agenthq = useAgentHQ()
   const language = useLanguage()
   const problemCounts = createMemo(() => workbench.problems.state.snapshot?.counts)
+  // Agents that need the user, plus tasks waiting for the user's review.
   const attention = createMemo(
     () =>
       agenthq.state.agents.filter((agent) =>
         agentAttention(agentSessions(agenthq.state.sessions, agent.id), agenthq.seen),
-      ).length,
+      ).length + agenthq.tasks.state.tasks.filter((task) => task.status === "review").length,
   )
   const running = createMemo(() => workbench.runs.state.runs.filter((entry) => !isFinished(entry.info.status)).length)
   const badge = (tab: WorkbenchTab) => {
     if (tab === "agents") return attention() ? { count: attention(), tone: TONE_CLASS.warning } : undefined
     if (tab === "output") return running() ? { count: running(), tone: TONE_CLASS.info } : undefined
+    if (tab === "activity") {
+      const waiting = workbench.investigations.waiting()
+      return waiting ? { count: waiting, tone: TONE_CLASS.warning } : undefined
+    }
     if (tab !== "problems") return
     const counts = problemCounts()
     if (!counts || counts.error + counts.warning === 0) return
@@ -262,6 +277,9 @@ export function WorkbenchTabContent(props: { tab: WorkbenchTab }) {
           </Match>
           <Match when={props.tab === "run"}>
             <DebugRunPanel />
+          </Match>
+          <Match when={props.tab === "activity"}>
+            <ActivityPanel />
           </Match>
         </Switch>
       </Suspense>

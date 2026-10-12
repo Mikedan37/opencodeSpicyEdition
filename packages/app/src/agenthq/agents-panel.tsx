@@ -21,6 +21,7 @@ import { AgentAvatar } from "./avatar"
 import { AgentDialog, createAgentDraft } from "./agent-dialog"
 import { useAgentHQ } from "./context"
 import { agentAttention, agentSessions, RUNNING_STATUSES, type FeedItem } from "./store"
+import { MessageThread, TasksView, ViewSwitch } from "./tasks-panel"
 
 type Agent = AgentHQ.AgentIdentity
 type MessageItem = Extract<FeedItem, { kind: "message" }>
@@ -63,7 +64,7 @@ export default function AgentsPanel() {
 
   return (
     <div data-component="agenthq-panel" class="flex min-h-0 flex-1 flex-col">
-      <Switch fallback={<Roster onCreate={() => openDialog()} />}>
+      <Switch fallback={agenthq.ui.view === "tasks" ? <TasksView /> : <Roster onCreate={() => openDialog()} />}>
         <Match when={agenthq.ui.status === "error" && agenthq.state.agents.length === 0}>
           <RequestErrorState error={agenthq.ui.error} onRetry={() => void agenthq.reload()} />
         </Match>
@@ -100,8 +101,7 @@ function Roster(props: { onCreate: () => void }) {
   return (
     <div class="flex min-h-0 flex-1 flex-col">
       <div class="flex h-10 shrink-0 items-center gap-2 px-3">
-        <h2 class="text-[13px] font-[530] text-v2-text-text-base">{language.t("agenthq.roster")}</h2>
-        <span class="text-[12px] tabular-nums text-v2-text-text-faint">{agenthq.state.agents.length}</span>
+        <ViewSwitch />
         <span class="flex-1" />
         <ButtonV2
           size="small"
@@ -236,7 +236,7 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
     const id = sessionID()
     return id ? agenthq.state.sessions[id] : undefined
   })
-  const [store, setStore] = createStore({ starting: false })
+  const [store, setStore] = createStore({ starting: false, messages: false })
 
   // Subscribes while this view shows the session; switching sessions or closing the view unsubscribes.
   createEffect(() => {
@@ -280,6 +280,15 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
         >
           {language.t("agenthq.session.start")}
         </ButtonV2>
+        <ButtonV2
+          size="small"
+          variant="ghost"
+          data-action="agent-messages"
+          aria-pressed={store.messages}
+          onClick={() => setStore("messages", (value) => !value)}
+        >
+          {language.t("agenthq.messages")}
+        </ButtonV2>
         <IconButton icon="edit" variant="ghost" aria-label={language.t("agenthq.edit")} onClick={props.onEdit} />
         <IconButton
           icon={props.expanded ? "collapse" : "expand"}
@@ -288,7 +297,12 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
           onClick={() => agenthq.setExpanded(!props.expanded)}
         />
       </div>
-      <div class="flex min-h-0 flex-1">
+      <Show when={store.messages}>
+        <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3" aria-label={language.t("agenthq.messages")}>
+          <MessageThread filter={{ agentID: props.agent.id }} to={props.agent.id} />
+        </div>
+      </Show>
+      <div class="flex min-h-0 flex-1" classList={{ hidden: store.messages }}>
         <Show when={sessions().length > 0}>
           <nav
             aria-label={language.t("agenthq.sessions")}

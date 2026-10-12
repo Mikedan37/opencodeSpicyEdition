@@ -8,6 +8,7 @@ import { useServerSDK } from "@/context/server-sdk"
 import { usePlatform } from "@/context/platform"
 import { Persist, persisted } from "@/utils/persist"
 import { createAgentHQStore } from "./store"
+import { createTasksState } from "./tasks"
 import { createWorkbenchClient, errorText, type AgentDraft } from "@/workbench/client"
 
 const events = {
@@ -16,6 +17,9 @@ const events = {
   "agenthq.provider.updated": Schema.decodeUnknownOption(AgentHQ.Event.ProviderUpdated.data),
   "agenthq.session.updated": Schema.decodeUnknownOption(AgentHQ.Event.SessionUpdated.data),
   "agenthq.session.event": Schema.decodeUnknownOption(AgentHQ.Event.SessionEvent.data),
+  "agenthq.task.updated": Schema.decodeUnknownOption(AgentHQ.Event.TaskUpdated.data),
+  "agenthq.task.removed": Schema.decodeUnknownOption(AgentHQ.Event.TaskRemoved.data),
+  "agenthq.message": Schema.decodeUnknownOption(AgentHQ.Event.MessageEvent.data),
 }
 
 export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContext({
@@ -34,7 +38,13 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
       createStore<Record<string, number>>({}),
     )
     const store = createAgentHQStore([seen, setSeen])
+    // Tasks and agent messages are process-global like agents; their routes may be missing on older servers, so they
+    // load on their own and a failure stays inside the Tasks view.
+    const tasks = createTasksState(client)
     const [ui, setUi] = createStore({
+      view: "agents" as "agents" | "tasks",
+      // The task shown in the Tasks view; kept here so opening a task's session and coming back keeps it.
+      taskID: undefined as string | undefined,
       status: "loading" as "loading" | "ready" | "error",
       error: undefined as unknown,
       agentID: undefined as string | undefined,
@@ -80,18 +90,33 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
         return Option.map(events[details.type](details.properties), (data) => store.removeAgent(data.id))
       if (details.type === "agenthq.provider.updated")
         return Option.map(events[details.type](details.properties), (data) => store.upsertProvider(data.provider))
+      if (details.type === "agenthq.task.updated")
+        return Option.map(events[details.type](details.properties), (data) => tasks.upsert(data.task))
+      if (details.type === "agenthq.task.removed")
+        return Option.map(events[details.type](details.properties), (data) => tasks.remove(data.id))
+      if (details.type === "agenthq.message")
+        return Option.map(events[details.type](details.properties), (data) => tasks.upsertMessage(data.message))
     })
     onCleanup(stop)
     onCleanup(store.flush)
 
     void load()
+    void tasks.load()
 
     return {
       directory,
       state: store.state,
       seen: store.seen,
       ui,
-      reload: load,
+      tasks,
+      reload: () => {
+        void tasks.load()
+        return load()
+      },
+      setView: (view: "agents" | "tasks") => setUi({ view, agentID: undefined, sessionID: undefined }),
+      selectTask: (taskID?: string) => setUi("taskID", taskID),
+      // Opens an agent's workspace on one of its sessions (a task's session, a message's delivery).
+      openSession: (agentID: string, sessionID?: string) => setUi({ agentID, sessionID }),
       refreshProviders: () => client.providers().then(store.setProviders),
       selectAgent: (agentID?: string) => setUi({ agentID, sessionID: undefined }),
       selectSession: (sessionID?: string) => setUi("sessionID", sessionID),

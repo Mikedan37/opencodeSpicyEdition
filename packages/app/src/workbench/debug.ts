@@ -277,8 +277,9 @@ export function createDebugState(input: {
 
   const control = (action: DebugAction, id = state.selected) =>
     id ? client.debugControl(id, action).then(settle(id)) : Promise.resolve(undefined)
-  const takeOver = (id = state.selected) =>
-    id ? client.debugOwner(id, "human").then(settle(id)) : Promise.resolve(undefined)
+  // Take over (human), hand to the agent, or release (idle); the human may set any owner.
+  const setOwner = (owner: "idle" | "agent" | "human", id = state.selected) =>
+    id ? client.debugOwner(id, owner).then(settle(id)) : Promise.resolve(undefined)
   const stop = (id = state.selected) => (id ? client.debugStop(id).then(settle(id)) : Promise.resolve(undefined))
 
   function selectFrame(id: number) {
@@ -453,7 +454,7 @@ export function createDebugState(input: {
     selectFrame,
     start,
     control,
-    takeOver,
+    setOwner,
     stop,
     page,
     children,

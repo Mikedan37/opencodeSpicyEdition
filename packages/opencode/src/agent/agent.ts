@@ -126,6 +126,10 @@ const layer = Layer.effect(
           question: "deny",
           plan_enter: "deny",
           plan_exit: "deny",
+          // spicy: running project code and touching a live debuggee always asks (see SPICY.md)
+          "verify.exec": "ask",
+          "debug.*": "ask",
+          "debug.memory": "deny",
           // mirrors github.com/github/gitignore Node.gitignore pattern for .env files
           read: {
             "*": "allow",

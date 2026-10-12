@@ -30,6 +30,9 @@ import { TuiEvent } from "./tui-event"
 import { VcsEvent } from "./vcs-event"
 import { WorkspaceEvent } from "./workspace-event"
 import { WorktreeEvent } from "./worktree-event"
+// spicy: Workbench + Agent HQ events (see SPICY.md)
+import { Workbench } from "./workbench"
+import { AgentHQ } from "./agent-hq"
 
 const sessionV1DurableDefinitions = SessionV1.Event.Definitions.filter((definition) => definition.durable !== undefined)
 const sessionV1LiveDefinitions = SessionV1.Event.Definitions.filter((definition) => definition.durable === undefined)
@@ -52,6 +55,8 @@ const featureDefinitions = Event.inventory(
   ...FileSystemWatcher.Event.Definitions,
   ...Pty.Event.Definitions,
   ...Question.Event.Definitions,
+  ...Workbench.Event.Definitions,
+  ...AgentHQ.Event.Definitions,
 )
 
 export const ServerDefinitions = Event.inventory(

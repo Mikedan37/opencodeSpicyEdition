@@ -71,6 +71,30 @@ describe("workbench client", () => {
     await expect(api.agents()).rejects.toThrow("unexpected response")
   })
 
+  test("runs, run records and checks use the workbench routes", async () => {
+    const run = {
+      id: "run_1",
+      kind: "check",
+      unit: "/repo/tsconfig.json",
+      checker: "tsc",
+      command: ["tsc"],
+      execClass: "inert",
+      status: "passed",
+    }
+    const { api, calls } = client((url) =>
+      url.pathname === "/workbench/runs/run_1" ? json({ run, output: "ok\n", truncated: false }) : json([run]),
+    )
+    expect((await api.runs()) as unknown).toEqual([run])
+    expect((await api.run("run_1")) as unknown).toEqual({ run, output: "ok\n", truncated: false })
+    await api.check({ unit: "/repo" }).catch(() => undefined)
+    expect(calls.map((call) => `${call.init?.method} ${call.url.pathname}`)).toEqual([
+      "GET /workbench/runs",
+      "GET /workbench/runs/run_1",
+      "POST /workbench/check",
+    ])
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({ unit: "/repo" })
+  })
+
   test("session history decodes as { session, history }", async () => {
     const info = {
       id: "ags_1",

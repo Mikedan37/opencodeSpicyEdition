@@ -45,3 +45,26 @@ export function RequestErrorState(props: { error: unknown; onRetry: () => void }
     </PanelState>
   )
 }
+
+// Fork icons the shared icon sets lack (static markup).
+export const OUTPUT_GLYPH = '<path d="M4 6h16M4 10h11M4 14h16M4 18h8"/>'
+export const BUG_GLYPH =
+  '<path d="M9 7.5a3 3 0 0 1 6 0"/><rect x="7" y="7.5" width="10" height="12" rx="5"/><path d="M12 11v8.5M3 13.5h4M17 13.5h4M4 8.5l3 2M20 8.5l-3 2M4 19l3-2M20 19l-3-2"/>'
+export const PLAY_GLYPH = '<path d="M8 5.5v13l10.5-6.5z"/>'
+
+export function Glyph(props: { path: string }) {
+  return (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+      innerHTML={props.path}
+    />
+  )
+}

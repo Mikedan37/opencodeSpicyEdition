@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { createRoot } from "solid-js"
+import { createStore } from "solid-js/store"
 import type { AgentHQ } from "@opencode-ai/schema/agent-hq"
-import { agentAttention, agentSessions, coalesceDeltas, createAgentHQStore } from "./store"
+import { agentAttention, agentSessions, coalesceDeltas, createAgentHQStore, isUnseen } from "./store"
 
 const sid = "ags_one" as AgentHQ.AgentSessionID
 const agentID = "agt_one" as AgentHQ.AgentID
@@ -46,8 +47,26 @@ describe("agent hq store", () => {
       expect(store.state.feeds[sid]?.items).toHaveLength(0)
       store.flush()
       expect(store.state.feeds[sid]?.items).toEqual([
-        { kind: "message", key: "message:m1", role: "assistant", text: "Hello world", reasoning: "" },
+        { kind: "message", key: "message:m1", role: "assistant", text: "Hello world", reasoning: "", final: false },
       ])
+    })
+  })
+
+  test("a complete message replaces its streamed text and ends streaming; reasoning is replaced", () => {
+    withStore((store) => {
+      store.watch(sid)
+      store.loadHistory(info("working"), [])
+      store.receive(env(0, delta("m1", "Hel")))
+      store.receive(env(1, { type: "reasoning", messageID: "r1", text: "Plan" }))
+      store.receive(env(2, { type: "reasoning", messageID: "r1", text: "Plan, revised" }))
+      store.flush()
+      const item = (key: string) => store.state.feeds[sid]?.items.find((entry) => entry.key === key)
+      expect(item("message:m1")).toMatchObject({ text: "Hel", final: false })
+      expect(item("message:r1")).toMatchObject({ text: "", reasoning: "Plan, revised", final: true })
+
+      store.receive(env(3, { type: "message", messageID: "m1", role: "assistant", text: "Hello **world**" }))
+      store.flush()
+      expect(item("message:m1")).toMatchObject({ text: "Hello **world**", final: true })
     })
   })
 
@@ -200,9 +219,9 @@ describe("agent hq store", () => {
     })
   })
 
-  test("attention: approvals first, failures only when latest, unseen completions", () => {
+  test("attention: approvals first, failures only when latest, completions not viewed yet", () => {
     withStore((store) => {
-      const attention = () => agentAttention(agentSessions(store.state.sessions, agentID), store.state.unseen)
+      const attention = () => agentAttention(agentSessions(store.state.sessions, agentID), store.seen)
       store.setSessions([info("working")])
       expect(attention()).toBeUndefined()
 
@@ -219,6 +238,31 @@ describe("agent hq store", () => {
 
       store.upsertSession(info("failed", { updatedAt: 3, pendingPermissions: 1 }))
       expect(attention()).toBe("needs_approval")
+    })
+  })
+
+  test("seen marks survive a restart: a session that completed meanwhile is flagged, new ones are not", () => {
+    createRoot((dispose) => {
+      // as read back from storage: ags_gone belongs to a session that no longer exists
+      const store = createAgentHQStore(createStore<Record<string, number>>({ [sid]: 5, ags_gone: 1 }))
+      const fresh = "ags_fresh" as AgentHQ.AgentSessionID
+      store.setSessions([info("completed", { updatedAt: 9 }), { ...info("completed", { updatedAt: 4 }), id: fresh }])
+      expect(isUnseen(store.state.sessions[sid]!, store.seen)).toBe(true)
+      expect(isUnseen(store.state.sessions[fresh]!, store.seen)).toBe(false)
+      expect(store.seen).toEqual({ [sid]: 5, [fresh]: 4 })
+
+      store.watch(sid)
+      expect(store.seen[sid]).toBe(9)
+      store.upsertSession(info("completed", { updatedAt: 12 }))
+      expect(isUnseen(store.state.sessions[sid]!, store.seen)).toBe(false)
+      store.unwatch(sid)
+
+      // The server reports a finished turn as idle: work that ended unwatched is flagged too
+      store.upsertSession(info("working", { updatedAt: 13 }))
+      expect(isUnseen(store.state.sessions[sid]!, store.seen)).toBe(false)
+      store.upsertSession(info("idle", { updatedAt: 14 }))
+      expect(isUnseen(store.state.sessions[sid]!, store.seen)).toBe(true)
+      dispose()
     })
   })
 

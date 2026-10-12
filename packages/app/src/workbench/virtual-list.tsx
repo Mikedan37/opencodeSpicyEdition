@@ -4,7 +4,8 @@ import { createEffect, For, on, Show, type JSX } from "solid-js"
 // Variable-height virtualized list. `follow` keeps the newest row in view while the reader is at the bottom (chat).
 export function VirtualList<T>(props: {
   items: readonly T[]
-  itemKey: (item: T) => string
+  // Defaults to the index, which suits append-only lists.
+  itemKey?: (item: T) => string
   estimate: number
   label: string
   follow?: boolean
@@ -19,7 +20,8 @@ export function VirtualList<T>(props: {
     },
     get getItemKey() {
       const items = props.items
-      return (index: number) => (items[index] === undefined ? index : props.itemKey(items[index]))
+      const key = props.itemKey
+      return (index: number) => (key && items[index] !== undefined ? key(items[index]) : index)
     },
     getScrollElement: () => scroller ?? null,
     estimateSize: () => props.estimate,

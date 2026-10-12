@@ -6,6 +6,7 @@ import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { useSDK } from "@/context/sdk"
 import { useServerSDK } from "@/context/server-sdk"
 import { usePlatform } from "@/context/platform"
+import { Persist, persisted } from "@/utils/persist"
 import { createAgentHQStore } from "./store"
 import { createWorkbenchClient, errorText, type AgentDraft } from "@/workbench/client"
 
@@ -27,7 +28,12 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
     // The session page remounts this provider per workspace, so the directory is fixed for its lifetime.
     const directory = sdk().directory
     const client = createWorkbenchClient({ server: serverSDK().server.http, directory, fetch: platform.fetch })
-    const store = createAgentHQStore()
+    // Seen marks outlive the window; agents and sessions are global, so the marks are per server, not per project.
+    const [seen, setSeen] = persisted(
+      Persist.serverGlobal(serverSDK().scope, "agenthq.seen"),
+      createStore<Record<string, number>>({}),
+    )
+    const store = createAgentHQStore([seen, setSeen])
     const [ui, setUi] = createStore({
       status: "loading" as "loading" | "ready" | "error",
       error: undefined as unknown,
@@ -58,7 +64,8 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
         (error: unknown) => store.failHistory(sessionID, errorText(error)),
       )
 
-    const stop = sdk().event.listen((event) => {
+    // Every project's events: an agent's events carry its own project directory, which may not be the open one.
+    const stop = serverSDK().event.listen((event) => {
       const details = event.details as { type?: string; properties?: unknown }
       if (!details.type?.startsWith("agenthq.")) return
       if (details.type === "agenthq.session.event")
@@ -82,6 +89,7 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
     return {
       directory,
       state: store.state,
+      seen: store.seen,
       ui,
       reload: load,
       refreshProviders: () => client.providers().then(store.setProviders),

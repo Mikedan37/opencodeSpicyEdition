@@ -31,7 +31,13 @@ import { OpenCodeProvider } from "./providers/opencode"
 import { AgentWorkbench } from "./workbench"
 import { ReviewChanges } from "@/review/changes" // spicy: review hook
 
-const ACTIVE = new Set<AgentHQ.AgentSessionStatus>(["starting", "thinking", "working", "needs_approval", "blocked"])
+export const ACTIVE = new Set<AgentHQ.AgentSessionStatus>([
+  "starting",
+  "thinking",
+  "working",
+  "needs_approval",
+  "blocked",
+])
 // What a turn produces. It is recorded only while the provider owes the session a turn.
 const TURN = new Set<AgentHQ.AgentEvent["type"]>([
   "message.delta",

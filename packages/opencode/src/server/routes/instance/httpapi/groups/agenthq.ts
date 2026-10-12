@@ -156,13 +156,14 @@ export const AgentHQApi = HttpApi.make("agenthq").add(
       HttpApiEndpoint.get("reviewTask", `${root}/tasks/:taskID/review`, {
         params: taskParams,
         query: WorkspaceRoutingQuery,
-        success: described(AgentHQ.TaskReview, "What approving would merge"),
+        success: described(AgentHQ.TaskReview, "What approving would merge, as of the branch commit `head`"),
         error: [ApiNotFoundError],
       }).annotateMerge(doc("agenthq.tasks.review", "Dry run of approving a task")),
       HttpApiEndpoint.post("approveTask", `${root}/tasks/:taskID/approve`, {
         params: taskParams,
         query: WorkspaceRoutingQuery,
-        success: described(AgentHQ.Task, "Approved task, merged when it has a branch"),
+        payload: AgentOrchestrator.ApproveInput,
+        success: described(AgentHQ.Task, "Approved task, its reviewed commit merged when it has a branch"),
         error: [ApiNotFoundError, ConflictError],
       }).annotateMerge(doc("agenthq.tasks.approve", "Approve a task in review and merge its branch")),
       HttpApiEndpoint.get("agentMessages", `${root}/messages`, {

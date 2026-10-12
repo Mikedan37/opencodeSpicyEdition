@@ -7,7 +7,15 @@ type ToolState = Extract<AgentHQ.AgentEvent, { type: "tool" }>["state"]
 export type PermissionOption = Extract<AgentHQ.AgentEvent, { type: "permission.requested" }>["options"][number]
 
 export type FeedItem =
-  | { kind: "message"; key: string; role: "user" | "assistant" | "system"; text: string; reasoning: string }
+  | {
+      kind: "message"
+      key: string
+      role: "user" | "assistant" | "system"
+      text: string
+      reasoning: string
+      // false while deltas stream; the server sends the complete text once the block ends
+      final: boolean
+    }
   | { kind: "tool"; key: string; tool: string; state: ToolState; title?: string; output?: string }
   | {
       kind: "permission"
@@ -249,20 +257,22 @@ export function applyEvent(items: FeedItem[], envelope: Envelope) {
         role: event.type === "message" ? event.role : "assistant",
         text: event.type === "reasoning" ? "" : event.text,
         reasoning: event.type === "reasoning" ? event.text : "",
+        final: event.type !== "message.delta",
       })
       return
     }
     if (event.type === "message") {
       item.role = event.role
       item.text = event.text
+      item.final = true
       return
     }
     if (event.type === "message.delta") {
       item.text += event.text
       return
     }
-    // Assumption: reasoning events are chunks, like message.delta (there is no reasoning.delta).
-    item.reasoning += event.text
+    // The server sends a reasoning block's full text once (a rewrite repeats it): replace, never append.
+    item.reasoning = event.text
     return
   }
   if (event.type === "tool") {

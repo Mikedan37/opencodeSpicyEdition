@@ -46,8 +46,26 @@ describe("agent hq store", () => {
       expect(store.state.feeds[sid]?.items).toHaveLength(0)
       store.flush()
       expect(store.state.feeds[sid]?.items).toEqual([
-        { kind: "message", key: "message:m1", role: "assistant", text: "Hello world", reasoning: "" },
+        { kind: "message", key: "message:m1", role: "assistant", text: "Hello world", reasoning: "", final: false },
       ])
+    })
+  })
+
+  test("a complete message replaces its streamed text and ends streaming; reasoning is replaced", () => {
+    withStore((store) => {
+      store.watch(sid)
+      store.loadHistory(info("working"), [])
+      store.receive(env(0, delta("m1", "Hel")))
+      store.receive(env(1, { type: "reasoning", messageID: "r1", text: "Plan" }))
+      store.receive(env(2, { type: "reasoning", messageID: "r1", text: "Plan, revised" }))
+      store.flush()
+      const item = (key: string) => store.state.feeds[sid]?.items.find((entry) => entry.key === key)
+      expect(item("message:m1")).toMatchObject({ text: "Hel", final: false })
+      expect(item("message:r1")).toMatchObject({ text: "", reasoning: "Plan, revised", final: true })
+
+      store.receive(env(3, { type: "message", messageID: "m1", role: "assistant", text: "Hello **world**" }))
+      store.flush()
+      expect(item("message:m1")).toMatchObject({ text: "Hello **world**", final: true })
     })
   })
 

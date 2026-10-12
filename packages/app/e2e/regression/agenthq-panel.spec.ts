@@ -79,6 +79,21 @@ test("agent hq streams, asks for permission, resyncs on a seq gap; problems open
   )
   await expect(workspace.locator('[data-row="turn"]')).toContainText("end_turn")
 
+  // The complete message replaces the streamed text and renders as Markdown (code highlighted, unsafe links dropped)
+  mock.emit(
+    envelope(10, {
+      type: "message",
+      messageID: "a1",
+      role: "assistant",
+      text: "Found **the bug**:\n\n```ts\nconst fixed = true\n```\n\n[docs](https://example.com) [bad](javascript:alert(1))",
+    }),
+  )
+  const reply = workspace.locator('[data-row="message"][data-role="assistant"]')
+  await expect(reply.locator("strong")).toHaveText("the bug")
+  await expect(reply.locator('[data-component="markdown-code"]')).toContainText("const fixed = true")
+  await expect(reply.locator('a[href="https://example.com"]')).toHaveAttribute("target", "_blank")
+  await expect(reply.locator("a", { hasText: "bad" })).not.toHaveAttribute("href", /.*/)
+
   // Attention: a session waiting for approval badges the card and the tab
   await workspace.getByRole("button", { name: "Back to agents" }).click()
   mock.emit({
@@ -241,7 +256,7 @@ async function setup(page: Page) {
     if (path === "/agenthq/agents/agt_ada/sessions") return json(route, [sessionInfo])
     if (path === `/agenthq/sessions/${agentSession}`) {
       calls.history++
-      return json(route, { info: sessionInfo, history })
+      return json(route, { session: sessionInfo, history })
     }
     const answer = path.match(/^\/agenthq\/sessions\/[^/]+\/permissions\/([^/]+)$/)?.[1]
     if (answer) {

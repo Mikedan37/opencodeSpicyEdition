@@ -64,7 +64,8 @@ Upstream-owned files touched (each edit marked `spicy:`; please add to `SPICY.md
 
 - Routes as in the master plan, instance-scoped through `?directory=<workspace>` on every request (the server reads the
   query param before the header), Basic auth from the server connection, `platform.fetch`.
-- `GET /agenthq/sessions/:id` returns `{ info: AgentSessionInfo, history: AgentEventEnvelope[] }`.
+- `GET /agenthq/sessions/:id` returns `{ session: AgentSessionInfo, history: AgentEventEnvelope[] }` (fixed at
+  integration; PATCH clears optional fields with `null`).
 - `POST /agenthq/agents/:id/sessions` takes `{}` and returns `AgentSessionInfo`; `POST .../cancel` may return
   `AgentSessionInfo` (used when it decodes); message and permission POSTs only need a 2xx.
 - `PATCH /agenthq/agents/:id` gets the full draft; a cleared model/specialty is sent as `""`.
@@ -74,7 +75,8 @@ Upstream-owned files touched (each edit marked `spicy:`; please add to `SPICY.md
   `agenthq.session.updated` and, for watched sessions, from in-order `status` envelopes.
 - `seq` is gap-free per session; history is persisted no later than the event is published (otherwise a gap resync
   could repeat). A 1-based first `seq` costs one extra history load, nothing else.
-- `reasoning` events are chunks (appended), like `message.delta`.
+- `reasoning` carries a block's full text once (a rewrite repeats it), so it replaces; a complete `message` replaces
+  the streamed deltas and ends streaming for that message.
 
 ## Tests and results
 
@@ -110,7 +112,7 @@ Upstream-owned files touched (each edit marked `spicy:`; please add to `SPICY.md
 - Old layout (`terminal-panel.tsx`, new layout designs off) has no Workbench tabs.
 - Events published by another project's instance are not seen until a reload (directory-scoped listener).
 - Output / Debug Console / Run are empty states only (wave 2).
-- Messages render as plain text (no markdown); relative times do not tick.
+- Relative times do not tick.
 - Line navigation depends on the viewer's `[data-line]` markup inside its shadow root (polls up to ~1 s); files outside
   the workspace root cannot be opened by the app's file tabs.
 - Keyboard: Workbench tabs open on click / Enter / Space; arrow keys only move focus to them (Kobalte selects the first
@@ -118,3 +120,21 @@ Upstream-owned files touched (each edit marked `spicy:`; please add to `SPICY.md
 - A completion counts as "unseen" only when observed live; it is not persisted across reloads.
 - Load races: an agent created while the initial list request is in flight can be dropped until the next event or
   reload.
+
+## Wave 2
+
+### Markdown messages
+
+Assistant and system messages (and reasoning) render through `@opencode-ai/session-ui/markdown`, the timeline's own
+component: worker parsing, highlighted code blocks, DOMPurify sanitizing (`javascript:` links lose their `href`, other
+links get `target="_blank" rel="noopener noreferrer"`). User messages stay plain text. A message streams (`streaming`)
+until its complete `message` event arrives and only while the session runs; deltas still reach the store once per
+animation frame per message, so the component sees at most one text update per frame. `cacheKey` is per message, so
+rows that the virtualizer remounts reuse the parsed HTML.
+
+Verified against the real server (isolated XDG dirs, a local OpenAI-compatible stub as the model): created an agent
+and a session from the UI, sent a message, watched the reply stream with a partially highlighted code block, then
+the final render: 1 code block with 29 highlighted spans, bold, a 3-item list, the https link with
+`target=_blank rel="noopener noreferrer"`, the `javascript:` link without `href`, status back to `idle`. The e2e spec
+asserts the same rendering with mocked events. In a fresh Vite dev server the first Markdown render can fail once
+while Vite re-optimizes `marked`/`shiki` (it reloads the page); the timeline has the same behaviour.

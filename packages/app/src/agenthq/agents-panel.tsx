@@ -8,6 +8,7 @@ import { Tag } from "@opencode-ai/ui/v2/badge-v2"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { TextareaV2 } from "@opencode-ai/ui/v2/textarea-v2"
+import { Markdown } from "@opencode-ai/session-ui/markdown"
 import { getFilename } from "@opencode-ai/core/util/path"
 import type { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { useLanguage } from "@/context/language"
@@ -404,7 +405,7 @@ function FeedRow(props: { item: FeedItem; sessionID: string; agentName: string }
   return (
     <Switch>
       <Match when={props.item.kind === "message" ? props.item : undefined}>
-        {(item) => <MessageRow message={item()} agentName={props.agentName} />}
+        {(item) => <MessageRow message={item()} sessionID={props.sessionID} agentName={props.agentName} />}
       </Match>
       <Match when={props.item.kind === "tool" ? props.item : undefined}>{(item) => <ToolRow tool={item()} />}</Match>
       <Match when={props.item.kind === "permission" ? props.item : undefined}>
@@ -415,28 +416,50 @@ function FeedRow(props: { item: FeedItem; sessionID: string; agentName: string }
   )
 }
 
-function MessageRow(props: { message: MessageItem; agentName: string }) {
+function MessageRow(props: { message: MessageItem; sessionID: string; agentName: string }) {
+  const agenthq = useAgentHQ()
   const language = useLanguage()
   const label = () => {
     if (props.message.role === "user") return language.t("agenthq.role.user")
     if (props.message.role === "system") return language.t("agenthq.role.system")
     return props.agentName
   }
+  // Streams until the complete message arrives, and only while the turn runs (a cancelled turn never sends it).
+  const streaming = () => {
+    const status = agenthq.state.sessions[props.sessionID]?.status
+    return !props.message.final && !!status && RUNNING_STATUSES.has(status)
+  }
+  const cacheKey = () => `agenthq:${props.sessionID}:${props.message.key}`
   return (
     <div data-row="message" data-role={props.message.role} class="px-3 py-1.5">
       <div class="mb-0.5 text-[11px] font-[530] text-v2-text-text-muted">{label()}</div>
       <Show when={props.message.reasoning}>
         <details class="mb-1 text-[12px] text-v2-text-text-muted">
           <summary class="cursor-pointer select-none">{language.t("agenthq.reasoning")}</summary>
-          <div class="whitespace-pre-wrap break-words pl-3 pt-1">{props.message.reasoning}</div>
+          <Markdown
+            text={props.message.reasoning}
+            cacheKey={`${cacheKey()}:reasoning`}
+            class="pl-3 pt-1 text-[12px] text-v2-text-text-muted"
+          />
         </details>
       </Show>
-      <div
-        class="select-text whitespace-pre-wrap break-words text-[13px] leading-[19px] text-v2-text-text-base"
-        classList={{ "rounded-[8px] bg-v2-background-bg-layer-02 px-2.5 py-1.5": props.message.role === "user" }}
-      >
-        {props.message.text}
-      </div>
+      <Show when={props.message.text}>
+        <Show
+          when={props.message.role !== "user"}
+          fallback={
+            <div class="select-text whitespace-pre-wrap break-words rounded-[8px] bg-v2-background-bg-layer-02 px-2.5 py-1.5 text-[13px] leading-[19px] text-v2-text-text-base">
+              {props.message.text}
+            </div>
+          }
+        >
+          <Markdown
+            text={props.message.text}
+            cacheKey={cacheKey()}
+            streaming={streaming()}
+            class="select-text text-[13px]"
+          />
+        </Show>
+      </Show>
     </div>
   )
 }

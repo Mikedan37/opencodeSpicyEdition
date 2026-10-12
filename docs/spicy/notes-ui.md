@@ -274,15 +274,15 @@ New (fork-owned): `packages/app/src/workbench/{debug,debug-context,debug-ui,debu
 debug-console,debug-run,debug-file,keys}.ts(x)`, `debug-side.css`; client routes added to `client.ts`; tests
 `src/workbench/debug.test.ts`, `test-browser/debug-store.test.ts`, `e2e/regression/debug-panel.spec.ts`.
 
-Upstream-owned files touched in wave 3 (each edit marked `spicy:`):
+Upstream-owned files touched in wave 3 (each edit marked `spicy:`). The `server-session.ts` skip of `workbench.*`
+events and its test were reverted on `spicy-ide` (`5c86aa388`): `workbench.debug.output` now names the debug session
+`debugSessionID`, so that file matches dev again.
 
 | File                                                     | Change                                                                                                                                                                                                  | Why                                                                   |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | `packages/app/src/pages/session/session-side-panel.tsx`  | import; `useDebugSideTab(() => tabs().active())`; v2 `Tabs` `value` / `onChange` / `data-workbench-side`; `<DebugSideTrigger />` after the Context trigger; `<DebugSideContent />` after the file browser | Debug tab in the side panel                                           |
 | `packages/app/src/app.tsx`                               | `File` import replaced by `DebugFile`; `FileComponentProvider component={DebugFile}`                                                                                                                     | Gutter marks in the file viewer                                       |
 | `packages/app/src/context/command.tsx`                   | import `SPICY_EDITABLE_KEYBIND_IDS` (`workbench/keys.ts`) and spread it into `EDITABLE_KEYBIND_IDS`                                                                                                     | Debugger keys fire while typing; the shared seam for later fork keys |
-| `packages/app/src/context/server-session.ts`             | `eventSessionID` skips `workbench.*` events                                                                                                                                                             | `workbench.debug.output` names a debug session `sessionID`; it was fetched as a chat session (`GET /session/dbg_…` → 500) on every output batch |
-| `packages/app/src/context/server-session.test.ts`        | one test for the change above                                                                                                                                                                           |                                                                       |
 
 ### Assumptions about the backend
 
@@ -315,7 +315,7 @@ Upstream-owned files touched in wave 3 (each edit marked `spicy:`):
   reply never undoing a newer stop, list merge, console merge/cap/dropped counts/late backlog, history, completion
   range, breakpoint save/sync/verified/refusal, start payload, exception defaults, watches, launch.json JSONC, args,
   adapter guess); `test-browser/debug-store.test.ts` (loaders called from effects neither loop nor retry a failure,
-  and reload after a stop); `server-session.test.ts` (+1, workbench events are not chat sessions).
+  and reload after a stop).
 - With bun 1.4.3 the tsx-importing unit and browser tests fail on `jsxDEV`; they run with
   `bun --tsconfig-override=<tsconfig extending packages/app/tsconfig.json with "jsx": "react-jsx",
   "jsxImportSource": "solid-js/h"> test …`: `src` 769/770 (the one failure is `i18n/desktop-native.test.ts`
@@ -343,3 +343,88 @@ Upstream-owned files touched in wave 3 (each edit marked `spicy:`):
   hot stable 19.4 → 16.5 ms, v2 closed cold stable 34.5 → 35.5 ms (33.5–35.2 / 35.2–35.8), first navigation 22.9 →
   23.1 ms. An earlier pass showed v2 open hot stable 16.8 → 19.3 ms; since then the File wrapper calls `File(props)`
   directly for diffs and previews (no spread proxy per review diff), and the rerun above is with that change.
+
+## Wave 4: Agent HQ tasks and team view, activity and evidence
+
+### What exists
+
+- **Tasks view** (`src/agenthq/tasks-panel.tsx`, state in `src/agenthq/tasks.ts`): the Agents tab has an
+  Agents | Tasks switch (Tasks counts tasks waiting for review). Tasks are listed in dependency order: a task follows
+  the tasks it waits on, a chain reads top to bottom, indented by its longest dependency path, with dependency chips
+  coloured by their status and the server's reason (`Waiting on "…"`, blocked, failed). A running task whose session
+  asked for a permission says "Waiting for your approval" and offers that session.
+- **Task detail**: Start (ready) / Start again (failed, cancelled), Cancel, Edit, Delete (two clicks), Open session
+  (the Agents workspace on the task's session; coming back keeps the task selected), assignee, depends-on chips
+  (click to select), where it works (worktree branch and path; "Merged from <branch>; its worktree is removed" once
+  done), description, the result summary (Markdown).
+- **Create / edit dialog**: title, description (`null` clears it on edit), assignee from the roster, depends-on
+  checkboxes, "Run in its own git worktree" (on by default). Server refusals (cycles, unknown dependencies, edits
+  after start) are shown in the dialog as worded.
+- **Review gate**: a task in review first loads `GET /tasks/:id/review` (once per review; "Check again" reloads):
+  "Approve merges <branch> into <base>", commits, files with +/−, and the dirty-project or conflict reason. Approve
+  is disabled while the dry run says it cannot merge, is only ever a click, and a 409 from approve is shown verbatim
+  under it. Nothing approves on its own.
+- **Messages**: per task (in its detail) and per agent (Messages toggle in the agent workspace): from you or from an
+  agent, to an agent, with Relay for agent-to-agent exchanges; delivery failures and stopped exchanges show the
+  server's reason; each message links to the session it was delivered to.
+- **Live updates**: `agenthq.task.updated` / `agenthq.task.removed` / `agenthq.message` (decoded with the contract) in
+  the Agent HQ provider; a route reply older than an event (`updatedAt`) never replaces it; a status change drops the
+  task's dry run. The Agents tab badge adds tasks in review.
+- **Activity tab** (bottom panel, `src/workbench/activity-panel.tsx`, state in `src/workbench/investigations.ts`):
+  investigations newest first with status, agent, evidence count and reason (badge: needs_human, blocked,
+  interrupted). The detail shows the status timeline (checkpoints with reasons and evidence ids that scroll to the
+  evidence), evidence (observed / verified, kind, summary, data) with links: a run opens Output on that run (opened
+  and scrolled to), a debug session opens the side panel's Debug tab on it (disabled once the server no longer keeps
+  it), an Agent HQ session opens in the Agents tab; plus the budget, repair attempts, the agent's inferred notes
+  (labelled as not evidence), unverified files and the report (Markdown). Resume (interrupted / needs_human /
+  blocked) and Cancel (not ended) use the existing routes; a newer `workbench.investigation.updated` reloads the
+  open record.
+- **Debug ownership**: the owner chip offers Take over, Hand to agent and Release (`POST /owner` with `human`,
+  `agent`, `idle`) by owner: agent → take over; idle → take over, hand to agent; you → hand to agent, release.
+
+### Files
+
+New (fork-owned): `src/agenthq/{tasks,tasks-panel}.ts(x)`, `src/workbench/{investigations,activity-panel}.ts(x)`;
+tests `src/agenthq/tasks.test.ts`, `src/workbench/investigations.test.ts`, `e2e/regression/agenthq-tasks.spec.ts`,
+`e2e/regression/activity-panel.spec.ts`. Changed fork files: `agenthq/{context,agents-panel}.tsx`,
+`workbench/{client,en,panel,runs,output-panel,debug,debug-context,debug-ui}`. No upstream-owned file changed in wave 4.
+The e2e specs set `shouldDisplayTabsToast: false`, because the "Introducing Tabs" card can cover buttons near the
+bottom right.
+
+### Notes for the backend owners
+
+- Agent HQ sessions ask before editing (`edit: <path>` permission), so every task that writes waits once for the
+  user's answer in its session while the task stays `running`; the Tasks view surfaces it from the session status.
+- After approve the task record still carries `worktree` (path and branch) although both are removed; the UI words
+  it as merged. Clearing it, or a `merged` marker, would make the record say so itself.
+- Messages sent to a task's assignee while the task is in review start a new turn in the task's session.
+- No investigations exist without an agent running the `debug` tool, so the Activity tab was verified against the
+  real routes only in its empty state; the rest is covered by the mocked spec.
+
+### Wave 4 tests and verification
+
+- Unit: `src/agenthq/tasks.test.ts` (6: dependency tree order/depth/cycles, list + event merge with `updatedAt`, one
+  action at a time and the refusal kept, dry run kept per review and dropped on status change, threads load once and
+  merge), `src/workbench/investigations.test.ts` (2: merge and staleness, record reload and retry). Agent HQ +
+  Workbench unit tests 53/53. With the JSX override: `src` 776/777 (the `desktop-native` ICU test again), `test-browser`
+  43/43. `bun run typecheck`: clean.
+- e2e: `agenthq-tasks.spec.ts` (create with dependencies, refused edit, start, approval wait, open session and back,
+  review dry run with a dirty project, Check again, approve refused then merged, dependent ready, messages with relay
+  and a stopped exchange, per-agent messages, cancel, refused delete), `activity-panel.spec.ts` (timeline, evidence
+  classes, Output / Debug / Agent HQ links, hand to agent and release, resume, newer summary, cancel). With the
+  Agent HQ, debugger, review, file browser and terminal specs: 23/23 with `--workers=2`. With 7 workers the machine
+  was overloaded and 6–8 tests (upstream and fork alike) timed out on 10 s expectations; each passes alone.
+- Real pass (isolated server from this branch, fake OpenAI-compatible model that writes a file when the brief says
+  `WRITE <path>`, Playwright Chromium against the Vite app, no Electron): two agents, Task 1 (isolated) and Task 2
+  (isolated, depends on Task 1) created from the dialog; Task 2 showed `Waiting on "Write the first note"`. Start
+  created `task-write-the-first-dff3` under the data dir's worktree folder; the agent's edit asked for permission, the
+  task said "Waiting for your approval", the driver answered "Allow once" in the session; review showed
+  `Approve merges task-write-the-first-dff3 into main`, commit `4f15563 Write the first note`, `notes/one.txt +1 −0`;
+  Approve merged it (`fdc8a50 Merge task: Write the first note`) and Task 2 became ready; the same for Task 2
+  (`08bbbf5`, `8250604 Merge task: Write the second note`), with a message to its assignee delivered to the task's
+  session. Afterwards the project had both files and merge commits, no worktrees and no task branches. The first
+  attempt (before the approval hint existed) was cancelled and both tasks deleted, which removed its worktree and
+  branch (the delete of the depended-on task was refused with `Task "Write the second note" depends on it` first).
+  Owner controls on a real debugpy session: you → Release → idle → Hand to agent → agent → Take over → you, matching
+  the server each time. No new crash reports in `~/Library/Logs/DiagnosticReports` (Python 11 before and after; the
+  only additions were three macOS `SFA-*.diag` snapshots).

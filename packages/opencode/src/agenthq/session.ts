@@ -64,10 +64,7 @@ type Failure = AgentProvider.NotFoundError | AgentProvider.UnsupportedError | Ag
 export interface Interface {
   readonly providers: () => Effect.Effect<AgentHQ.ProviderStatus[]>
   readonly list: (agentID: AgentHQ.AgentID) => Effect.Effect<AgentHQ.AgentSessionInfo[], AgentProvider.NotFoundError>
-  readonly start: (
-    agentID: AgentHQ.AgentID,
-    input?: { readonly title?: string },
-  ) => Effect.Effect<AgentHQ.AgentSessionInfo, Failure>
+  readonly start: (agentID: AgentHQ.AgentID, input?: StartInput) => Effect.Effect<AgentHQ.AgentSessionInfo, Failure>
   readonly get: (sessionID: AgentHQ.AgentSessionID) => Effect.Effect<Detail, AgentProvider.NotFoundError>
   readonly send: (
     sessionID: AgentHQ.AgentSessionID,
@@ -81,6 +78,13 @@ export interface Interface {
   ) => Effect.Effect<void, Failure | AgentProvider.InvalidInputError>
   /** Closes and deletes every session of an identity (used when the identity is removed). */
   readonly forget: (agentID: AgentHQ.AgentID) => Effect.Effect<void>
+}
+
+export interface StartInput {
+  readonly title?: string
+  /** Run somewhere other than the identity's own directory, such as a task's worktree. */
+  readonly workingDirectory?: string
+  readonly taskID?: AgentHQ.TaskID
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/AgentHQSessions") {}
@@ -231,7 +235,7 @@ const layer = Layer.effect(
       const history = [...(yield* readHistory(id))]
       return yield* register({
         info: strip(stored.value),
-        agent,
+        agent: placed(agent, stored.value.workingDirectory),
         seq: (history.at(-1)?.seq ?? -1) + 1,
         history,
         persisted: Date.now(),
@@ -328,12 +332,9 @@ const layer = Layer.effect(
         .toSorted((a, b) => a.createdAt - b.createdAt)
     })
 
-    const start = Effect.fn("AgentHQSessions.start")(function* (
-      agentID: AgentHQ.AgentID,
-      input?: { readonly title?: string },
-    ) {
+    const start = Effect.fn("AgentHQSessions.start")(function* (agentID: AgentHQ.AgentID, input?: StartInput) {
       yield* ready
-      const agent = yield* registry.get(agentID)
+      const agent = placed(yield* registry.get(agentID), input?.workingDirectory)
       const now = Date.now()
       const session: Live = {
         info: {
@@ -341,6 +342,8 @@ const layer = Layer.effect(
           agentID,
           provider: agent.provider,
           ...(input?.title ? { title: input.title } : {}),
+          ...(input?.taskID ? { taskID: input.taskID } : {}),
+          ...(input?.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
           status: "starting",
           pendingPermissions: 0,
           createdAt: now,
@@ -471,6 +474,11 @@ const layer = Layer.effect(
     return Service.of({ providers: providerStatus, list, start, get, send, cancel, respond, forget })
   }),
 )
+
+/** The identity as a session sees it: a task session runs in the task's working directory. */
+function placed(agent: AgentHQ.AgentIdentity, workingDirectory: string | undefined): AgentHQ.AgentIdentity {
+  return workingDirectory ? { ...agent, workingDirectory } : agent
+}
 
 function strip(stored: Stored): AgentHQ.AgentSessionInfo {
   const { pid: _, ...info } = stored

@@ -1,6 +1,7 @@
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { AgentOrchestrator } from "@/agenthq/orchestrator"
 import { AgentProvider } from "@/agenthq/provider"
 import { AgentRegistry } from "@/agenthq/registry"
 import { AgentSessions } from "@/agenthq/session"
@@ -10,6 +11,7 @@ import { ApiNotFoundError, ConflictError, InvalidRequestError, notFound, Upstrea
 import { CreateAgentPayload, PermissionPayload, SendPayload, StartSessionPayload } from "../groups/agenthq"
 
 type DomainError =
+  | AgentProvider.ConflictError
   | AgentProvider.NotFoundError
   | AgentProvider.InvalidInputError
   | AgentProvider.UnsupportedError
@@ -19,7 +21,7 @@ type Http<E> = E extends AgentProvider.NotFoundError
   ? ApiNotFoundError
   : E extends AgentProvider.InvalidInputError
     ? InvalidRequestError
-    : E extends AgentProvider.UnsupportedError
+    : E extends AgentProvider.UnsupportedError | AgentProvider.ConflictError
       ? ConflictError
       : UpstreamError
 
@@ -35,6 +37,7 @@ function translate(error: DomainError) {
   if (error._tag === "AgentHQ.InvalidInputError") return new InvalidRequestError({ message: error.message })
   if (error._tag === "AgentHQ.UnsupportedError")
     return new ConflictError({ message: error.message, resource: error.provider })
+  if (error._tag === "AgentHQ.ConflictError") return new ConflictError({ message: error.message })
   return new UpstreamError({ message: error.message, service: error.provider })
 }
 
@@ -42,6 +45,7 @@ export const agenthqHandlers = HttpApiBuilder.group(InstanceHttpApi, "agenthq", 
   Effect.gen(function* () {
     const registry = yield* AgentRegistry.Service
     const sessions = yield* AgentSessions.Service
+    const orchestrator = yield* AgentOrchestrator.Service
 
     const createAgent = Effect.fn("AgentHQHttpApi.createAgent")(function* (ctx: {
       payload: typeof CreateAgentPayload.Type
@@ -89,5 +93,23 @@ export const agenthqHandlers = HttpApiBuilder.group(InstanceHttpApi, "agenthq", 
             .respond(ctx.params.sessionID, ctx.params.requestID, ctx.payload.optionID)
             .pipe(Effect.mapError(http), Effect.as(true)),
       )
+      .handle("tasks", () => orchestrator.list())
+      .handle("createTask", (ctx) => orchestrator.create(ctx.payload).pipe(Effect.mapError(http)))
+      .handle("task", (ctx) => orchestrator.get(ctx.params.taskID).pipe(Effect.mapError(http)))
+      .handle("updateTask", (ctx) => orchestrator.update(ctx.params.taskID, ctx.payload).pipe(Effect.mapError(http)))
+      .handle("removeTask", (ctx) =>
+        orchestrator.remove(ctx.params.taskID).pipe(Effect.mapError(http), Effect.as(true)),
+      )
+      .handle("startTask", (ctx) => orchestrator.start(ctx.params.taskID).pipe(Effect.mapError(http)))
+      .handle("cancelTask", (ctx) => orchestrator.cancel(ctx.params.taskID).pipe(Effect.mapError(http)))
+      .handle("reviewTask", (ctx) => orchestrator.review(ctx.params.taskID).pipe(Effect.mapError(http)))
+      .handle("approveTask", (ctx) => orchestrator.approve(ctx.params.taskID).pipe(Effect.mapError(http)))
+      .handle("agentMessages", (ctx) =>
+        orchestrator.messages({
+          ...(ctx.query.taskID ? { taskID: ctx.query.taskID } : {}),
+          ...(ctx.query.agentID ? { agentID: ctx.query.agentID } : {}),
+        }),
+      )
+      .handle("sendAgentMessage", (ctx) => orchestrator.send(ctx.payload).pipe(Effect.mapError(http)))
   }),
 )

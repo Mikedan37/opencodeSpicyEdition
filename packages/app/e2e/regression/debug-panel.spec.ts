@@ -257,6 +257,14 @@ test("run tab: the program's terminal stays after exit with its code; an interna
   await expect(run.locator('[data-slot="run-status"]')).toHaveText("Exited with code 3")
   await expect(terminal).toBeVisible()
 
+  // Leaving the tab and coming back mounts the terminal again from its saved state
+  await page.locator('[data-workbench-tab="debug"]').click()
+  await expect(terminal).toHaveCount(0)
+  await page.locator('[data-workbench-tab="run"]').click()
+  await expect(terminal).toBeVisible()
+  await expect.poll(() => sockets.length).toBe(2)
+  await expect(run.locator('[data-slot="run-status"]')).toHaveText("Exited with code 3")
+
   // debugpy's default internal console has no terminal: the tab points to the Debug Console
   mock.emit(updated({ id: "dbg_two", startedAt: 1_700_000_000_500 }))
   await expect(run).toContainText("This program writes to the Debug Console")

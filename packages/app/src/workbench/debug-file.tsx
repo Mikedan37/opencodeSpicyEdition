@@ -24,7 +24,8 @@ export function DebugFile<T>(props: FileProps<T>) {
   const debug = useDebugOptional()
   // Only the file viewer (the one with line selection); tool output previews in the timeline show file contents
   // that may predate the program being debugged.
-  if (!debug || props.mode !== "text" || !props.enableLineSelection) return <File {...props} />
+  // Called directly, so diffs and previews keep the props object as is (no spread proxy per instance).
+  if (!debug || props.mode !== "text" || !props.enableLineSelection) return File(props)
   const text = props as TextFileProps<T>
   let host!: HTMLDivElement
 

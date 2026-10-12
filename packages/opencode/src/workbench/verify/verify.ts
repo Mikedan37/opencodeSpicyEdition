@@ -12,6 +12,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { containsPath } from "@/project/instance-context"
 import { Filesystem } from "@/util/filesystem"
+import { Config } from "@/config/config"
 import { WorkbenchProblems } from "../problems/store"
 import { WorkbenchInvestigation } from "../investigation/investigation" // spicy: runs feed investigations
 import { WorkbenchCheckers } from "./checkers"
@@ -72,6 +73,7 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
     Service,
     Effect.gen(function* () {
       const store = yield* WorkbenchProblems.Service
+      const config = yield* Config.Service
       const investigations = yield* WorkbenchInvestigation.Service // spicy: runs feed investigations
       const events = yield* EventV2Bridge.Service
       const spawner = yield* ChildProcessSpawner
@@ -273,11 +275,12 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
         return yield* done({ ...final, status: failed ? "failed" : "passed" }, problems)
       }, Effect.scoped)
 
-      // A folder's source files (gitignore-aware), or the file itself.
-      const expand = Effect.fnUntraced(function* (target: string) {
+      // A folder's source files (gitignore-aware), or the file itself. Repository checks select files by glob, so
+      // with any configured every file is a candidate.
+      const expand = Effect.fnUntraced(function* (target: string, all: boolean) {
         if (!(yield* fs.isDir(target))) return [target]
         const entries = yield* ripgrep
-          .glob({ cwd: target, pattern: `**/*{${extensions.join(",")}}`, limit: MAX_UNIT_FILES })
+          .glob({ cwd: target, pattern: all ? "**/*" : `**/*{${extensions.join(",")}}`, limit: MAX_UNIT_FILES })
           .pipe(Effect.orElseSucceed(() => []))
         return entries.map((entry) => path.join(target, entry.path))
       })
@@ -287,8 +290,16 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
         const stop = ctx.worktree === "/" ? ctx.directory : ctx.worktree
         const resolve = (file: string) => path.resolve(ctx.directory, file)
         const deadline = Date.now() + (input.budgetMs ?? BUDGET_MS)
+        // Repository checks are read when a check runs, never when the configuration loads (VER-07).
+        const repo = Object.entries((yield* config.get()).workbench?.checks ?? {}).map(([name, check]) =>
+          WorkbenchCheckers.repo(name, check, ctx.directory),
+        )
+        const active = [...checkers.filter((checker) => !repo.some((item) => item.id === checker.id)), ...repo]
         // the files asked about are the changed files: errors in them are new, errors elsewhere in a unit are not
-        const requested = [...(input.files ?? []), ...(input.unit ? yield* expand(resolve(input.unit)) : [])]
+        const requested = [
+          ...(input.files ?? []),
+          ...(input.unit ? yield* expand(resolve(input.unit), repo.length > 0) : []),
+        ]
         const changed = new Set(requested.map(resolve))
         const files = yield* Effect.promise(async () => {
           const candidates = [...changed].filter((file) => containsPath(file, ctx))
@@ -297,7 +308,7 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
         })
         const units = yield* Effect.promise(() =>
           plan(
-            checkers.filter((checker) => input.tests || !checker.test),
+            active.filter((checker) => input.tests || !checker.test),
             files,
             stop,
           ),
@@ -392,7 +403,9 @@ export const layerFor = (checkers: WorkbenchCheckers.Info[]) =>
 // Maps every file to a unit per checker, then plans one command per (checker, unit) in checker order.
 async function plan(checkers: WorkbenchCheckers.Info[], files: string[], stop: string): Promise<Planned[]> {
   const pairs = checkers.flatMap((checker) =>
-    files.filter((file) => checker.extensions.includes(path.extname(file))).map((file) => ({ checker, file })),
+    files
+      .filter((file) => (checker.matches ? checker.matches(file) : checker.extensions.includes(path.extname(file))))
+      .map((file) => ({ checker, file })),
   )
   const roots = await Promise.all(pairs.map((pair) => pair.checker.unit(pair.file, stop).catch(() => undefined)))
   const units = Map.groupBy(
@@ -448,6 +461,7 @@ export const nodeFor = (checkers: WorkbenchCheckers.Info[]) =>
       CrossSpawnSpawner.node,
       Ripgrep.node,
       FSUtil.node,
+      Config.node,
       WorkbenchInvestigation.node, // spicy: investigations
     ],
   })

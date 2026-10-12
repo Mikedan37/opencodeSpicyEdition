@@ -154,9 +154,7 @@ Commands (from `packages/opencode`):
 
 ## Not done, blockers, notes for the coordinator
 
-- VER-07 (commands defined in repo config) is not implemented: there are no config-defined checkers, because the
-  gate's config surface is an env flag. Adding `verify.checker.<name>.command` would need the config schema and
-  must default to exec-class.
+- VER-07 (commands defined in repo config): done in wave 3 (`workbench.checks`).
 - VER-09's "investigation blocked" belongs to the investigation work (P5); the gate stops and the report says
   failed.
 - VER-14 (pytest JUnit, swift test xUnit): done in wave 2.
@@ -297,3 +295,82 @@ Codex (`~/.codex/config.toml`, `[mcp_servers.opencode-workbench]` with `command`
 - `bun test --timeout 60000 test/workbench`: 66 pass, 0 fail (8 files, including spicy-lsp's doctor tests).
 - `bun run typecheck`: clean. `bun run test:httpapi`: 224/224 in coverage, auth and effect modes.
 - `bun run generate` in `packages/client`: no tracked changes.
+
+## Wave 3: repository check commands (VER-07)
+
+Branch fast-forwarded to `spicy-ide` fe1c8528b. `bun install --frozen-lockfile --offline --ignore-scripts` linked the
+owner-approved `@anthropic-ai/claude-agent-sdk` 0.3.293 from the local cache; `bun.lock` and `package.json` did not
+change.
+
+Config (one optional fork key):
+
+```jsonc
+{
+  "workbench": {
+    "checks": {
+      "lint": {
+        "command": ["bun", "scripts/lint.ts"], // program + arguments, no shell
+        "cwd": "packages/web", // optional, relative to the project directory
+        "files": ["packages/web/**/*.ts"], // optional globs (project-relative) that trigger it; default: every file
+        "format": "plain" // plain | tsc | sarif | cargo | go-build | ruff | mypy | junit | go-test
+      }
+    }
+  }
+}
+```
+
+- `plain` reads `file:line(:col): [error|warning|note: ]message` lines from stdout and stderr (the file needs an
+  extension). The other formats reuse the existing parsers; `sarif` takes one SARIF document on stdout, else
+  clang-style documents mixed with text. `junit` and `go-test` checks are test runs: they run only when tests are
+  requested. `$REPORT_DIR` in the command is replaced by a temporary folder whose files are handed to the parser
+  (for JUnit written to a file).
+- A repository check is arbitrary repository code, so it is always exec-class: the `check` tool asks
+  `verify.exec`, the turn-end gate and agent-triggered routes run it only when the rules already allow
+  `verify.exec`, otherwise it is `skipped` ("needs approval (verify.exec)" in the gate, "needs approval in the IDE"
+  for `trigger: "agent"`, which the MCP bridge always sends). `POST /workbench/check` from the IDE (`trigger:
+  "user"`) runs it.
+- It is read from the configuration when a check runs and never runs on load. It runs only through the engine
+  (check tool, turn-end gate, `POST /workbench/check`, MCP `workbench_check`), with the same budget, timeout,
+  process-group kill, run record, output streaming and store slice (`check:<name>:<cwd>`) as built-in checks. One
+  unit per check (its cwd). A non-zero exit with nothing parsed is `failed` with the output tail. A check named like
+  a built-in checker (for example `tsc`) replaces it.
+- `/workbench/doctor` (and MCP `workbench_doctor`) lists them as a "Repository checks" section: the program is
+  located (a name on PATH, or a path relative to its cwd), never run. The CLI `opencode debug workbench doctor`
+  does not show them yet.
+
+Upstream-owned edit: `packages/core/src/v1/config/config.ts` (+2 lines: import and the `workbench` key, marked
+`spicy:`). New fork file: `packages/core/src/v1/config/workbench.ts` (`ConfigWorkbenchV1`). Fork files changed:
+`workbench/verify/{checkers,parse,verify}.ts`, `handlers/workbench.ts`.
+
+Generated outputs: upstream regenerates the legacy SDK (`packages/sdk/js/src/**/gen`) and `packages/sdk/openapi.json`
+in CI on `dev` (`.github/workflows/generate.yml` runs `./script/generate.ts` and commits "chore: generate"), not in
+feature branches; the fork's generated SDK has not been regenerated for any fork route group yet. Running
+`./script/generate.ts` on `spicy-ide` (with isolated XDG directories) picks up `Config.workbench` together with every
+fork route group. The config JSON schema (`config.json`) is built from `ConfigV1.Info` by `script/schema.ts` at
+publish time and needs nothing else. `bun run generate` in `packages/client` produced no tracked changes.
+
+Wave 3 tests (`test/workbench/repo-checks.test.ts`, one in `mcp.test.ts`), fixture config written per test, the
+command a small script that records each run and fails through ordinary exits:
+
+| Case | Expected |
+|---|---|
+| default rules (gate semantics) | `skipped`, "needs approval (verify.exec)", never ran, file unverified |
+| approved | asks once for the unit, runs once, `plain` output parsed into an error and a warning, store slice and run list |
+| failing command, nothing parseable | `failed`, exit 3, problem "broken exited with code 3" + output tail |
+| budget | `timed_out` (budget), and the command's own child process is killed with it |
+| globs and test formats | other files do not trigger it; a `junit` check runs only with tests |
+| doctor | listed with `ok` / `missing` and the reason, never run |
+| HTTP, agent trigger | skipped "needs approval in the IDE"; loading problems and doctor never runs it |
+| HTTP, `verify.exec: allow` | runs; run list and run output; problems filterable by `source=build` |
+| MCP | `workbench_check` reports it skipped "needs approval in the IDE" |
+
+Wave 3 results (from `packages/opencode`):
+
+- `bun test --timeout 60000 test/lsp test/workbench test/agenthq test/tool test/session test/server test/agent`:
+  1362 pass, 12 skip, 1 todo, 0 fail (125 files, 212 s).
+- `bun test --timeout 60000 test/config test/workbench`: 378 pass, 5 skip, 0 fail.
+- `bun run typecheck` (opencode and core): clean. `bun run test:httpapi`: 255/255 in coverage, auth and effect modes.
+- After `test:httpapi`: its leftover branches `opencode/hidden-island` and `opencode/playful-nebula` (tips
+  fe1c8528b, ours) were deleted after `git worktree prune` released their stale temp worktrees; the stray
+  `packages/opencode/config.json` was removed.
+- `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 52 before the runs, 52 after.

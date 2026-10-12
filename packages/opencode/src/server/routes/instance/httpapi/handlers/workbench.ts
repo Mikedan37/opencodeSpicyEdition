@@ -10,6 +10,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Permission } from "@/permission"
 import { Doctor } from "@/workbench/doctor"
 import { WorkbenchProblems } from "@/workbench/problems/store"
+import { WorkbenchCheckers } from "@/workbench/verify/checkers"
 import { WorkbenchVerify } from "@/workbench/verify/verify"
 import { InstanceHttpApi } from "../api"
 import { notFound } from "../errors"
@@ -68,11 +69,18 @@ export const workbenchHandlers = HttpApiBuilder.group(
       })
 
       const doctor = Effect.fn("WorkbenchHttpApi.doctor")(function* () {
-        return yield* Doctor.report({
-          directory: yield* InstanceState.directory,
-          lsp: (yield* config.get()).lsp,
+        const directory = yield* InstanceState.directory
+        const cfg = yield* config.get()
+        const report = yield* Doctor.report({
+          directory,
+          lsp: cfg.lsp,
           experimentalLspTy: flags.experimentalLspTy,
         }).pipe(Effect.provideService(AppProcess.Service, appProcess))
+        // repository checks are listed (located, never run) next to the built-in tools
+        const checks = cfg.workbench?.checks
+        if (!checks || !Object.keys(checks).length) return report
+        const repo = yield* Effect.promise(() => WorkbenchCheckers.doctor(checks, directory))
+        return { languages: [...report.languages, repo] }
       })
 
       return handlers

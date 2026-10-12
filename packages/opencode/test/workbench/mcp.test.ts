@@ -145,6 +145,25 @@ describe("workbench MCP bridge", () => {
     }),
   )
 
+  it.live("VER-07 a repository check command is skipped for agents until the IDE approves", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({
+        git: true,
+        config: {
+          workbench: {
+            checks: {
+              lint: { command: [process.execPath, "-e", "process.exit(1)"], files: ["*.txt"], format: "plain" },
+            },
+          },
+        },
+      })
+      yield* Effect.promise(() => write(dir, { "a.txt": "a\n" }))
+      const mcp = yield* connect({ url: yield* serverURL, directory: dir })
+      const checked = yield* call(mcp, "workbench_check", { files: ["a.txt"] })
+      expect(text(checked)).toContain("skipped  lint  .  needs approval in the IDE")
+    }),
+  )
+
   it.live("rejects arguments it does not know, so a model cannot pick its own trigger", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })

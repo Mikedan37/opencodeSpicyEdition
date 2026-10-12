@@ -65,28 +65,36 @@ export function clang(output: Output): Draft[] {
     else text.push(line)
   }
   const problems = docs.flatMap((doc) =>
-    Option.match(decodeSarif(doc.join("\n")), {
-      onNone: () => [],
-      onSome: (sarif) =>
-        sarif.runs.flatMap((run) =>
-          (run.results ?? []).map((result): Draft => {
-            const location = result.locations?.[0]?.physicalLocation
-            const region = location?.region
-            const uri = location?.artifactLocation?.uri
-            return {
-              file: uri?.startsWith("file://") ? fileURLToPath(uri) : uri && path.resolve(output.cwd, uri),
-              range: region?.startLine
-                ? span(region.startLine, region.startColumn ?? 1, region.endLine, region.endColumn)
-                : undefined,
-              severity: sarifLevels[result.level ?? "error"] ?? "error",
-              message: result.message.text,
-              code: result.ruleId,
-            }
-          }),
-        ),
-    }),
+    Option.match(decodeSarif(doc.join("\n")), { onNone: () => [], onSome: (sarif) => results(sarif, output.cwd) }),
   )
   return [...problems, ...linker(text)]
+}
+
+// SARIF from any tool (repository checks): one document on stdout, else clang-style documents among other text.
+export function sarif(output: Output): Draft[] {
+  return Option.match(decodeSarif(output.stdout.trim()), {
+    onSome: (doc) => results(doc, output.cwd),
+    onNone: () => clang({ ...output, stderr: `${output.stdout}\n${output.stderr}` }),
+  })
+}
+
+function results(sarif: typeof Sarif.Type, cwd: string) {
+  return sarif.runs.flatMap((run) =>
+    (run.results ?? []).map((result): Draft => {
+      const location = result.locations?.[0]?.physicalLocation
+      const region = location?.region
+      const uri = location?.artifactLocation?.uri
+      return {
+        file: uri?.startsWith("file://") ? fileURLToPath(uri) : uri && path.resolve(cwd, uri),
+        range: region?.startLine
+          ? span(region.startLine, region.startColumn ?? 1, region.endLine, region.endColumn)
+          : undefined,
+        severity: sarifLevels[result.level ?? "error"] ?? "error",
+        message: result.message.text,
+        code: result.ruleId,
+      }
+    }),
+  )
 }
 
 // A program that type-checks but does not link must fail: `-fsyntax-only` alone exits 0 there.

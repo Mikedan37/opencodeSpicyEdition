@@ -1,10 +1,13 @@
 import os from "os"
 import path from "path"
 import { access, constants, readdir } from "fs/promises"
+import { Glob } from "@opencode-ai/core/util/glob"
 import { which } from "@opencode-ai/core/util/which"
+import type { ConfigWorkbenchV1 } from "@opencode-ai/core/v1/config/workbench"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { Filesystem } from "@/util/filesystem"
 import { lazy } from "@/util/lazy"
+import type { Doctor } from "../doctor"
 import type { WorkbenchProblems } from "../problems/store"
 import { WorkbenchParse } from "./parse"
 
@@ -34,6 +37,8 @@ export interface Info {
   test?: boolean
   /** Exit codes that mean the tool found nothing to run, with the reason; reported as skipped (pytest 5). */
   empty?: Record<number, string>
+  /** Selects changed files by something other than their extension (repository checks use globs). */
+  matches?(file: string): boolean
   unit(file: string, stop: string): Promise<string | undefined>
   plan(unit: Unit, stop: string): Promise<Plan>
   parse(output: WorkbenchParse.Output): WorkbenchProblems.Draft[]
@@ -420,6 +425,80 @@ export const all: Info[] = [
 
 async function nearest(names: string[], file: string, stop: string) {
   return (await Filesystem.findUp(names, path.dirname(file), stop))[0]
+}
+
+// ---------------------------------------------------------------- repository checks (workbench.checks, VER-07)
+
+const formats: Record<ConfigWorkbenchV1.Format, { kind: Workbench.SourceKind; test?: boolean; parse: Info["parse"] }> =
+  {
+    plain: {
+      kind: "build",
+      parse: (output) => WorkbenchParse.located(`${output.stdout}\n${output.stderr}`, output.cwd),
+    },
+    tsc: { kind: "typecheck", parse: WorkbenchParse.tsc },
+    sarif: { kind: "compiler", parse: WorkbenchParse.sarif },
+    cargo: { kind: "compiler", parse: WorkbenchParse.cargo },
+    "go-build": { kind: "compiler", parse: WorkbenchParse.goBuild },
+    ruff: { kind: "linter", parse: WorkbenchParse.ruff },
+    mypy: { kind: "typecheck", parse: WorkbenchParse.mypy },
+    junit: { kind: "test", test: true, parse: WorkbenchParse.junit },
+    "go-test": { kind: "test", test: true, parse: WorkbenchParse.goTest },
+  }
+
+// A check command from the repository's configuration. It is arbitrary repository code, so it is always
+// exec-class; it has one unit (its cwd) and runs when a changed file matches `files`. Test formats run only
+// when tests are requested, like the built-in test runners. A same-named built-in checker is replaced.
+export function repo(name: string, check: ConfigWorkbenchV1.Check, directory: string): Info {
+  const cwd = path.resolve(directory, check.cwd ?? ".")
+  const format = formats[check.format]
+  return {
+    id: name,
+    kind: format.kind,
+    test: format.test,
+    extensions: [],
+    matches: (file) => (check.files ?? ["**/*"]).some((glob) => Glob.match(glob, path.relative(directory, file))),
+    unit: async () => cwd,
+    async plan() {
+      const bin = await program(check.command[0], cwd)
+      if (!bin) return { unavailable: `${check.command[0]} not found` }
+      return { command: [bin, ...check.command.slice(1)], cwd, execClass: "exec" }
+    },
+    parse: format.parse,
+  }
+}
+
+// Repository checks in the workbench doctor: located, never run, since they are repository code.
+export async function doctor(checks: Record<string, ConfigWorkbenchV1.Check>, directory: string) {
+  const probes = await Promise.all(
+    Object.entries(checks).map(async ([name, check]): Promise<Doctor.Probe> => {
+      const bin = await program(check.command[0], path.resolve(directory, check.cwd ?? "."))
+      return {
+        area: formats[check.format].test ? "test" : "check",
+        tool: name,
+        status: bin ? "ok" : "missing",
+        path: bin,
+        reason: bin ? "repository command: runs after verify.exec approval" : `${check.command[0]} not found`,
+      }
+    }),
+  )
+  return {
+    id: "repo",
+    name: "Repository checks",
+    lsp: { server: "none", enabled: false, reason: "defined in workbench.checks" },
+    probes,
+  } satisfies Doctor.Language
+}
+
+// A command's program: a path (relative to the command's cwd) or a name on PATH.
+async function program(name: string, cwd: string) {
+  if (!name.includes("/")) return which(name) ?? undefined
+  const file = path.resolve(cwd, name)
+  return (await access(file, constants.X_OK).then(
+    () => true,
+    () => false,
+  ))
+    ? file
+    : undefined
 }
 
 // Executables named `name` on PATH, in PATH order.

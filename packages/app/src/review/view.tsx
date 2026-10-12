@@ -143,7 +143,7 @@ function ReviewBar(props: { entry: Row; path: string; onOpen: (path: string) => 
           </IconButtonV2>
         </span>
       </Show>
-      <span class="ml-auto flex items-center gap-1">
+      <span class="ml-auto flex flex-wrap items-center gap-1">
         <FileActions entry={props.entry} />
       </span>
       <NoticeLine changeset={props.entry.changeset.id} path={props.entry.file.path} />
@@ -166,6 +166,7 @@ function FileActions(props: { entry: Row }) {
           size="small"
           variant="neutral"
           data-action="accept-file"
+          class="shrink-0 whitespace-nowrap"
           disabled={busy()}
           onClick={() => decide("accept")}
         >
@@ -175,6 +176,7 @@ function FileActions(props: { entry: Row }) {
           size="small"
           variant="ghost"
           data-action="reject-file"
+          class="shrink-0 whitespace-nowrap"
           disabled={busy()}
           onClick={() => decide("reject")}
         >
@@ -186,6 +188,7 @@ function FileActions(props: { entry: Row }) {
           size="small"
           variant="ghost"
           data-action="undo"
+          class="shrink-0 whitespace-nowrap"
           disabled={busy()}
           onClick={() => void review.undo(props.entry.changeset.id, props.entry.file.path)}
         >
@@ -244,7 +247,7 @@ function StateChip(props: { state: Review.FileState | Review.DecidedHunk["state"
     <span
       data-component="review-state"
       data-state={props.state}
-      class={`shrink-0 rounded px-1.5 text-[11px] leading-4 ${STATE_TONE[props.state]}`}
+      class={`shrink-0 whitespace-nowrap rounded px-1.5 text-[11px] leading-4 ${STATE_TONE[props.state]}`}
     >
       {language.t(`review.state.${props.state}`)}
     </span>
@@ -347,7 +350,7 @@ function HunkBar(props: { hunk: Accessor<Review.Hunk>; path: string }) {
       data-hunk={props.hunk().id}
       data-state="pending"
       data-focused={focused() ? "" : undefined}
-      class="my-1 flex items-center gap-2 border-l-2 px-3 py-1 font-sans text-[12px]"
+      class="my-1 flex flex-wrap items-center gap-2 border-l-2 px-3 py-1 font-sans text-[12px]"
       classList={{
         "border-v2-state-fg-info bg-v2-background-bg-layer-01": focused(),
         "border-transparent": !focused(),
@@ -359,6 +362,7 @@ function HunkBar(props: { hunk: Accessor<Review.Hunk>; path: string }) {
         size="small"
         variant="neutral"
         data-action="accept"
+        class="shrink-0 whitespace-nowrap"
         disabled={busy()}
         title={label(language.t("review.accept"), "review.hunk.accept")}
         onClick={(event: MouseEvent) => {
@@ -372,6 +376,7 @@ function HunkBar(props: { hunk: Accessor<Review.Hunk>; path: string }) {
         size="small"
         variant="ghost"
         data-action="reject"
+        class="shrink-0 whitespace-nowrap"
         disabled={busy()}
         title={label(language.t("review.reject"), "review.hunk.reject")}
         onClick={(event: MouseEvent) => {
@@ -677,11 +682,17 @@ function ChangesPreview(props: { path: string; diffStyle: "unified" | "split"; e
                 <span data-slot="session-review-v2-file-path">{getDirectory(props.path)}</span>
               </Show>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2">
               <StateChip state={entry().file.state} />
               <DiffChanges changes={entry().file} />
               <Show when={entry().file.status !== "deleted"}>
-                <ButtonV2 size="small" variant="ghost" data-action="open-file" onClick={open}>
+                <ButtonV2
+                  size="small"
+                  variant="ghost"
+                  data-action="open-file"
+                  class="shrink-0 whitespace-nowrap"
+                  onClick={open}
+                >
                   {language.t("review.openFile")}
                 </ButtonV2>
               </Show>

@@ -272,3 +272,14 @@ Screenshots (local only): `docs/spicy/desktop-smoke/20261012T210056/01-home.png`
 | `bun run typecheck` (packages/desktop, packages/opencode)     | clean                                                      |
 | `bun test --timeout 60000 test/workbench` (packages/opencode) | 145 pass, 9 skip, 0 fail                                   |
 | scripts typecheck (scratch tsconfig)                          | clean                                                      |
+
+## Confirmation run on `dev` f314fb483
+
+After Agent HQ's atomic `AgentStore` and UI wave 6, one built-mode run, rebuilt offline: **60/60**. The smoke now also
+checks the wave 6 behaviour instead of working around it: the entry stop brings `app.py` forward over Files Changed by
+itself (new check), hunk-bar and review-bar labels stay on one line, and the Run tab, opened after the program ended,
+replays its output (`answer = 12`). Nothing regressed. The real keychain was unchanged and no process was left. The
+crash reports folder went 91 → 92, but the new report is not from the smoke: `memory_intake-checks` (EXC_BREAKPOINT),
+a binary under `/private/tmp/*`, responsible process Terminal, with an exited parent. The same binary also crashed at
+15:06:56, before the run started.
+Screenshots: `docs/spicy/desktop-smoke/20261012T220724/`.

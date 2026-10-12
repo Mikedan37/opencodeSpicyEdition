@@ -509,6 +509,7 @@ try {
     await step("a.txt: accept one hunk, reject the other", async () => {
       await renderer!.click('[data-component="review-file-row"][data-path="a.txt"]')
       await renderer!.waitFor(`${count('[data-component="review-hunk"]')} === 2`, "two hunks")
+      await renderer!.waitFor(oneLine('[data-component="review-hunk"] button'), "hunk bar labels on one line")
       await shot("review-hunks")
       await renderer!.click('[data-component="review-hunk"] [data-action="accept"]')
       await renderer!.waitFor(`${count('[data-component="review-hunk"]')} === 1`, "one hunk left")
@@ -525,6 +526,7 @@ try {
         exists('[data-component="review-file"][data-path="b.txt"] [data-component="review-bar"]'),
         "the review bar in the file view",
       )
+      await renderer!.waitFor(oneLine('[data-component="review-bar"] button'), "review bar labels on one line")
       await shot("review-file-view")
       await renderer!.click('[data-component="review-file"][data-path="b.txt"] [data-action="reject-file"]')
       await until(async () => (await read("b.txt")) === B, "b.txt restored")
@@ -631,13 +633,16 @@ try {
       )
       // The viewer that shows the paused line; pierre renders the lines in its shadow root.
       const viewer = `[...document.querySelectorAll("#review-panel diffs-container")].find((el) => el.shadowRoot?.querySelector("[data-line][data-spicy-exec]"))`
+      const tab = '#review-panel [role="tab"]'
+      const front = await step("the stop brings app.py forward over Files Changed", () =>
+        renderer!.waitFor(`!!${query(tab, "app.py")}?.hasAttribute("data-selected")`, "app.py's tab in front", 10_000),
+      ).then(
+        () => true,
+        () => false,
+      )
       await step(
         `F9 on line ${BREAKPOINT} clicked in the viewer`,
         async () => {
-          // The stop opens app.py in the side panel; a human brings its tab to the front if it is not there.
-          const tab = '#review-panel [role="tab"]'
-          await renderer!.waitFor(exists(tab, "app.py"), "the app.py tab")
-          const front = await renderer!.evaluate<boolean>(`!!${query(tab, "app.py")}?.hasAttribute("data-selected")`)
           if (!front) await renderer!.click(tab, "app.py")
           await renderer!.waitFor(`!!${viewer}`, "app.py open at the paused line")
           await shot("debug-entry")
@@ -654,9 +659,7 @@ try {
             `!!${viewer}?.shadowRoot.querySelector('[data-column-number="${BREAKPOINT}"][data-spicy-breakpoint="line"]')`,
             "the breakpoint dot",
           )
-          return front
-            ? "the stop brought app.py to the front"
-            : "the stop opened app.py behind the Review tab; clicked it"
+          return front ? "app.py came forward by itself" : "after clicking app.py's tab"
         },
         (value) => value,
       )
@@ -727,6 +730,10 @@ try {
           await renderer!.waitFor(
             `${textOf('[data-component="workbench-run"] [data-slot="run-status"]')} === "Exited with code 0"`,
             "Exited with code 0",
+          )
+          await renderer!.waitFor(
+            `${textOf('[data-component="workbench-run"]')}.includes("answer = 12")`,
+            "the program's output in the Run tab",
           )
           await shot("debug-run")
           const rows = await api<{ kind: string; text: string }[]>(
@@ -924,6 +931,23 @@ function exists(selector: string, text?: string) {
 
 function textOf(selector: string) {
   return `(${query(selector)}?.textContent ?? "")`
+}
+
+// Every visible match has each text node on one line (no label wrapped mid-word); false when nothing matches.
+function oneLine(selector: string) {
+  return `(() => {
+    const list = [...document.querySelectorAll(${JSON.stringify(selector)})].filter((el) => el.getClientRects().length > 0)
+    return list.length > 0 && list.every((el) => {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.textContent.trim()) continue
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        if (range.getClientRects().length > 1) return false
+      }
+      return true
+    })
+  })()`
 }
 
 function count(selector: string) {

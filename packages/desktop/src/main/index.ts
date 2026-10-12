@@ -66,6 +66,7 @@ const jsCallStackFeature = "DocumentPolicyIncludeJSCallStacksInCrashReports"
 
 let logger: ReturnType<typeof initLogging>
 let server: SidecarListener | null = null
+let stopping: Promise<void> | undefined // spicy: the sidecar stop in flight, until it settles
 
 const pendingDeepLinks: string[] = []
 
@@ -86,10 +87,13 @@ function emitDeepLinks(urls: string[]) {
 }
 
 async function killSidecar() {
-  if (!server) return
-  const current = server
-  server = null
-  await current.stop()
+  // spicy: a second caller waits for the stop in flight instead of returning while the sidecar still runs
+  if (server) {
+    const current = server
+    server = null
+    stopping = current.stop().finally(() => (stopping = undefined))
+  }
+  await stopping
 }
 
 function ensureLoopbackNoProxy() {
@@ -223,9 +227,18 @@ const main = Effect.gen(function* () {
     emitDeepLinks([url])
   })
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     setAppQuitting()
-    void stopSidecars()
+    // spicy: quit once the sidecar has stopped, as relaunch and update installs already do. Quitting terminates its
+    // utility process, so its server's shutdown never ran: Agent HQ sessions stayed "working" and a history file being
+    // written could be lost. Once the sidecar has stopped the quit goes through.
+    if (!server && !stopping) return void stopSidecars()
+    event.preventDefault()
+    const started = Date.now()
+    void stopSidecars().finally(() => {
+      logger.log("sidecar stopped before quit", { ms: Date.now() - started })
+      app.quit()
+    })
   })
 
   app.on("will-quit", () => {

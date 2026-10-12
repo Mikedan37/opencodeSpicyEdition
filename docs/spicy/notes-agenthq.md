@@ -678,3 +678,88 @@ Claude session), 0 fail; `bun test --timeout 30000 test/server test/session` 720
 `bun run test:httpapi` 258/258 in coverage, auth and effect modes; `bun run typecheck` clean.
 
 No upstream-owned files were edited in wave 4.
+
+# Wave 5: Codex through Zed's ACP bridge; Cursor stays unavailable
+
+## Codex (`AgentDetect.codex`, `src/agenthq/providers/detect.ts`)
+
+Codex has no ACP mode of its own (codex-cli 0.162.1 has `app-server`, experimental), so Agent HQ runs Zed's bridge
+through the generic ACP adapter: `codex-acp` from PATH if present, else `npx -y @zed-industries/codex-acp@0.16.0`
+(pinned exactly; nothing is installed globally). The bridge embeds Codex's own crates (`rust-v0.137.0`) and uses the
+owner's Codex login and config; Agent HQ never reads `~/.codex`.
+
+- Status: `codex` on PATH and `codex --version` → version; `codex login status` (exit code only, its output is not
+  kept) → `auth: "ok"`, otherwise `available: false`, `auth: "required"`, "Codex is not logged in; run `codex
+login`". Without `codex-acp` or `npx` on PATH: "Codex needs Zed's codex-acp bridge: put codex-acp or npx on PATH".
+- Approvals always reach the human. The bridge turns Codex's approval requests into ACP `session/request_permission`
+  (commands: approve, approve for the session, deny, abort and Codex's exec-policy and network choices; edits: approve
+  or abort; MCP tool calls: approve once, for the session, always, or cancel), which Agent HQ surfaces as
+  `permission.requested` and never answers itself. What Codex asks about is its approval policy, so Agent HQ sets it
+  explicitly on the bridge's command line, whatever `~/.codex/config.toml` says:
+  - `-c approval_policy="untrusted"`: Codex asks before anything but known-safe read-only commands, and before every
+    edit. Its default, `on-request`, lets the model decide and applies workspace edits without asking.
+  - `-c sandbox_mode="workspace-write"`: what is approved still runs in Codex's sandbox.
+  - `-c approvals_reviewer="user"`: approvals go to the human, never to Codex's automatic reviewer
+    (`guardian_subagent`).
+- Agent HQ never calls `session/set_mode`. The bridge's modes are `read-only`, `auto` (`on-request`) and
+  `full-access` (`never`, no sandbox), and choosing `auto` or `full-access` also marks the project trusted in
+  `~/.codex`. With `untrusted` the bridge reports no current mode, so `session/new` returns no `modes`, only a
+  `model` config option.
+- "Always" choices are Codex's own; an exec-policy amendment can persist in `~/.codex`.
+- The Workbench MCP server goes in `session/new` as for every ACP agent. The bridge gets no server credentials
+  (only a fresh password of its own, as every ACP child).
+- Capabilities: the ACP adapter's (streaming, tool events, permission requests, cancel, MCP tools); the bridge
+  advertises `loadSession` and `session/resume`, which the adapter uses to resume.
+- Upstream moved the bridge to `agentclientprotocol/codex-acp` (npm `@agentclientprotocol/codex-acp`); the
+  `@zed-industries` package is archived at 0.16.0, which is what is pinned.
+
+## Cursor
+
+Unavailable, with the reason "Cursor's CLI has no ACP mode; Agent HQ needs approvals routed to you". Even
+cursor-agent 2026.10.01 has no ACP subcommand, and its headless mode runs tools without asking. Detection still looks
+for an `acp` command, so a future ACP mode would be picked up.
+
+## Free real check (`SPICY_REAL_CODEX=status`)
+
+`SPICY_REAL_CODEX=status bun test --timeout 300000 test/agenthq/codex.test.ts -t "REAL:"` runs the pinned bridge
+through npx (one download), `initialize`, and one `session/new` in a temp git repo with the Workbench MCP server of a
+password-protected listener. It never sends a prompt. For this check only, the bridge also gets
+`-c cli_auth_credentials_store="file" -c mcp_oauth_credentials_store="file"`, so it cannot touch the keychain. It
+stops the whole process tree (npx, bridge, Workbench server) afterwards. Run twice on 2026-10-12, second time to
+check the cleanup:
+
+```
+{"status":{"available":true,"auth":"ok","version":"0.162.1"},
+ "launch":{"command":"npx","args":["-y","@zed-industries/codex-acp@0.16.0","-c","approval_policy=\"untrusted\"",
+   "-c","sandbox_mode=\"workspace-write\"","-c","approvals_reviewer=\"user\""]},
+ "protocolVersion":1,"agentInfo":{"name":"codex-acp","title":"Codex","version":"0.16.0"},
+ "agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true,"audio":false,"embeddedContext":true},
+   "mcpCapabilities":{"http":true,"sse":false,"acp":false},"sessionCapabilities":{"list":{},"resume":{},"close":{}},
+   "auth":{"logout":{}}},
+ "authMethods":["chatgpt","codex-api-key","openai-api-key"],"sessionCreated":true,"configOptions":["model"],
+ "updates":["available_commands_update"]}
+```
+
+No `modes` came back. That fits the bridge running under `untrusted`, which matches none of its presets: under the
+default `on-request` it would report `auto`. Each run likely leaves one empty session in the owner's Codex history.
+
+An earlier test (`agenthq-http.test.ts`) created a `codex` identity to check the 409 for an unsupported provider. Once
+Codex became a real provider, two runs of the suite on this machine started real Codex sessions (`session/new` only,
+no prompt) before I changed that test to an `acp` identity without a launch command, which can never start. No
+regular test now starts a real provider.
+
+## Tests (wave 5)
+
+| Test                                                                     | What it proves                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `codex.test.ts` detection (fake `codex` on a temp PATH)                  | Available with `auth: "ok"` and version `0.162.1` only when logged in and a bridge can run; `auth: "required"` with the login reason; the bridge reason; "codex not found on PATH"                                                                                                                                               |
+| `codex.test.ts` command line (fake `npx` running the scripted ACP agent) | Agent HQ spawns `npx -y @zed-industries/codex-acp@0.16.0 -c approval_policy="untrusted" -c sandbox_mode="workspace-write" -c approvals_reviewer="user"`; no secret in the arguments; the bridge's own `OPENCODE_SERVER_PASSWORD` is a fresh UUID, not this server's; `session/new` gets the cwd and exactly the Workbench server |
+| `codex.test.ts`                                                          | `codex-acp` on PATH wins over npx, with the same policy                                                                                                                                                                                                                                                                          |
+| AHQ-07 (updated)                                                         | Cursor's reason; an unavailable provider fails with a typed error and leaves no session                                                                                                                                                                                                                                          |
+| `agenthq-http.test.ts` (updated)                                         | The 409 mapping, with a provider that cannot start anywhere                                                                                                                                                                                                                                                                      |
+
+Results (from `packages/opencode`): `bun test --timeout 120000 test/agenthq` 38 pass, 2 skip (the opt-in real Claude
+and real Codex checks), 0 fail; `bun test --timeout 30000 test/server test/session` 720 pass, 9 skip, 1 todo, 0 fail;
+`bun run typecheck` clean.
+
+No upstream-owned files were edited in wave 5.

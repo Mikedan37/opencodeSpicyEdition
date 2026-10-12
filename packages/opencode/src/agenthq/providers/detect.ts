@@ -1,5 +1,6 @@
-// Detection for external agent CLIs: `which` + `--version` (and `--help` for cursor's ACP command) with a
-// short timeout. Never reads credentials or the environment, so `auth` stays "unknown".
+// Detection for external agent CLIs: `which` + `--version` (plus `--help` for cursor's ACP command and
+// `codex login status`) with a short timeout. Never reads credentials or the environment: `auth` is "ok" or
+// "required" only where the CLI itself answers, and "unknown" otherwise.
 import { AppProcess } from "@opencode-ai/core/process"
 import { which } from "@opencode-ai/core/util/which"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
@@ -52,15 +53,16 @@ export const status = Effect.fn("AgentHQ.detect.status")(function* (
   const base = { id, name: cli.name, auth: "unknown", capabilities: input.capabilities ?? none } as const
   const bin = binary(id, input.env)
   if (!bin) return { ...base, available: false, reason: `${cli.binary} not found on PATH` }
-  const version = (yield* run(bin, ["--version"])).split(/\s+/)[0]
+  // The first version-looking token: "2.1.296 (Claude Code)", "codex-cli 0.162.1", "2026.10.01-1a2b3c".
+  const version = (yield* run(bin, ["--version"])).match(/\d+\.\d+[\w.+-]*/)?.[0]
   if (!version) return { ...base, available: false, reason: `${cli.binary} --version failed or timed out` }
-  // cursor-agent's headless -p mode runs every tool without approval; only its ACP mode is usable.
+  // cursor-agent's headless -p mode runs every tool without approval; only an ACP mode would be usable.
   if (id === "cursor" && !/^\s+acp\b/m.test(yield* run(bin, ["--help"])))
     return {
       ...base,
       version,
       available: false,
-      reason: `cursor-agent ${version.split("-")[0]} has no ACP mode; update cursor-agent`,
+      reason: "Cursor's CLI has no ACP mode; Agent HQ needs approvals routed to you",
     }
   return { ...base, version, available: true }
 })
@@ -78,21 +80,85 @@ export const prober = Effect.fn("AgentHQ.detect.prober")(function* (
   return probe
 })
 
-/** A provider that only reports status (Codex until it is installed and evaluated). */
-export const make = Effect.fn("AgentHQ.detect.make")(function* (id: CliID, env?: Env) {
+// Codex through Zed's ACP bridge. `untrusted` makes Codex ask before anything but known-safe reads (every edit, every
+// other command); approved commands still run in its workspace-write sandbox; and every approval goes to the human
+// as `session/request_permission`, never to Codex's own reviewer. Set explicitly, whatever ~/.codex/config.toml says.
+export const CODEX_BRIDGE = "@zed-industries/codex-acp@0.16.0"
+export const CODEX_POLICY = [
+  "-c",
+  'approval_policy="untrusted"',
+  "-c",
+  'sandbox_mode="workspace-write"',
+  "-c",
+  'approvals_reviewer="user"',
+]
+
+/** What to spawn for Codex: `codex-acp` from PATH, else the pinned bridge through npx; undefined when neither runs. */
+export function codexLaunch(env: Env = { PATH: process.env.PATH }) {
+  const PATH = env.PATH ?? ""
+  const own = which("codex-acp", { PATH })
+  if (own) return { command: own, args: CODEX_POLICY }
+  const npx = which("npx", { PATH })
+  if (npx) return { command: npx, args: ["-y", CODEX_BRIDGE, ...CODEX_POLICY] }
+  return undefined
+}
+
+const codexCapabilities: AgentHQ.ProviderCapabilities = {
+  ...AcpProvider.capabilities,
+  notes: [
+    `Runs Zed's ACP bridge (codex-acp from PATH, else npx ${CODEX_BRIDGE})`,
+    "Codex asks before every edit and every command but known-safe reads; approved commands run in its workspace-write sandbox",
+    ...(AcpProvider.capabilities.notes ?? []),
+  ],
+}
+
+/** Codex through Zed's ACP bridge; available when codex is installed, logged in, and the bridge can run. */
+export const codex = Effect.fn("AgentHQ.detect.codex")(function* (env?: Env) {
   const proc = yield* AppProcess.Service
-  return {
-    id,
-    status: status(id, { env }).pipe(Effect.provideService(AppProcess.Service, proc)),
-    createSession: () =>
-      Effect.fail(
-        new AgentProvider.UnsupportedError({
-          provider: id,
-          action: "createSession",
-          message: `${CLIS[id].name} sessions are not supported by Agent HQ yet`,
-        }),
-      ),
-  } satisfies AgentProvider.Interface
+  const detected: Effect.Effect<AgentHQ.ProviderStatus> = Effect.gen(function* () {
+    const found: AgentHQ.ProviderStatus = yield* status("codex", { env, capabilities: codexCapabilities })
+    if (!found.available) return found
+    // Only the exit code: codex checks its own login, and nothing it prints is kept.
+    const login = ChildProcess.make(binary("codex", env)!, ["login", "status"], {
+      stdin: "ignore",
+      env: AgentProvider.agentEnv(),
+    })
+    const loggedIn = yield* proc.run(login, { timeout: "5 seconds" }).pipe(
+      Effect.map((result) => result.exitCode === 0),
+      Effect.orElseSucceed(() => false),
+    )
+    if (!loggedIn)
+      return {
+        ...found,
+        available: false,
+        auth: "required" as const,
+        reason: "Codex is not logged in; run `codex login`",
+      }
+    if (!codexLaunch(env))
+      return {
+        ...found,
+        available: false,
+        auth: "ok" as const,
+        reason: "Codex needs Zed's codex-acp bridge: put codex-acp or npx on PATH",
+      }
+    return { ...found, auth: "ok" as const }
+  }).pipe(Effect.provideService(AppProcess.Service, proc))
+  return yield* AcpProvider.make({
+    id: "codex",
+    status: detected,
+    launch: () =>
+      Effect.gen(function* () {
+        const current = yield* detected
+        const launch = codexLaunch(env)
+        if (!current.available || !launch)
+          return yield* new AgentProvider.UnsupportedError({
+            provider: "codex",
+            action: "createSession",
+            message: current.reason ?? "Codex is unavailable",
+          })
+        return launch
+      }),
+  })
 })
 
 /** Cursor through its ACP mode; refuses to start while detection says it is unavailable. */

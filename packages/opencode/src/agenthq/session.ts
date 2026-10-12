@@ -152,7 +152,7 @@ const layer = Layer.effect(
         binary: () => AgentDetect.binary("claude-code"),
       }),
       cursor: yield* AgentDetect.cursor(),
-      codex: yield* AgentDetect.make("codex"),
+      codex: yield* AgentDetect.codex(),
       acp: yield* AcpProvider.make({
         id: "acp",
         status: Effect.succeed(customAcp),

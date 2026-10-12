@@ -1,0 +1,18 @@
+Investigation inv_golden: average crashes for empty orders
+Status: resolved (the reproduction and the checks passed after the last patch)
+Attempts: 1 · debug steps: 3 · evidence: 4
+
+Observed
+  ev_1 exception: ZeroDivisionError: division by zero at /repo/avg.py:3 in average
+  ev_2 patch: edited /repo/avg.py
+
+Inferred (agent notes, not evidence)
+  note-1 hypothesis: average() divides by len(xs) without checking for an empty list
+  note-2 question: should an empty order average to 0 or be skipped?
+
+Verified
+  ev_3 check-run: checks passed (run_1)
+  ev_4 repro-run: program run under the debugger exited with code 0
+
+Unverified
+  /repo/report.py: not covered by a passing check

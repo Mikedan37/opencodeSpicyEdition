@@ -55,6 +55,7 @@ import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 import { WorkbenchCheckTool } from "@/workbench/tool/check" // spicy: Workbench check tool
+import { DebugTool, DebugToolNode } from "@/workbench/tool/debug" // spicy: Workbench debugger tool
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
@@ -116,6 +117,7 @@ const layer = Layer.effect(
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
     const checktool = yield* WorkbenchCheckTool.CheckTool // spicy: Workbench check tool
+    const debugtool = yield* DebugTool // spicy: Workbench debugger tool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
@@ -245,7 +247,8 @@ const layer = Layer.effect(
             tool.search,
             tool.skill,
             tool.patch,
-            yield* Tool.init(checktool), // spicy:
+            yield* Tool.init(checktool), // spicy: Workbench check tool
+            yield* Tool.init(debugtool), // spicy: Workbench debugger tool
             ...(tool.execute ? [tool.execute] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
@@ -452,7 +455,8 @@ export const node = LayerNode.make({
     MCP.node,
     Database.node,
     Ripgrep.node,
-    WorkbenchCheckTool.node, // spicy:
+    WorkbenchCheckTool.node, // spicy: Workbench check tool
+    DebugToolNode, // spicy: Workbench debugger tool
   ],
 })
 

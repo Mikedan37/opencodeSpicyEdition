@@ -139,6 +139,7 @@ test("tasks: create with dependencies, start, review gate, approve refusal and m
   mock.approveRefusal = undefined
   await gate.locator('[data-action="task-approve"]').click()
   await expect(rows.nth(0).locator("[data-task-status]")).toHaveAttribute("data-task-status", "done")
+  await expect(detail.locator('[data-slot="task-workspace"]')).toHaveText("Merged; its worktree is removed")
   expect(mock.approvals).toBe(2)
   mock.emit(taskEvent(mock.tasks.tsk_2!, { status: "ready", reason: undefined }))
   await expect(rows.nth(1).locator("[data-task-status]")).toHaveAttribute("data-task-status", "ready")

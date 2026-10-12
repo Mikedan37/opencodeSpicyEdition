@@ -370,6 +370,8 @@ export const dict = {
   "agenthq.task.workspace": "Works in",
   "agenthq.task.isolated.pending": "Its own git worktree, created when it starts",
   "agenthq.task.isolated.no": "The project itself",
+  "agenthq.task.isolated.merged": "Merged from {{branch}}; its worktree is removed",
+  "agenthq.task.isolated.mergedNoBranch": "Merged; its worktree is removed",
   "agenthq.task.updated": "Updated",
   "agenthq.task.summary": "Result",
   "agenthq.task.review": "Review before merging",

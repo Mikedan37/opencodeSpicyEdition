@@ -373,10 +373,17 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
           </Show>
         </dd>
         <dt class="text-v2-text-text-muted">{language.t("agenthq.task.workspace")}</dt>
-        <dd class="min-w-0 text-v2-text-text-base">
+        <dd class="min-w-0 text-v2-text-text-base" data-slot="task-workspace">
           <Show
-            when={props.task.worktree}
-            fallback={language.t(props.task.isolated ? "agenthq.task.isolated.pending" : "agenthq.task.isolated.no")}
+            // Approving merges the branch and removes the worktree; the record may still name them.
+            when={props.task.status !== "done" && props.task.worktree}
+            fallback={
+              props.task.status === "done" && props.task.isolated
+                ? props.task.worktree
+                  ? language.t("agenthq.task.isolated.merged", { branch: props.task.worktree.branch })
+                  : language.t("agenthq.task.isolated.mergedNoBranch")
+                : language.t(props.task.isolated ? "agenthq.task.isolated.pending" : "agenthq.task.isolated.no")
+            }
           >
             {(worktree) => (
               <span class="flex min-w-0 flex-col">

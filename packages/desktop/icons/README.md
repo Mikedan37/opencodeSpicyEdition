@@ -1,4 +1,19 @@
-# Tauri Icons
+# Spicy Edition icons
+
+The source of truth is the Icon Composer document `AppIcon.icon` (layers in `AppIcon.icon/Assets`, settings in
+`AppIcon.icon/icon.json`). Open it in Icon Composer (Xcode 26+) to edit the design, then run:
+
+```sh
+bun ./scripts/spicy-icons.ts
+```
+
+The script copies `AppIcon.icon` into `dev`, `beta` and `prod`, and renders the same design with Icon Composer's
+`ictool` (design generation 27) into `icon.icns` (all sizes up to 1024 px), `icon.ico`, `icon.png`, `dock.png` and
+the sized PNGs. Packaged macOS builds use `AppIcon.icon` directly (`mac.icon` in `electron-builder.config.ts`), so
+macOS 26+ renders it as Liquid Glass with light, dark, tinted and clear appearances. `Square*Logo.png`, `StoreLogo.png`
+and the `android`/`ios` folders are unused leftovers and were not regenerated.
+
+# Tauri Icons (upstream notes)
 
 Here's the process I've been using to create icons:
 

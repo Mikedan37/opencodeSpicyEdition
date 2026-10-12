@@ -74,7 +74,9 @@ const getBase = (appId: string): Configuration => ({
   ],
   mac: {
     category: "public.app-category.developer-tools",
-    icon: `resources/icons/icon.icns`,
+    // spicy: Icon Composer source; electron-builder compiles it to Assets.car (Liquid Glass on macOS 26+)
+    // and derives the legacy icns from it. Requires Xcode 26+ actool at build time.
+    icon: `resources/icons/AppIcon.icon`,
     hardenedRuntime: true,
     gatekeeperAssess: false,
     entitlements: "resources/entitlements.plist",

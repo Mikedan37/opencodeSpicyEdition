@@ -1,0 +1,20 @@
+{
+  "fill" : { "linear-gradient" : [ "display-p3:0.15000,0.03000,0.10000,1.00000", "display-p3:0.72000,0.10000,0.15000,1.00000" ] },
+  "groups" : [
+    { "layers" : [ { "image-name" : "stem.svg", "name" : "stem", "glass" : true }, { "image-name" : "chili.svg", "name" : "chili", "glass" : true } ],
+      "position" : { "scale" : 0.94, "translation-in-points" : [ -8, 4 ] },
+      "shadow" : { "kind" : "layer-color", "opacity" : 0.6 },
+      "translucency" : { "enabled" : true, "value" : 0.25 },
+      "specular" : true },
+    { "layers" : [ { "image-name" : "braces.svg", "name" : "braces", "glass" : true,
+        "fill-specializations" : [ { "appearance" : "dark", "value" : { "solid" : "display-p3:0.98000,0.90000,0.92000,1.00000" } } ] } ],
+      "shadow" : { "kind" : "neutral", "opacity" : 0.4 },
+      "translucency" : { "enabled" : true, "value" : 0.55 },
+      "specular" : true },
+    { "layers" : [ { "image-name" : "glow.svg", "name" : "glow", "glass" : false } ],
+      "hidden-specializations" : [ { "appearance" : "tinted", "value" : true } ],
+      "shadow" : { "kind" : "none", "opacity" : 0 },
+      "specular" : false }
+  ],
+  "supported-platforms" : { "squares" : [ "macOS" ] }
+}

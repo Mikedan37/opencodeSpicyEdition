@@ -153,6 +153,7 @@ const layer = Layer.effect(
       }),
       cursor: yield* AgentDetect.cursor(),
       codex: yield* AgentDetect.codex(),
+      agentkit: yield* AgentDetect.agentkit(),
       acp: yield* AcpProvider.make({
         id: "acp",
         status: Effect.succeed(customAcp),

@@ -1,0 +1,14 @@
+{
+  "command": [
+    "bun",
+    "test",
+    "--reporter=junit",
+    "--reporter-outfile=/dev/stdout",
+    "avg.test.ts"
+  ],
+  "cwd": "/ROOT/bun-test",
+  "execClass": "exec",
+  "exitCode": 1,
+  "stdout": "bun test v1.4.3 (c6da4a4d3)\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites name=\"bun test\" tests=\"1\" assertions=\"1\" failures=\"1\" skipped=\"0\" time=\"0.00299\">\n  <testsuite name=\"avg.test.ts\" file=\"avg.test.ts\" tests=\"1\" assertions=\"1\" failures=\"1\" skipped=\"0\" time=\"0.000766\" hostname=\"localhost\">\n    <testcase name=\"average of empty list\" classname=\"\" time=\"0.00022\" file=\"avg.test.ts\" line=\"5\" assertions=\"1\">\n      <failure type=\"AssertionError\" message=\"expect(received).toBe(expected)&#10;&#10;Expected: 0&#10;Received: NaN&#10;\">AssertionError: expect(received).toBe(expected)&#10;&#10;Expected: 0&#10;Received: NaN&#10;&#10;      at avg.test.ts:6:23&#10;</failure>\n    </testcase>\n  </testsuite>\n</testsuites>\n",
+  "stderr": "\navg.test.ts:\n1 | import { expect, test } from \"bun:test\"\n2 | \n3 | const average = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length\n4 | \n5 | test(\"average of empty list\", () => {\n6 |   expect(average([])).toBe(0)\n                          ^\nerror: expect(received).toBe(expected)\n\nExpected: 0\nReceived: NaN\n\n      at <anonymous> (/ROOT/bun-test/avg.test.ts:6:23)\n(fail) average of empty list [0.22ms]\n\n 0 pass\n 1 fail\n 1 expect() calls\nRan 1 test across 1 file. [2.00ms]\n"
+}

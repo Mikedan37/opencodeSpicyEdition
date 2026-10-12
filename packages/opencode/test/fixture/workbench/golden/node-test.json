@@ -1,0 +1,14 @@
+{
+  "command": [
+    "node",
+    "--test",
+    "--test-reporter=junit",
+    "--test-reporter-destination=stdout",
+    "avg.test.mjs"
+  ],
+  "cwd": "/ROOT/node-test",
+  "execClass": "exec",
+  "exitCode": 1,
+  "stdout": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<testsuites>\n\t<testcase name=\"average of empty list\" time=\"0.001101\" classname=\"test\" failure=\"Expected values to be strictly equal:NaN !== 0\">\n\t\t<failure type=\"testCodeFailure\" message=\"Expected values to be strictly equal:NaN !== 0\">\n[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\nNaN !== 0\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  NaN !== 0\n  \n      at TestContext.&lt;anonymous> (file:///ROOT/node-test/avg.test.mjs:7:10)\n      at Test.runInAsyncScope (node:async_hooks:214:14)\n      at Test.run (node:internal/test_runner/test:1047:25)\n      at Test.start (node:internal/test_runner/test:944:17)\n      at startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: NaN,\n    expected: 0,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}\n\t\t</failure>\n\t</testcase>\n\t<!-- tests 1 -->\n\t<!-- suites 0 -->\n\t<!-- pass 0 -->\n\t<!-- fail 1 -->\n\t<!-- cancelled 0 -->\n\t<!-- skipped 0 -->\n\t<!-- todo 0 -->\n\t<!-- duration_ms 69.933625 -->\n</testsuites>\n",
+  "stderr": ""
+}

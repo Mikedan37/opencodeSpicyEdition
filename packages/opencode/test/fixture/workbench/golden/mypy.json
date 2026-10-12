@@ -1,0 +1,13 @@
+{
+  "command": [
+    "mypy",
+    "-O",
+    "json",
+    "app.py"
+  ],
+  "cwd": "/ROOT/py",
+  "execClass": "inert",
+  "exitCode": 1,
+  "stdout": "{\"file\": \"app.py\", \"line\": 5, \"column\": 13, \"message\": \"Argument 1 to \\\"double\\\" has incompatible type \\\"str\\\"; expected \\\"int\\\"\", \"hint\": null, \"code\": \"arg-type\", \"severity\": \"error\"}\n{\"file\": \"app.py\", \"line\": 6, \"column\": 6, \"message\": \"Name \\\"missing_name\\\" is not defined\", \"hint\": null, \"code\": \"name-defined\", \"severity\": \"error\"}\n",
+  "stderr": ""
+}

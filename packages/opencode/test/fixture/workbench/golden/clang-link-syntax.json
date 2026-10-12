@@ -1,0 +1,13 @@
+{
+  "command": [
+    "clang",
+    "-fsyntax-only",
+    "-fdiagnostics-format=sarif",
+    "-Wno-sarif-format-unstable",
+    "main.c"
+  ],
+  "cwd": "/ROOT/link-c",
+  "exitCode": 0,
+  "stdout": "",
+  "stderr": "\n{\n  \"$schema\": \"https://docs.oasis-open.org/sarif/sarif/v2.1.0/cos02/schemas/sarif-schema-2.1.0.json\",\n  \"runs\": [\n    {\n      \"artifacts\": [],\n      \"columnKind\": \"unicodeCodePoints\",\n      \"invocations\": [\n        {\n          \"executionSuccessful\": true\n        }\n      ],\n      \"results\": [],\n      \"tool\": {\n        \"driver\": {\n          \"fullName\": \"\",\n          \"informationUri\": \"https://clang.llvm.org/docs/UsersManual.html\",\n          \"language\": \"en-US\",\n          \"name\": \"clang\",\n          \"rules\": [],\n          \"version\": \"Apple clang version 21.0.0 (clang-2100.3.34.2)\"\n        }\n      }\n    }\n  ],\n  \"version\": \"2.1.0\"\n}\n\n"
+}

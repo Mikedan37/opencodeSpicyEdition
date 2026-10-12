@@ -12,7 +12,7 @@
  * tools internally during multi-step processing before emitting events.
  */
 import { expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import fs from "fs/promises"
 import path from "path"
@@ -74,6 +74,7 @@ const lsp = Layer.succeed(
     prepareCallHierarchy: () => Effect.succeed([]),
     incomingCalls: () => Effect.succeed([]),
     outgoingCalls: () => Effect.succeed([]),
+    diagnosticEvents: () => Stream.empty, // spicy: LSP diagnostics hook
   }),
 )
 

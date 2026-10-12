@@ -1,0 +1,14 @@
+{
+  "command": [
+    "ruff",
+    "check",
+    "--no-cache",
+    "--output-format=json",
+    "app.py"
+  ],
+  "cwd": "/ROOT/py",
+  "execClass": "inert",
+  "exitCode": 1,
+  "stdout": "[\n  {\n    \"cell\": null,\n    \"code\": \"F821\",\n    \"end_location\": {\n      \"column\": 19,\n      \"row\": 6\n    },\n    \"filename\": \"/ROOT/py/app.py\",\n    \"fix\": null,\n    \"location\": {\n      \"column\": 7,\n      \"row\": 6\n    },\n    \"message\": \"Undefined name `missing_name`\",\n    \"noqa_row\": 6,\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-name\"\n  }\n]",
+  "stderr": ""
+}

@@ -1,0 +1,12 @@
+{
+  "command": [
+    "swiftc",
+    "-typecheck",
+    "main.swift"
+  ],
+  "cwd": "/ROOT/swift",
+  "execClass": "inert",
+  "exitCode": 1,
+  "stdout": "",
+  "stderr": "main.swift:1:18: error: cannot convert value of type 'String' to specified type 'Int'\n1 | let count: Int = \"one\"\n  |                  `- error: cannot convert value of type 'String' to specified type 'Int'\n2 | print(count)\n3 | \n"
+}

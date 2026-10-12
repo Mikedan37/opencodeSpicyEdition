@@ -109,6 +109,8 @@ import { PtyEnvironment } from "@opencode-ai/server/pty-environment"
 import { schemaErrorLayer as v2SchemaErrorLayer } from "@opencode-ai/server/middleware/schema-error"
 import { workspaceHandlers } from "./handlers/workspace"
 import { agenthqHandlers } from "./handlers/agenthq" // spicy: Agent HQ routes
+import { workbenchHandlers } from "./handlers/workbench" // spicy: Workbench problems routes
+import { WorkbenchProblems } from "@/workbench/problems/store" // spicy: Workbench services
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
 import { disposeMiddleware } from "./lifecycle"
@@ -172,6 +174,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     tuiHandlers,
     workspaceHandlers,
     agenthqHandlers, // spicy: Agent HQ routes
+    workbenchHandlers, // spicy: Workbench problems routes
   ]),
 )
 
@@ -272,6 +275,7 @@ const app = LayerNode.group([
   PtyTicket.node,
   AgentRegistry.node, // spicy: Agent HQ services
   AgentSessions.node, // spicy: Agent HQ services
+  WorkbenchProblems.node, // spicy: Workbench services
 ])
 
 export function createRoutes(

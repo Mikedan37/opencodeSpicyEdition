@@ -26,6 +26,9 @@ export type Info = NonNullable<Awaited<ReturnType<typeof create>>>
 
 export type Diagnostic = VSCodeDiagnostic
 
+// spicy: one file's merged push + pull diagnostics after either replaces them (Workbench problem store)
+export type DiagnosticsEvent = { serverID: string; root: string; file: string; diagnostics: Diagnostic[]; at: number }
+
 export class InitializeError extends Schema.TaggedErrorClass<InitializeError>()("LSPInitializeError", {
   serverID: Schema.String,
   cause: Schema.optional(Schema.Defect()),
@@ -126,6 +129,7 @@ export async function create(input: {
   root: string
   directory: string
   instance: InstanceContext
+  onDiagnostics?: (event: DiagnosticsEvent) => void // spicy: Workbench problem store hook
 }) {
   const instance = input.instance
 
@@ -144,12 +148,23 @@ export async function create(input: {
   const diagnosticListeners = new Set<(input: { path: string; serverID: string }) => void>()
   const mergedDiagnostics = (filePath: string) =>
     dedupeDiagnostics([...(pushDiagnostics.get(filePath) ?? []), ...(pullDiagnostics.get(filePath) ?? [])])
+  // spicy: report the merged list after every push or pull replacement
+  const emitDiagnostics = (file: string) =>
+    input.onDiagnostics?.({
+      serverID: input.serverID,
+      root: input.root,
+      file,
+      diagnostics: mergedDiagnostics(file),
+      at: Date.now(),
+    })
   const updatePushDiagnostics = (filePath: string, next: Diagnostic[]) => {
     pushDiagnostics.set(filePath, next)
+    emitDiagnostics(filePath) // spicy:
     for (const listener of diagnosticListeners) listener({ path: filePath, serverID: input.serverID })
   }
   const updatePullDiagnostics = (filePath: string, next: Diagnostic[]) => {
     pullDiagnostics.set(filePath, next)
+    emitDiagnostics(filePath) // spicy:
   }
   const emitRegistrationChange = () => {
     for (const listener of [...registrationListeners]) listener()
@@ -166,6 +181,7 @@ export async function create(input: {
     })
     if (shouldSeedDiagnosticsOnFirstPush(input.serverID) && !pushDiagnostics.has(filePath)) {
       pushDiagnostics.set(filePath, params.diagnostics)
+      emitDiagnostics(filePath) // spicy:
       return
     }
     updatePushDiagnostics(filePath, params.diagnostics)

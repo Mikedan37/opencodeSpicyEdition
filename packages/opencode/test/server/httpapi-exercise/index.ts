@@ -297,6 +297,7 @@ const scenarios: Scenario[] = [
     }))
     .json(404, object, "status"),
   http.protected.get("/question", "question.list").json(200, array),
+  http.protected.get("/workbench/problems", "workbench.problems").json(200, object), // spicy: Workbench
   http.protected
     .post("/question/{requestID}/reply", "question.reply.invalid")
     .at((ctx) => ({

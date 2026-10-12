@@ -8,7 +8,7 @@ import * as LSPServer from "./server"
 import { Config } from "@/config/config"
 import { Process } from "@/util/process"
 import { spawn as lspspawn } from "./launch"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Queue, Schema, Stream } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
@@ -114,6 +114,9 @@ interface State {
   servers: Record<string, LSPServer.Info>
   broken: Set<string>
   spawning: Map<string, Promise<LSPClient.Info | undefined>>
+  // spicy: latest merged diagnostics per server, root and file, replayed to new subscribers
+  diagnostics: Map<string, LSPClient.DiagnosticsEvent>
+  listeners: Set<(event: LSPClient.DiagnosticsEvent) => void>
 }
 
 export interface Interface {
@@ -131,6 +134,8 @@ export interface Interface {
   readonly prepareCallHierarchy: (input: LocInput) => Effect.Effect<any[]>
   readonly incomingCalls: (input: LocInput) => Effect.Effect<any[]>
   readonly outgoingCalls: (input: LocInput) => Effect.Effect<any[]>
+  // spicy: current diagnostics per server, root and file, then every replacement (Workbench problem store)
+  readonly diagnosticEvents: () => Stream.Stream<LSPClient.DiagnosticsEvent>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LSP") {}
@@ -193,6 +198,8 @@ const layer = Layer.effect(
           servers,
           broken: new Set(),
           spawning: new Map(),
+          diagnostics: new Map(), // spicy:
+          listeners: new Set(), // spicy:
         }
 
         yield* Effect.addFinalizer(() =>
@@ -233,6 +240,11 @@ const layer = Layer.effect(
             root,
             directory: ctx.directory,
             instance: ctx,
+            onDiagnostics: (event) => {
+              // spicy: Workbench problem store hook
+              s.diagnostics.set(`${event.serverID}\0${event.root}\0${event.file}`, event)
+              for (const listener of s.listeners) listener(event)
+            },
           }).catch(async () => {
             s.broken.add(key)
             await Process.stop(handle.process)
@@ -477,6 +489,18 @@ const layer = Layer.effect(
       return yield* callHierarchyRequest(input, "callHierarchy/outgoingCalls")
     })
 
+    // spicy: replay then follow; registering the listener and replaying happen in one synchronous step
+    const diagnosticEvents = () =>
+      Stream.callback<LSPClient.DiagnosticsEvent>((queue) =>
+        Effect.gen(function* () {
+          const s = yield* InstanceState.get(state)
+          const listener = (event: LSPClient.DiagnosticsEvent) => Queue.offerUnsafe(queue, event)
+          for (const event of s.diagnostics.values()) listener(event)
+          s.listeners.add(listener)
+          yield* Effect.addFinalizer(() => Effect.sync(() => s.listeners.delete(listener)))
+        }),
+      )
+
     return Service.of({
       init,
       status,
@@ -492,6 +516,7 @@ const layer = Layer.effect(
       prepareCallHierarchy,
       incomingCalls,
       outgoingCalls,
+      diagnosticEvents, // spicy:
     })
   }),
 )

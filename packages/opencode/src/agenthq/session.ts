@@ -23,6 +23,7 @@ import { Storage } from "@/storage/storage"
 import { EventV2 } from "@opencode-ai/core/event"
 import { AgentProvider } from "./provider"
 import { AgentRegistry } from "./registry"
+import { AcpProvider } from "./providers/acp"
 import { AgentDetect } from "./providers/detect"
 import { OpenCodeProvider } from "./providers/opencode"
 
@@ -83,6 +84,17 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/AgentHQSessions") {}
 
+const customAcp: AgentHQ.ProviderStatus = {
+  id: "acp",
+  name: "Custom ACP agent",
+  available: true,
+  auth: "unknown",
+  capabilities: {
+    ...AcpProvider.capabilities,
+    notes: ["Spawns the identity's launch command", ...(AcpProvider.capabilities.notes ?? [])],
+  },
+}
+
 const sessionKey = (id: string) => ["agenthq", "session", id]
 const historyKey = (id: string) => ["agenthq", "events", id]
 
@@ -96,8 +108,22 @@ const layer = Layer.effect(
     const providers: Record<AgentHQ.ProviderID, AgentProvider.Interface> = {
       opencode: yield* OpenCodeProvider.make,
       "claude-code": yield* AgentDetect.make("claude-code"),
-      cursor: yield* AgentDetect.make("cursor"),
+      cursor: yield* AgentDetect.cursor(),
       codex: yield* AgentDetect.make("codex"),
+      acp: yield* AcpProvider.make({
+        id: "acp",
+        status: Effect.succeed(customAcp),
+        launch: (agent) =>
+          agent.launch?.command
+            ? Effect.succeed(agent.launch)
+            : Effect.fail(
+                new AgentProvider.UnsupportedError({
+                  provider: "acp",
+                  action: "createSession",
+                  message: `Agent ${agent.name} has no ACP launch command`,
+                }),
+              ),
+      }),
     }
     const live = new Map<string, Live>()
     const locks = KeyedMutex.makeUnsafe<string>()
@@ -113,6 +139,11 @@ const layer = Layer.effect(
         // A status that changes nothing (repeated busy, progress while a permission waits) is not news.
         if (event.type === "status" && info === session.info) continue
         session.info = info
+        // A provider that lost its process or instance is detached; the next message attaches again.
+        if (event.type === "status" && event.status === "disconnected" && session.handle) {
+          yield* session.handle.close
+          session.handle = undefined
+        }
         const envelope = { sessionID: session.info.id, seq: session.seq++, at: Date.now(), event }
         append(session, envelope)
         published.push(envelope)

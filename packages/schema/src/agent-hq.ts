@@ -22,7 +22,8 @@ export const AgentSessionID = AgentSessionIDSchema.pipe(
 )
 export type AgentSessionID = typeof AgentSessionID.Type
 
-export const ProviderID = Schema.Literals(["opencode", "claude-code", "codex", "cursor"])
+// "acp": a custom Agent Client Protocol agent launched with the identity's `launch` command.
+export const ProviderID = Schema.Literals(["opencode", "claude-code", "codex", "cursor", "acp"])
 export type ProviderID = typeof ProviderID.Type
 
 // Every adapter reports these honestly; the UI hides or disables what is false.
@@ -64,6 +65,8 @@ export const AgentIdentity = Schema.Struct({
   specialty: optional(Schema.String),
   projectDirectory: Schema.String,
   workingDirectory: optional(Schema.String), // a git worktree when isolated
+  // Provider "acp" only: the ACP agent to spawn over stdio. Never put secrets in args.
+  launch: optional(Schema.Struct({ command: Schema.String, args: Schema.Array(Schema.String) })),
   createdAt: Schema.Finite,
   updatedAt: Schema.Finite,
 }).annotate({ identifier: "AgentHQAgent" })
@@ -138,6 +141,17 @@ export const AgentEvent = Schema.Union([
     outcome: Schema.Literals(["allowed", "rejected", "cancelled"]),
   }),
   Schema.Struct({ type: Schema.Literal("file.changed"), path: Schema.String }),
+  // The agent's current plan; each event replaces the previous one.
+  Schema.Struct({
+    type: Schema.Literal("plan"),
+    entries: Schema.Array(
+      Schema.Struct({
+        content: Schema.String,
+        status: Schema.Literals(["pending", "in_progress", "completed"]),
+        priority: optional(Schema.Literals(["high", "medium", "low"])),
+      }),
+    ),
+  }),
   Schema.Struct({ type: Schema.Literal("turn.completed"), stopReason: optional(Schema.String) }),
   Schema.Struct({ type: Schema.Literal("error"), message: Schema.String }),
 ]).annotate({ identifier: "AgentHQEvent" })

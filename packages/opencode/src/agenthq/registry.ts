@@ -10,6 +10,8 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Storage } from "@/storage/storage"
 import { InvalidInputError, NotFoundError } from "./provider"
 
+const Launch = Schema.Struct({ command: Schema.String, args: Schema.Array(Schema.String) })
+
 export const CreateInput = Schema.Struct({
   name: Schema.String,
   avatar: AgentHQ.Avatar,
@@ -18,6 +20,7 @@ export const CreateInput = Schema.Struct({
   specialty: Schema.optional(Schema.String),
   projectDirectory: Schema.String,
   workingDirectory: Schema.optional(Schema.String),
+  launch: Schema.optional(Launch),
 })
 export type CreateInput = typeof CreateInput.Type
 
@@ -30,6 +33,7 @@ export const UpdateInput = Schema.Struct({
   specialty: Schema.optional(Schema.NullOr(Schema.String)),
   projectDirectory: Schema.optional(Schema.String),
   workingDirectory: Schema.optional(Schema.NullOr(Schema.String)),
+  launch: Schema.optional(Schema.NullOr(Launch)),
 })
 export type UpdateInput = typeof UpdateInput.Type
 
@@ -87,6 +91,11 @@ const layer = Layer.effect(
       return resolved
     })
 
+    const launch = Effect.fnUntraced(function* (value: typeof Launch.Type) {
+      if (!value.command.trim()) return yield* new InvalidInputError({ message: "launch.command must not be empty" })
+      return { command: value.command, args: [...value.args] }
+    })
+
     const name = Effect.fnUntraced(function* (value: string) {
       const trimmed = value.trim()
       if (!trimmed) return yield* new InvalidInputError({ message: "name must not be empty" })
@@ -106,6 +115,7 @@ const layer = Layer.effect(
         ...(input.workingDirectory
           ? { workingDirectory: yield* directory("workingDirectory", input.workingDirectory) }
           : {}),
+        ...(input.launch ? { launch: yield* launch(input.launch) } : {}),
         createdAt: now,
         updatedAt: now,
       }
@@ -128,6 +138,7 @@ const layer = Layer.effect(
         ...(input.workingDirectory
           ? { workingDirectory: yield* directory("workingDirectory", input.workingDirectory) }
           : {}),
+        ...(input.launch ? { launch: yield* launch(input.launch) } : {}),
         updatedAt: Date.now(),
       }
       // Merge under the store's per-key lock so concurrent edits do not drop each other.
@@ -137,6 +148,7 @@ const layer = Layer.effect(
           if (input.model === null) delete draft.model
           if (input.specialty === null) delete draft.specialty
           if (input.workingDirectory === null) delete draft.workingDirectory
+          if (input.launch === null) delete draft.launch
         })
         .pipe(
           Effect.catchTag("NotFoundError", () => Effect.fail(new NotFoundError({ message: `Agent not found: ${id}` }))),

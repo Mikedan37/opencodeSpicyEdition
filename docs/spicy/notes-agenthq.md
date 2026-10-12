@@ -215,3 +215,57 @@ failed` (or `disconnected`) — the manager keeps history.
   doc plans `@anthropic-ai/claude-agent-sdk`, which is a new dependency and needs the coordinator). AHQ-09 is
   opt-in for a real authenticated `claude`, contract test otherwise.
 - Codex: blocked until `codex` is installed; evaluate its non-interactive protocol and approval surface then.
+
+# Wave 2
+
+## Contract changes (additive, `packages/schema/src/agent-hq.ts`)
+
+| Change                                                                                                                      | Why                                                                                                                |
+| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ProviderID` gains `"acp"`                                                                                                  | custom ACP agents (any binary that speaks ACP over stdio)                                                          |
+| `AgentIdentity.launch?: { command, args[] }`                                                                                | what provider `"acp"` spawns; settable on create, `PATCH` with `null` clears it. No env vars (never store secrets) |
+| `AgentEvent` gains `{ type: "plan", entries: { content, status: "pending" \| "in_progress" \| "completed", priority? }[] }` | ACP `plan` updates; each event replaces the previous plan                                                          |
+
+## ACP adapter (`src/agenthq/providers/acp.ts`)
+
+Client side of `@agentclientprotocol/sdk` over the agent's stdio. The process is spawned with the existing
+`ChildProcessSpawner` in its own process group (killed as a group on close, SIGKILL after 3 s); cwd is the
+identity's `workingDirectory ?? projectDirectory`.
+
+- `initialize` advertises **no** client capabilities (`fs.readTextFile/writeTextFile: false`, `terminal: false`):
+  the agent does its own file and shell work and must ask through `session/request_permission`.
+- `session/new` per Agent HQ session (`providerSessionID` = ACP `sessionId`, `mcpServers: []` is the hook for the
+  Workbench MCP bridge). Resume after a restart or crash: `session/resume` when advertised, else `session/load` with
+  its replayed updates suppressed, else 409.
+- Turns: `session/prompt`; one prompt at a time per session (later messages queue behind it).
+- Mapping: `agent_message_chunk` → `message.delta` (`messageID` = ACP `messageId`, or a generated id per text
+  block), completed text → `message` when a tool/plan/permission update or the turn end arrives;
+  `agent_thought_chunk` → `reasoning`; `tool_call`/`tool_call_update` → `tool` (`pending` → started,
+  `in_progress` → running, `completed`, `failed` → error; `tool` = ACP `kind`, output preview from text content or
+  `rawOutput`); diff content → `file.changed`; `plan` → `plan`; prompt result → `turn.completed { stopReason }`
+  (ACP stop reasons: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`; `cancelled` → status `cancelled`).
+- Permissions: each request becomes `permission.requested` with the agent's own options (`id` = ACP `optionId`,
+  `kind` passes through: `allow_once`, `allow_always`, `reject_once`, `reject_always`); the request id is
+  `acp_<n>_<toolCallId>`. Only `POST .../permissions/:requestID` answers it; `permission.resolved` is `allowed` for
+  `allow_*`, `rejected` for `reject_*`.
+- Cancel: `session/cancel`, and every parked permission request is answered `cancelled` (as ACP requires).
+- Agent exit or a closed stream: `error` (exit code + stderr tail) then `status: disconnected`. The manager drops
+  the dead handle on `disconnected`, so the next message starts a new process and reattaches.
+
+Providers using it:
+
+- `cursor`: launches `cursor-agent acp` only when detection finds an `acp` command in `cursor-agent --help`;
+  until then `available: false` with `cursor-agent 2025.09.12 has no ACP mode; update cursor-agent` and starting
+  a session returns 409 with that reason.
+- `acp` (custom): launches `identity.launch`. Status `available: true` (per-identity command), capabilities as above.
+- Future `agentkit`: if the AgentKit daemon speaks ACP it needs no new code (an `acp` identity whose `launch`
+  runs it, or a `ProviderID` entry pointing `AcpProvider.make` at its binary). See the final report for a non-ACP
+  bridge.
+
+## Tests (wave 2)
+
+| Test                                     | What it proves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AHQ-08 (`test/agenthq/acp.test.ts`)      | Real `opencode acp` from this tree (isolated HOME/XDG via a launcher script, fake model server), driven only through HTTP: create `acp` identity → start session → message → streamed reply with a `bash` tool → `permission.requested` (allow_once/allow_always/reject_once) → answered via `POST /agenthq/sessions/:id/permissions/:requestID` → tool completed with output → `message` + `turn.completed end_turn`; second turn hangs → `POST .../cancel` → `cancelled`, no extra `turn.completed`; `DELETE` the identity → the agent's process is gone (`pgrep`) |
+| AHQ-08b (`test/agenthq/agenthq.test.ts`) | Scripted ACP agent (`test/fixture/agenthq/fake-acp-agent.ts`): `plan`, thought → `reasoning`, text completed before the tool, diff → `file.changed`, `reject_always` option and invalid option (400-class error), crash → `error` with exit code and stderr + `disconnected`, next message reattaches with `session/load` and the replay is not recorded                                                                                                                                                                                                             |
+| AHQ-07 (updated)                         | Cursor with an ACP-capable `cursor-agent` reports available with ACP capabilities; the manager lists five providers                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

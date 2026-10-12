@@ -634,3 +634,47 @@ Approve fix tests (from `packages/opencode` unless noted):
 | `orchestrator.test.ts` "approve merges exactly the reviewed commit" | After the review, a message to the task starts a turn that asks for permission: approve with the reviewed head is 409 "still working" and the review says so. The turn then adds `extra.txt`: approve with the old head is 409 "changed since you reviewed it", the project is untouched and the task stays in review. Reviewed again, the new head merges (`HEAD^2` is that commit, both files land) and the task has no `worktree`. Fails on the old orchestrator |
 | `orchestrator.test.ts` isolated tasks (updated)                     | `head` is the branch commit, approve with it merges it (`HEAD^2`), the record drops `worktree`; a dirty project and a conflicting branch are still refused                                                                                                                                                                                                                                                                                                          |
 | `packages/app` `tasks.test.ts`                                      | `approve(id, head)` passes the head to `approveTask`                                                                                                                                                                                                                                                                                                                                                                                                                |
+
+# Wave 4: data safety for Agent HQ records
+
+Found by the desktop smoke: an unreadable session history became `[]` and restart recovery then wrote over it, and
+writes were not atomic, so a crash mid-write could tear a history.
+
+## One store for Agent HQ's records (`src/agenthq/store.ts`)
+
+Identities, sessions, histories, tasks and messages went through upstream's `Storage` service, whose `write`
+rewrites the file in place. Rather than change that for everyone, Agent HQ now uses its own `AgentStore` service
+over the same layout (`<data>/storage/<key>.json`, same JSON formatting), so existing records keep working and tests
+or tools that read them through `Storage` still do.
+
+- Writes go to `<file>.tmp-<pid>-<n>` in the same directory and are renamed over the record. A crash before the
+  rename leaves the previous record whole and a stray `.tmp-*` file, which is not a record (`list` only returns
+  `*.json`) and is left in place. No fsync, as before.
+- Reads tell a missing record from a corrupt one: not valid JSON, or not the expected shape. A record that does not
+  decode is treated as corrupt even when the JSON is fine, for example one written by a newer build. A read error
+  such as a permission problem is neither.
+- A corrupt record is never overwritten. It is renamed to `<file>.corrupt-<ms>` and logged (`agenthq moved an
+unreadable record aside`, with the file and the reason). Renaming it back restores it.
+  - Identity, task, message and session records: moved aside on the first read and treated as missing from then on.
+  - Session history: moved aside by the process that drives the session, when it loads it (restart recovery, a
+    message, cancel, a permission answer, or a `GET` of a session it owns). The session then records an `error`
+    ("This session's history could not be read (it is not valid JSON); it was quarantined as
+    `<id>.json.corrupt-<ms>`") and `status: interrupted`. Its new history starts with those two events, with `seq`
+    from 0. A `GET` of a session another live process drives shows an empty history and moves nothing. A read
+    error fails the load, so nothing is recorded over a history that could not be read.
+- The registry's identity edit used `Storage.update`'s per-key lock; it now merges into the stored record (keeping
+  fields this build does not know) under a per-identity lock.
+
+## Tests (wave 4)
+
+| Test    | What it proves                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AHQ-13  | A session is mid-turn when the server stops; its record says `working` and its history file is torn (invalid JSON). After a restart the session is `interrupted` with the quarantine error, the torn file is kept byte for byte as `<id>.json.corrupt-<ms>`, and the history (in memory and on disk) holds only the `error` and `status` events of the recovery. Fails with the previous session manager |
+| AHQ-13b | An identity record that does not decode is not returned by `get` or `list` and is moved aside as `.corrupt-*`                                                                                                                                                                                                                                                                                            |
+| AHQ-14  | A write killed after its temporary file and before the rename (simulated by writing the temporary file and skipping the rename) leaves the record at its previous version, and the temporary file is not listed. A completed write then replaces the record and leaves no temporary file of its own                                                                                                      |
+
+Results (from `packages/opencode`): `bun test --timeout 120000 test/agenthq` 35 pass, 1 skip (the opt-in real
+Claude session), 0 fail; `bun test --timeout 30000 test/server test/session` 720 pass, 9 skip, 1 todo, 0 fail;
+`bun run test:httpapi` 258/258 in coverage, auth and effect modes; `bun run typecheck` clean.
+
+No upstream-owned files were edited in wave 4.

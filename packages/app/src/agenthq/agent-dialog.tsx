@@ -65,9 +65,9 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
       name: draft.name.trim(),
       avatar: draft.avatar.kind === "initials" ? { ...draft.avatar, value: agentInitials(draft.name) } : draft.avatar,
       provider: draft.provider,
-      // Edits send "" to clear an optional field; creation omits it.
-      model: draft.model.trim() || (props.agent ? "" : undefined),
-      specialty: draft.specialty.trim() || (props.agent ? "" : undefined),
+      // Edits send null to clear an optional field (AgentRegistry.UpdateInput); creation omits it.
+      model: draft.model.trim() || (props.agent ? null : undefined),
+      specialty: draft.specialty.trim() || (props.agent ? null : undefined),
       projectDirectory: draft.projectDirectory.trim(),
     }
     setDraft("saving", true)

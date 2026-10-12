@@ -24,14 +24,15 @@ export type AgentDraft = {
   name: string
   avatar: AgentHQ.AgentIdentity["avatar"]
   provider: AgentHQ.ProviderID
-  model?: string
-  specialty?: string
+  // null clears the field on update (AgentRegistry.UpdateInput); creation omits it
+  model?: string | null
+  specialty?: string | null
   projectDirectory: string
 }
 
-// Assumed shape of GET /agenthq/sessions/:id ("info + history" in the master plan).
+// GET /agenthq/sessions/:id (`SessionDetail` in groups/agenthq.ts)
 const SessionDetail = Schema.Struct({
-  info: AgentHQ.AgentSessionInfo,
+  session: AgentHQ.AgentSessionInfo,
   history: Schema.Array(AgentHQ.AgentEventEnvelope),
 })
 

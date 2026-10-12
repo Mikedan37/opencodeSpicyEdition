@@ -71,7 +71,7 @@ describe("workbench client", () => {
     await expect(api.agents()).rejects.toThrow("unexpected response")
   })
 
-  test("session history decodes as { info, history }", async () => {
+  test("session history decodes as { session, history }", async () => {
     const info = {
       id: "ags_1",
       agentID: "agt_1",
@@ -82,7 +82,7 @@ describe("workbench client", () => {
       updatedAt: 2,
     }
     const history = [{ sessionID: "ags_1", seq: 0, at: 1, event: { type: "turn.completed" } }]
-    const { api } = client(() => json({ info, history }))
-    expect((await api.session("ags_1")) as unknown).toEqual({ info, history })
+    const { api } = client(() => json({ session: info, history }))
+    expect((await api.session("ags_1")) as unknown).toEqual({ session: info, history })
   })
 })

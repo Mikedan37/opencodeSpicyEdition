@@ -53,7 +53,7 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
     const resync = (sessionID: string): Promise<void> =>
       client.session(sessionID).then(
         (detail) => {
-          if (store.loadHistory(detail.info, detail.history) === "gap") return resync(sessionID)
+          if (store.loadHistory(detail.session, detail.history) === "gap") return resync(sessionID)
         },
         (error: unknown) => store.failHistory(sessionID, errorText(error)),
       )

@@ -103,13 +103,12 @@ test("debug side panel: start errors verbatim, stack, lazy variables, watches, o
   await expect(page.locator('[data-component="workbench-debug-console"]')).toBeVisible()
   await expect(page.locator('[data-component="workbench-debug-console"] [data-console-row]')).toHaveCount(0)
 
-  // Stepping posts the command; the next stop brings its file forward and resets the frame to the top one
+  // Stepping posts the command; the next stop keeps the Debug tab in front and resets the frame to the top one
   await debug.locator('[data-debug-action="next"]').click()
   await expect.poll(() => mock.controls).toEqual(["next"])
   mock.emit(updated({ state: "stopped", stop: stopAt(2) }))
-  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
-  await panel.locator('[data-workbench-side-tab="debug"]').click()
   await expect(debug.locator('[data-frame="1"] [data-slot="frame"]')).toHaveAttribute("aria-current", "true")
+  await expect(debug).toBeVisible()
 
   // The agent drives: controls are disabled with a reason; Take over posts owner = human
   mock.emit(updated({ state: "stopped", owner: "agent", stop: stopAt(2) }))
@@ -402,7 +401,7 @@ test("editor gutter: paused line with values, breakpoint dots, F9, frame selecti
   await expect(viewer.locator("[data-spicy-exec]")).toHaveCount(0)
 })
 
-test("a stop brings its file forward even when the Review tab is in front", async ({ page }) => {
+test("a stop brings its file forward over the Review tab but leaves the Debug tab in front", async ({ page }) => {
   const mock = await setup(page, {
     vcsDiff: [
       {
@@ -426,20 +425,20 @@ test("a stop brings its file forward even when the Review tab is in front", asyn
   await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
   await expect(panel.getByRole("tab", { name: /Files Changed/ })).not.toHaveAttribute("data-selected", "")
 
-  // Also over the Debug tab, except while the user types in the panel
+  // Not over the Debug tab: stepping keeps the stack and variables in view
   await panel.locator('[data-workbench-side-tab="debug"]').click()
   const debug = panel.locator('[data-component="workbench-debug"]')
-  await debug.getByPlaceholder("Add expression").click()
   await expect.poll(() => mock.scopes.length).toBeGreaterThan(0)
   const loaded = mock.scopes.length
   mock.emit(updated({ state: "stopped", stop: stopAt(2) }))
   // The new stop reloads the frame's scopes, so it has been applied while the Debug tab stays in front
   await expect.poll(() => mock.scopes.length).toBeGreaterThan(loaded)
   await expect(debug).toBeVisible()
-  await expect(debug.getByPlaceholder("Add expression")).toBeFocused()
-  await page.getByText(title).first().click()
-  mock.emit(updated({ state: "stopped", stop: stopAt(3) }))
+
+  // Back on another tab, the next stop brings its file forward again
+  await panel.getByRole("tab", { name: /Files Changed/ }).click()
   await expect(debug).toBeHidden()
+  mock.emit(updated({ state: "stopped", stop: stopAt(3) }))
   await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
 })
 

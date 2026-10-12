@@ -65,8 +65,9 @@ function createDebug() {
     debug.setOwner(owner, id).catch(fail(language.t("workbench.debug.failed.owner")))
   const end = () => debug.stop().catch(fail(language.t("workbench.debug.failed.stop")))
 
-  // A stop the human is driving brings its file forward in the side panel, whatever tab is in front, unless the user
-  // is typing in that panel (a watch, a breakpoint condition, a comment).
+  // A stop the human is driving brings its file forward in the side panel, unless the Debug tab is in front (stepping
+  // keeps the stack and variables in view) or the user is typing in that panel (a watch, a breakpoint condition, a
+  // comment).
   createEffect(
     on(
       // Keyed by the stop alone: taking over an agent's paused session is not a new stop.
@@ -77,7 +78,7 @@ function createDebug() {
       (key) => {
         const session = debug.selected()
         const frame = session?.stop?.frames[0]
-        if (!key || session?.owner !== "human" || typingInSidePanel()) return
+        if (!key || session?.owner !== "human" || workbench.side() || typingInSidePanel()) return
         if (!frame?.file || !frame.line || !debug.relative(frame.file)) return
         openAt(frame.file, frame.line, false)
       },

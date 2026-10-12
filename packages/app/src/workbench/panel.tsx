@@ -173,7 +173,7 @@ export function WorkbenchTabTriggers() {
   const attention = createMemo(
     () =>
       agenthq.state.agents.filter((agent) =>
-        agentAttention(agentSessions(agenthq.state.sessions, agent.id), agenthq.state.unseen),
+        agentAttention(agentSessions(agenthq.state.sessions, agent.id), agenthq.seen),
       ).length,
   )
   const running = createMemo(() => workbench.runs.state.runs.filter((entry) => !isFinished(entry.info.status)).length)

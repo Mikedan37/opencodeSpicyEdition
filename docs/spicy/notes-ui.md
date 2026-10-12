@@ -110,14 +110,12 @@ Upstream-owned files touched (each edit marked `spicy:`; please add to `SPICY.md
 
 - Not wired to a real backend; payload shapes above are assumptions until `spicy-agenthq` / `spicy-problems` land.
 - Old layout (`terminal-panel.tsx`, new layout designs off) has no Workbench tabs.
-- Events published by another project's instance are not seen until a reload (directory-scoped listener).
 - Debug Console and Run are empty states only (they need the `spicy-dap` contracts).
 - Relative times do not tick.
 - Line navigation depends on the viewer's `[data-line]` markup inside its shadow root (polls up to ~1 s); files outside
   the workspace root cannot be opened by the app's file tabs.
 - Keyboard: Workbench tabs open on click / Enter / Space; arrow keys only move focus to them (Kobalte selects the first
   tab on its own whenever its value is missing, so automatic activation is ignored for these tabs).
-- A completion counts as "unseen" only when observed live; it is not persisted across reloads.
 - Load races: an agent created while the initial list request is in flight can be dropped until the next event or
   reload.
 
@@ -173,3 +171,19 @@ Verified against the real server (same setup as above, the stub model asked for 
 Before those routes were applied, the server answered `GET /workbench/runs` and `POST /workbench/check` with HTML, so
 the tab showed the window-only hint and the toast, as designed. Runs started by the server have `NO_COLOR`/`TERM=dumb`, so
 real output is usually uncolored; colors are covered by unit tests and the e2e spec.
+
+### Agent HQ across projects, persisted "finished but not viewed"
+
+- Agent HQ now listens on the server-wide event stream (`serverSDK().event.listen`) instead of the open workspace's:
+  every `agenthq.*` event carries its agent's project directory, so agents working in other projects stay live in
+  the roster and workspace. HTTP calls still go through the open workspace's instance (the session manager is
+  process-global). Workbench events (`workbench.*`) stay per workspace.
+- "Finished but not viewed" is now a persisted `seen` map (sessionID → the `updatedAt` last seen),
+  `Persist.serverGlobal(scope, "agenthq.seen")`, pruned to existing sessions on load. A session is flagged when it is
+  `completed` or `idle` (the server reports a finished turn as `idle`) and changed after the user last looked at it.
+  Viewing a session, or updates arriving while it is open, move the mark; a session met for the first time counts as
+  seen unless it arrives completed. So work that finishes while the app is closed is still flagged on the next start.
+- Verified against the real server: an agent created by API in another project (`…/other`) appeared in the roster of
+  the open project through its event, went `working` → `idle` live, showed the finished dot, kept it across a reload,
+  lost it once opened, and its history rendered (Markdown included) through the open project's instance. The e2e spec
+  covers the same with events from another directory and two reloads.

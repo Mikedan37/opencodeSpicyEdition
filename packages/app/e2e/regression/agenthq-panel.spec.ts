@@ -187,6 +187,63 @@ test("output tab streams check runs with colors and file links, and loads earlie
   expect(mock.checkRequests()).toBe(1)
 })
 
+test("agents of other projects stay live; a completion nobody viewed stays flagged across reloads", async ({
+  page,
+}) => {
+  const mock = await setup(page)
+  const elsewhere = "C:/OpenCode/Elsewhere"
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await expect(page.locator('[data-component="terminal"]')).toBeVisible()
+  await page.locator('[data-workbench-tab="agents"]').click()
+  await expect(page.locator('[data-component="agenthq-card"][data-agent="agt_ada"]')).toBeVisible()
+
+  // Events of an agent working in another project arrive with that project's directory
+  const bo = agent("agt_bo", "Bo", elsewhere)
+  const working = { ...sessionInfo, id: "ags_bo", agentID: "agt_bo", title: "Port the lexer", updatedAt: 5 }
+  mock.emitIn(elsewhere, { type: "agenthq.agent.updated", properties: { agent: bo } })
+  mock.emitIn(elsewhere, { type: "agenthq.session.updated", properties: { session: working } })
+  const card = page.locator('[data-component="agenthq-card"][data-agent="agt_bo"]')
+  await expect(card).toContainText("Port the lexer")
+  await expect(card).toContainText("Elsewhere")
+  await expect(card.locator("[data-status]")).toHaveAttribute("data-status", "working")
+
+  const done = { ...working, status: "completed", updatedAt: 6 }
+  mock.emitIn(elsewhere, { type: "agenthq.session.updated", properties: { session: done } })
+  await expect(card.locator('[data-attention="completed"]')).toBeVisible()
+
+  // The server now lists Bo; after a reload the completion is still unviewed
+  mock.agents.push(bo)
+  mock.sessions.agt_bo = [done]
+  await page.reload()
+  await expectSessionTitle(page, title)
+  await expect(card.locator('[data-attention="completed"]')).toBeVisible()
+
+  // Viewing it clears the flag, also after another reload
+  await card.click()
+  await expect(page.locator('[data-component="agenthq-workspace"]')).toContainText("Bo")
+  await page.getByRole("button", { name: "Back to agents" }).click()
+  await expect(card.locator("[data-attention]")).toHaveCount(0)
+  await page.reload()
+  await expectSessionTitle(page, title)
+  await expect(card).toBeVisible()
+  await expect(card.locator("[data-attention]")).toHaveCount(0)
+})
+
+function agent(id: string, name: string, projectDirectory: string) {
+  return {
+    id,
+    name,
+    avatar: { kind: "preset", value: id === "agt_ada" ? "fox" : "owl", color: "orange" },
+    provider: "opencode",
+    specialty: "Parsers",
+    projectDirectory,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+}
+
 function runInfo(id: string, status: string, extra: Record<string, unknown> = {}) {
   return {
     id,
@@ -243,6 +300,9 @@ async function setup(page: Page, options: { runs?: RunsRoutes } = {}) {
   ]
   const answers: { requestID: string; body: unknown }[] = []
   const calls = { history: 0, problems: 0, runs: [] as string[], checks: 0 }
+  // What GET /agenthq/agents and /agenthq/agents/:id/sessions return; tests change them to simulate the server.
+  const agents: Record<string, unknown>[] = [agent("agt_ada", "Ada", directory)]
+  const sessions: Record<string, { id: string }[]> = { agt_ada: [sessionInfo] }
 
   await mockOpenCodeServer(page, {
     protocol: "v2",
@@ -313,24 +373,18 @@ async function setup(page: Page, options: { runs?: RunsRoutes } = {}) {
           capabilities: capabilities(false),
         },
       ])
-    if (path === "/agenthq/agents")
-      return json(route, [
-        {
-          id: "agt_ada",
-          name: "Ada",
-          avatar: { kind: "preset", value: "fox", color: "orange" },
-          provider: "opencode",
-          specialty: "Parsers",
-          projectDirectory: directory,
-          createdAt: 1,
-          updatedAt: 1,
-        },
-      ])
-    if (path === "/agenthq/agents/agt_ada/sessions") return json(route, [sessionInfo])
+    if (path === "/agenthq/agents") return json(route, agents)
+    const listed = path.match(/^\/agenthq\/agents\/([^/]+)\/sessions$/)?.[1]
+    if (listed) return json(route, sessions[listed] ?? [])
     if (path === `/agenthq/sessions/${agentSession}`) {
       calls.history++
       return json(route, { session: sessionInfo, history })
     }
+    const detail = path.match(/^\/agenthq\/sessions\/([^/]+)$/)?.[1]
+    const other = Object.values(sessions)
+      .flat()
+      .find((item) => item.id === detail)
+    if (other) return json(route, { session: other, history: [] })
     const answer = path.match(/^\/agenthq\/sessions\/[^/]+\/permissions\/([^/]+)$/)?.[1]
     if (answer) {
       answers.push({ requestID: answer, body: route.request().postDataJSON() })
@@ -387,6 +441,8 @@ async function setup(page: Page, options: { runs?: RunsRoutes } = {}) {
   return {
     history,
     answers,
+    agents,
+    sessions,
     historyRequests: () => calls.history,
     problemRequests: () => calls.problems,
     runRequests: () => calls.runs,

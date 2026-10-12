@@ -143,7 +143,7 @@ function AgentCard(props: { agent: Agent }) {
   const language = useLanguage()
   const sessions = createMemo(() => agentSessions(agenthq.state.sessions, props.agent.id))
   const latest = () => sessions()[0]
-  const attention = createMemo(() => agentAttention(sessions(), agenthq.state.unseen))
+  const attention = createMemo(() => agentAttention(sessions(), agenthq.seen))
   return (
     <button
       type="button"

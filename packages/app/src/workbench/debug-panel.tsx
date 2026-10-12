@@ -177,7 +177,7 @@ function CallStack() {
   )
 }
 
-// The selected frame's scopes as groups (cheap ones open, expensive ones on click), children paged by the variables
+// The selected frame's scopes as groups (the first one open, the rest on click), children paged by the variables
 // route. Without a scopes route on the server, the top frame falls back to the stop's locals.
 function Variables() {
   const debug = useDebug()
@@ -217,7 +217,7 @@ function Variables() {
                   data-frame-scopes={frame()}
                 >
                   <For each={items()}>
-                    {(scope) => (
+                    {(scope, index) => (
                       <VariableNode
                         variable={{
                           name: scope.name,
@@ -226,7 +226,9 @@ function Variables() {
                           ...(scope.expensive ? { type: language.t("workbench.debug.scope.expensive") } : {}),
                         }}
                         path={["scope", scope.name]}
-                        defaultOpen={!scope.expensive}
+                        // like VS Code: only the first scope (usually Locals) loads on every stop; adapters such as
+                        // debugpy don't mark Globals expensive
+                        defaultOpen={index() === 0 && !scope.expensive}
                       />
                     )}
                   </For>

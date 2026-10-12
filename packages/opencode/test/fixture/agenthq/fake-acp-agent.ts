@@ -86,28 +86,32 @@ new AgentSideConnection(
           return { stopReason: "end_turn" }
         }
         if (text === "late") {
-        await client.sessionUpdate({
-          sessionId,
-          update: { sessionUpdate: "agent_message_chunk", messageId: "m1", content: { type: "text", text: "first" } },
-        })
-        await client.sessionUpdate({
-          sessionId,
-          update: { sessionUpdate: "tool_call", toolCallId: "t9", title: "Read", kind: "read", status: "completed" },
-        })
-        // Out of protocol on purpose: updates for a finished message and tool after the turn's answer.
-        setTimeout(() => {
-          void client.sessionUpdate({
+          await client.sessionUpdate({
             sessionId,
-            update: { sessionUpdate: "agent_message_chunk", messageId: "m1", content: { type: "text", text: " late" } },
+            update: { sessionUpdate: "agent_message_chunk", messageId: "m1", content: { type: "text", text: "first" } },
           })
-          void client.sessionUpdate({
+          await client.sessionUpdate({
             sessionId,
-            update: { sessionUpdate: "tool_call_update", toolCallId: "t9", status: "in_progress" },
+            update: { sessionUpdate: "tool_call", toolCallId: "t9", title: "Read", kind: "read", status: "completed" },
           })
-        }, 30)
-        return { stopReason: "end_turn" }
-      }
-      if (text === "ask") {
+          // Out of protocol on purpose: updates for a finished message and tool after the turn's answer.
+          setTimeout(() => {
+            void client.sessionUpdate({
+              sessionId,
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                messageId: "m1",
+                content: { type: "text", text: " late" },
+              },
+            })
+            void client.sessionUpdate({
+              sessionId,
+              update: { sessionUpdate: "tool_call_update", toolCallId: "t9", status: "in_progress" },
+            })
+          }, 30)
+          return { stopReason: "end_turn" }
+        }
+        if (text === "ask") {
           const answer = await client.requestPermission({
             sessionId,
             toolCall: { toolCallId: "t2", title: "Delete everything", kind: "delete", rawInput: { path: "/" } },

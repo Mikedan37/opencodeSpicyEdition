@@ -68,7 +68,10 @@ interface Live {
   persisted: number
   readonly pending: Set<string>
   readonly queue: Queue.Queue<Entry>
-  /** Messages that have their final text, and tools that reached a final state: later output for them is stale. */
+  /**
+   * Messages of this turn that have their final text, and tools of this turn that reached a final state: later
+   * output for them is stale. Per turn, because some models number tool calls per turn.
+   */
   readonly final: Set<string>
   readonly tools: Set<string>
   /** Turns the provider still owes: one per user message, closed by its end, all closed by a cancel. */
@@ -240,7 +243,12 @@ const layer = Layer.effect(
           ? [...first, ...(yield* Effect.sleep(DELTA_LINGER).pipe(Effect.andThen(Queue.clear(session.queue))))]
           : first
         yield* writes
-          .withLock(session.info.id)(record(session, batch.map((entry) => entry.event)))
+          .withLock(session.info.id)(
+            record(
+              session,
+              batch.map((entry) => entry.event),
+            ),
+          )
           .pipe(
             Effect.ensuring(
               Effect.forEach(batch, (entry) => (entry.done ? Deferred.succeed(entry.done, undefined) : Effect.void), {
@@ -589,7 +597,11 @@ function stale(session: Live, event: AgentHQ.AgentEvent) {
 
 /** Turn bookkeeping for `stale`; runs for every recorded event, before a no-op status is skipped. */
 function account(session: Live, event: AgentHQ.AgentEvent) {
-  if (event.type === "message" && event.role === "user") session.owed++
+  if (event.type === "message" && event.role === "user") {
+    session.owed++
+    session.final.clear()
+    session.tools.clear()
+  }
   if (event.type === "turn.completed" || (event.type === "status" && event.status === "failed"))
     session.owed = Math.max(0, session.owed - 1)
   if (event.type === "status" && ["cancelled", "disconnected", "interrupted"].includes(event.status)) session.owed = 0
@@ -650,14 +662,19 @@ function append(session: Live, envelope: AgentHQ.AgentEventEnvelope) {
     }
     return
   }
-  if (event.type === "message")
-    session.history = session.history.filter(
-      (item) => !(item.event.type === "message.delta" && item.event.messageID === event.messageID),
-    )
-  if (event.type === "tool")
-    session.history = session.history.filter(
-      (item) => !(item.event.type === "tool" && item.event.callID === event.callID),
-    )
+  // A final message replaces its deltas and a tool update its earlier states, within the current turn only:
+  // some models number tool calls per turn, and an earlier turn's entries must stay.
+  if (event.type === "message" || event.type === "tool") {
+    const turn = session.history.findLastIndex((item) => item.event.type === "message" && item.event.role === "user")
+    const replaced = (item: AgentHQ.AgentEventEnvelope) =>
+      event.type === "tool"
+        ? item.event.type === "tool" && item.event.callID === event.callID
+        : item.event.type === "message.delta" && item.event.messageID === event.messageID
+    session.history = [
+      ...session.history.slice(0, turn + 1),
+      ...session.history.slice(turn + 1).filter((item) => !replaced(item)),
+    ]
+  }
   session.history.push(envelope)
   if (session.history.length > HISTORY_LIMIT) session.history.splice(0, session.history.length - HISTORY_LIMIT)
 }

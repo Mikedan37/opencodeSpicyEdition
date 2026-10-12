@@ -167,8 +167,10 @@ const modelCalls = (llm: TestLLMServer["Service"]) =>
 const rendered = (list: readonly Envelope[]) => {
   const texts = new Map<string, string>()
   list.forEach((item) => {
-    if (item.event.type === "message.delta") texts.set(item.event.messageID, (texts.get(item.event.messageID) ?? "") + item.event.text)
-    if (item.event.type === "message" && item.event.role === "assistant") texts.set(item.event.messageID, item.event.text)
+    if (item.event.type === "message.delta")
+      texts.set(item.event.messageID, (texts.get(item.event.messageID) ?? "") + item.event.text)
+    if (item.event.type === "message" && item.event.role === "assistant")
+      texts.set(item.event.messageID, item.event.text)
   })
   return [...texts.values()]
 }
@@ -316,6 +318,23 @@ describe("agenthq", () => {
 
       const detail = yield* sessions.get(started.id)
       expect(detail.session).toMatchObject({ status: "idle", pendingPermissions: 0 })
+
+      // Some models number tool calls per turn: the next turn's call reuses the id and is still recorded.
+      const callID = tools.at(-1)!.callID
+      yield* llm.push(reply().tool("glob", { pattern: "*.txt" }))
+      yield* llm.push(reply().text("again").stop())
+      yield* sessions.send(started.id, "list the text files")
+      const next = (yield* turnCompleted(started.id, 2)).slice(history.length)
+      const repeated = ofType(next, "tool").filter((event) => event.tool === "glob")
+      expect(repeated.map((event) => event.callID)).toContain(callID)
+      expect(repeated.at(-1)).toMatchObject({ state: "completed" })
+      expect(ofType(next, "message").map((event) => event.text)).toEqual(["list the text files", "again"])
+      // Compaction keeps one entry per tool per turn: the first turn's tool stays.
+      const kept = ofType((yield* sessions.get(started.id)).history, "tool").filter((event) => event.tool === "glob")
+      expect(kept.map((event) => [event.callID, event.state])).toEqual([
+        [callID, "completed"],
+        [callID, "completed"],
+      ])
     }),
   )
 
@@ -653,7 +672,8 @@ describe("agenthq", () => {
       const second = yield* Deferred.make<void>()
       const off = yield* events.listen((event) =>
         Effect.sync(() => {
-          if (is(SessionV1.Event.PartDelta, event) && event.data.delta === "this ") Deferred.doneUnsafe(second, Exit.void)
+          if (is(SessionV1.Event.PartDelta, event) && event.data.delta === "this ")
+            Deferred.doneUnsafe(second, Exit.void)
         }),
       )
       yield* Effect.addFinalizer(() => off)
@@ -669,7 +689,9 @@ describe("agenthq", () => {
       for (const list of [envelopes(seen, started.id), [...(yield* sessions.get(started.id)).history]]) {
         const cancelled = list.findIndex((item) => item.event.type === "status" && item.event.status === "cancelled")
         expect(cancelled).toBeGreaterThan(-1)
-        expect(list.slice(cancelled + 1).filter((item) => turn.has(item.event.type) && item.event.type !== "message")).toEqual([])
+        expect(
+          list.slice(cancelled + 1).filter((item) => turn.has(item.event.type) && item.event.type !== "message"),
+        ).toEqual([])
         const final = list.findIndex((item) => item.event.type === "message" && item.event.role === "assistant")
         if (final === -1) continue
         const id = (list[final]!.event as EventOf<"message">).messageID
@@ -693,7 +715,10 @@ describe("agenthq", () => {
         avatar: { kind: "initials", value: "L" },
         provider: "acp",
         projectDirectory: dir,
-        launch: { command: process.execPath, args: [path.join(import.meta.dir, "../fixture/agenthq/fake-acp-agent.ts")] },
+        launch: {
+          command: process.execPath,
+          args: [path.join(import.meta.dir, "../fixture/agenthq/fake-acp-agent.ts")],
+        },
       })
       const started = yield* sessions.start(agent.id)
       yield* sessions.send(started.id, "late")

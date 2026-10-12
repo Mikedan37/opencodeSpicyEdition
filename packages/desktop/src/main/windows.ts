@@ -161,7 +161,10 @@ export function restoreMainWindows() {
 
 export function setDockIcon() {
   if (process.platform !== "darwin") return
-  const icon = nativeImage.createFromPath(join(iconsDir(), "dock.png"))
+  const file = join(iconsDir(), "dock.png")
+  const icon = nativeImage.createFromPath(file)
+  // spicy: record whether the dev Dock icon loaded, so it can be verified from the log
+  writeLog("window", "dock icon", { path: file, loaded: !icon.isEmpty(), size: icon.getSize() })
   if (!icon.isEmpty()) app.dock?.setIcon(icon)
 }
 

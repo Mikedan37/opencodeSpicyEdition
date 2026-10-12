@@ -102,7 +102,14 @@ function Roster(props: { onCreate: () => void }) {
         <h2 class="text-[13px] font-[530] text-v2-text-text-base">{language.t("agenthq.roster")}</h2>
         <span class="text-[12px] tabular-nums text-v2-text-text-faint">{agenthq.state.agents.length}</span>
         <span class="flex-1" />
-        <ButtonV2 size="small" variant="neutral" icon="plus" onClick={props.onCreate}>
+        <ButtonV2
+          size="small"
+          variant="neutral"
+          icon="plus"
+          // spicy: stable selector for scripts/spicy-smoke.ts
+          data-action="agenthq-new"
+          onClick={props.onCreate}
+        >
           {language.t("agenthq.new")}
         </ButtonV2>
       </div>
@@ -114,7 +121,14 @@ function Roster(props: { onCreate: () => void }) {
             title={language.t("agenthq.empty.title")}
             description={language.t("agenthq.empty.description")}
           >
-            <ButtonV2 size="small" variant="contrast" icon="plus" onClick={props.onCreate}>
+            <ButtonV2
+              size="small"
+              variant="contrast"
+              icon="plus"
+              // spicy: stable selector for scripts/spicy-smoke.ts
+              data-action="agenthq-new"
+              onClick={props.onCreate}
+            >
               {language.t("agenthq.new")}
             </ButtonV2>
           </PanelState>
@@ -254,7 +268,15 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
         <ProviderChip provider={props.agent.provider} />
         <StatusPill status={session()?.status} />
         <span class="flex-1" />
-        <ButtonV2 size="small" variant="ghost" icon="plus" disabled={store.starting} onClick={start}>
+        <ButtonV2
+          size="small"
+          variant="ghost"
+          icon="plus"
+          // spicy: stable selector for scripts/spicy-smoke.ts
+          data-action="agenthq-start-session"
+          disabled={store.starting}
+          onClick={start}
+        >
           {language.t("agenthq.session.start")}
         </ButtonV2>
         <IconButton icon="edit" variant="ghost" aria-label={language.t("agenthq.edit")} onClick={props.onEdit} />
@@ -307,7 +329,15 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
             keyed
             fallback={
               <PanelState title={language.t("agenthq.session.empty", { name: props.agent.name })}>
-                <ButtonV2 size="small" variant="contrast" icon="plus" disabled={store.starting} onClick={start}>
+                <ButtonV2
+                  size="small"
+                  variant="contrast"
+                  icon="plus"
+                  // spicy: stable selector for scripts/spicy-smoke.ts
+                  data-action="agenthq-start-session"
+                  disabled={store.starting}
+                  onClick={start}
+                >
                   {language.t("agenthq.session.start")}
                 </ButtonV2>
               </PanelState>
@@ -612,6 +642,8 @@ function Composer(props: { session: AgentHQ.AgentSessionInfo; agent: Agent }) {
 
   return (
     <form
+      // spicy: stable selector for scripts/spicy-smoke.ts
+      data-component="agenthq-composer"
       class="flex shrink-0 items-end gap-2 border-t border-v2-border-border-muted p-2"
       onSubmit={(event) => {
         event.preventDefault()
@@ -636,6 +668,8 @@ function Composer(props: { session: AgentHQ.AgentSessionInfo; agent: Agent }) {
           type="button"
           size="small"
           variant="neutral"
+          // spicy: stable selector for scripts/spicy-smoke.ts
+          data-action="agenthq-cancel"
           disabled={!canCancel() || store.cancelling}
           title={canCancel() ? undefined : language.t("agenthq.composer.cancelUnsupported")}
           onClick={cancel}
@@ -643,7 +677,14 @@ function Composer(props: { session: AgentHQ.AgentSessionInfo; agent: Agent }) {
           {language.t("agenthq.composer.cancel")}
         </ButtonV2>
       </Show>
-      <ButtonV2 type="submit" size="small" variant="contrast" disabled={!store.text.trim() || store.sending}>
+      <ButtonV2
+        type="submit"
+        size="small"
+        variant="contrast"
+        // spicy: stable selector for scripts/spicy-smoke.ts
+        data-action="agenthq-send"
+        disabled={!store.text.trim() || store.sending}
+      >
         {language.t("agenthq.composer.send")}
       </ButtonV2>
     </form>

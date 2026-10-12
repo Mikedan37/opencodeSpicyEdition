@@ -6,6 +6,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppProcess } from "@opencode-ai/core/process"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Effect } from "effect"
+import { readFileSync } from "fs"
 import type { AgentProvider } from "../../src/agenthq/provider"
 import { ClaudeCodeProvider } from "../../src/agenthq/providers/claude-code"
 import { AgentDetect } from "../../src/agenthq/providers/detect"
@@ -416,34 +417,122 @@ describe("agenthq claude code adapter (scripted SDK)", () => {
   )
 })
 
-// The one real Claude Code session. It spends tokens on the owner's account, so it only runs when asked for.
-const real = process.env.SPICY_REAL_CLAUDE === "1" ? it.live : it.live.skip
+// The opt-in real Claude Code session, through the installed `claude` and the owner's login. SPICY_REAL_CLAUDE=1 runs
+// one haiku turn and spends tokens; SPICY_REAL_CLAUDE=status stops before anything reaches the model.
+const mode = process.env.SPICY_REAL_CLAUDE
+const real = mode === "1" || mode === "status" ? it.live : it.live.skip
+const DOCTOR = "mcp__opencode-workbench__workbench_doctor"
+const ISOLATION = [
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_STATE_HOME",
+  "OPENCODE_TEST_HOME",
+  "OPENCODE_TEST_MANAGED_CONFIG_DIR",
+]
+
+/** The command line and environment of the first process matching `pattern` (macOS `ps`, Linux `/proc`). */
+const inspect = (pattern: string) => {
+  const pid = Bun.spawnSync(["pgrep", "-f", pattern]).stdout.toString().trim().split("\n")[0]
+  if (!pid) return { command: "", environment: "" }
+  const proc = (file: string) => readFileSync(`/proc/${pid}/${file}`, "utf8").replaceAll("\0", " ")
+  const ps = (...flags: string[]) =>
+    Bun.spawnSync(["ps", ...flags, "-ww", "-p", pid, "-o", "command="]).stdout.toString()
+  return process.platform === "linux"
+    ? { command: proc("cmdline"), environment: proc("environ") }
+    : { command: ps(), environment: ps("-E") }
+}
 
 describe("agenthq claude code adapter (real, opt-in)", () => {
   real(
-    "REAL: one tiny session through the installed claude [skipped unless SPICY_REAL_CLAUDE=1: needs an authenticated claude and spends tokens]",
+    "REAL: the installed claude gets the Workbench MCP server of a password-protected listener [skipped unless SPICY_REAL_CLAUDE=1 (one haiku turn, spends tokens) or =status (no model call); needs an authenticated claude]",
     () =>
       Effect.gen(function* () {
-        const dir = yield* tmpdirScoped()
-        const events: AgentHQ.AgentEvent[] = []
+        const { query } = yield* Effect.promise(() => import("@anthropic-ai/claude-agent-sdk"))
+        const { resetDatabase } = yield* Effect.promise(() => import("../fixture/db"))
+        const { auth, listener } = yield* Effect.promise(() => import("../fixture/agenthq/listener"))
+        const { AgentWorkbench } = yield* Effect.promise(() => import("../../src/agenthq/workbench"))
+        yield* Effect.acquireRelease(Effect.promise(resetDatabase), () => Effect.promise(resetDatabase))
+        const { server } = yield* listener
+        const dir = yield* tmpdirScoped({ git: true })
+
+        // What the manager gives a session in `dir`: this listener, the directory and its credentials. The test adds
+        // its own XDG dirs, so the bridge stays out of the owner's opencode data whatever claude passes it.
+        const configured = (yield* AgentWorkbench.server(dir))!
+        expect(configured.args).toEqual(expect.arrayContaining(["--url", server.url.origin, "--directory", dir]))
+        const isolation = Object.fromEntries(
+          ISOLATION.flatMap((key) => (process.env[key] ? [[key, process.env[key]]] : [])),
+        )
+        const workbench = { ...configured, env: { ...configured.env, ...isolation } }
+
+        let sdk: ReturnType<typeof query> | undefined
         const provider = yield* ClaudeCodeProvider.make({
           status: yield* AgentDetect.prober("claude-code", ClaudeCodeProvider.capabilities),
           binary: () => AgentDetect.binary("claude-code"),
-          // One turn at most, and nothing written to the owner's ~/.claude/projects.
-          options: { maxTurns: 1, persistSession: false },
+          // The real SDK, kept at hand for its MCP status call.
+          run: (params) => (sdk = query(params)),
+          // A tool call and the reply take two turns; nothing is written to the owner's ~/.claude/projects.
+          options: { maxTurns: 3, persistSession: false },
         })
+        const events: AgentHQ.AgentEvent[] = []
         const started = Date.now()
         const session = yield* provider.createSession({
           agent: agent(dir, "haiku"),
+          workbench,
           emit: (event) => {
             events.push(event)
-            // The test plays the human: no tool may run.
-            if (event.type === "permission.requested")
-              Effect.runFork(session.respondPermission(event.requestID, "deny").pipe(Effect.ignore))
+            // The test plays the human: it allows the Workbench doctor once and nothing else.
+            if (event.type !== "permission.requested") return
+            const choice = event.tool === DOCTOR || event.tool === "ToolSearch" ? "allow" : "deny"
+            Effect.runFork(session.respondPermission(event.requestID, choice).pipe(Effect.ignore))
           },
         })
         yield* Effect.addFinalizer(() => session.close)
-        yield* session.send("Reply with exactly: pong")
+        const connectMs = Date.now() - started
+
+        // Before any prompt, so nothing reaches the model: the server is connected and lists its tools.
+        const first = (yield* Effect.promise(() => sdk!.mcpServerStatus())).find(
+          (item) => item.name === "opencode-workbench",
+        )
+        const status = yield* pollWithTimeout(
+          Effect.promise(() => sdk!.mcpServerStatus()).pipe(
+            Effect.map((list) => list.find((item) => item.name === "opencode-workbench" && item.status !== "pending")),
+          ),
+          "the Workbench MCP server never left pending",
+          "60 seconds",
+        )
+        const tools = (status.tools ?? []).map((tool) => tool.name)
+        // The processes: claude without the server's credentials, the bridge with them only in its environment.
+        const claude = inspect(session.providerSessionID)
+        const bridge = inspect(`workbench mcp --url ${server.url.origin} --directory ${dir}`)
+        const report = {
+          connectMs,
+          firstStatus: first?.status,
+          // Never `config`: it holds the server password.
+          server: { name: status.name, status: status.status, source: status.source, serverInfo: status.serverInfo },
+          error: status.error,
+          tools,
+          claudeFound: claude.command !== "",
+          // Strict mode is on, and the Workbench server is not on the claude command line.
+          claudeStrict: claude.command.includes("--strict-mcp-config"),
+          claudeMcpConfigArg: claude.command.includes("--mcp-config "),
+          claudeHasPassword: claude.environment.includes(auth.password),
+          bridgeFound: bridge.command !== "",
+          bridgeArgsHavePassword: bridge.command.includes(auth.password),
+          bridgeEnvHasPassword: bridge.environment.includes(`OPENCODE_SERVER_PASSWORD=${auth.password}`),
+          bridgeGotClaudeEnv: bridge.environment.includes("OPENCODE_EXPERIMENTAL_EVENT_SYSTEM="),
+        }
+        console.log(`SPICY_REAL_CLAUDE status ${JSON.stringify(report)}`)
+        expect(status.status).toBe("connected")
+        expect(tools).toEqual(expect.arrayContaining(["workbench_problems", "workbench_check", "workbench_doctor"]))
+        expect(tools.some((name) => name.startsWith("debug_"))).toBe(true)
+        expect(report).toMatchObject({ claudeFound: true, claudeStrict: true, claudeMcpConfigArg: false })
+        expect(report).toMatchObject({ claudeHasPassword: false, bridgeFound: true })
+        expect(report).toMatchObject({ bridgeArgsHavePassword: false, bridgeEnvHasPassword: true })
+        if (mode === "status") return
+
+        // The one model call: Claude asks to run the doctor, the test allows it once, the result comes back.
+        yield* session.send(`Call the ${DOCTOR} tool exactly once with no arguments, then reply with exactly: done`)
         const end = yield* pollWithTimeout(
           Effect.sync(() =>
             events.find(
@@ -451,22 +540,40 @@ describe("agenthq claude code adapter (real, opt-in)", () => {
             ),
           ),
           "the real Claude Code turn did not finish",
-          "180 seconds",
+          "240 seconds",
         )
+        const asked = ofType(events, "permission.requested")
+        const ran = ofType(events, "tool").filter((event) => event.tool === DOCTOR)
         const answer = ofType(events, "message").at(-1)?.text ?? ""
-        const evidence = {
+        const transcript = {
           durationMs: Date.now() - started,
           deltas: ofType(events, "message.delta").length,
+          permissionRequests: asked.map((event) => ({ tool: event.tool, title: event.title })),
+          permissionResolved: ofType(events, "permission.resolved").map((event) => event.outcome),
+          tools: ofType(events, "tool").map((event) => ({
+            tool: event.tool,
+            state: event.state,
+            output: event.output?.slice(0, 400),
+          })),
+          errors: ofType(events, "error").map((event) => event.message.slice(0, 400)),
           answer,
           end,
-          permissionRequests: ofType(events, "permission.requested").length,
-          tools: ofType(events, "tool").length,
         }
-        console.log(`SPICY_REAL_CLAUDE evidence ${JSON.stringify(evidence)}`)
+        console.log(`SPICY_REAL_CLAUDE transcript ${JSON.stringify(transcript)}`)
+        // The doctor asked exactly once and was allowed; anything else could only be the tool search.
+        const doctor = asked.filter((event) => event.tool === DOCTOR)
+        expect(doctor).toHaveLength(1)
+        expect(asked.every((event) => event.tool === DOCTOR || event.tool === "ToolSearch")).toBe(true)
+        expect(ofType(events, "permission.resolved")).toContainEqual({
+          type: "permission.resolved",
+          requestID: doctor[0]!.requestID,
+          outcome: "allowed",
+        })
+        expect(ran.at(-1)?.state).toBe("completed")
+        expect(ran.at(-1)?.output?.length).toBeGreaterThan(0)
         expect(end.type).toBe("turn.completed")
-        expect(answer.trim().toLowerCase().replace(/[.!]$/, "")).toBe("pong")
-        expect(evidence.deltas).toBeGreaterThan(0)
+        expect(answer.toLowerCase()).toContain("done")
       }),
-    240_000,
+    300_000,
   )
 })

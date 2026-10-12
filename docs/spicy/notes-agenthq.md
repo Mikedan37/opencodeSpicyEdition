@@ -783,3 +783,47 @@ and real Codex checks), 0 fail; `bun test --timeout 30000 test/server test/sessi
 `bun run typecheck` clean.
 
 No upstream-owned files were edited in wave 5.
+
+# Wave 6: AgentKit through the ACP adapter
+
+`agentkit` is a provider (additive: `ProviderID` gains `"agentkit"` in `packages/schema/src/agent-hq.ts`). It runs
+`agentkit-bridge acp`, the ACP mode the session that owns OpenCode Native's AgentKitBridge is adding, through the
+generic ACP adapter, so it gets everything every ACP agent gets:
+
+- this server's credentials stripped plus a fresh password of its own;
+- the process group killed on close;
+- the Workbench MCP server in `session/new`;
+- permission requests surfaced as `permission.requested` and never answered by Agent HQ;
+- the stale-output and cancel rules of the session manager.
+
+- Binary: an identity's `launch.command` (the existing per-identity launch override, settable through the API)
+  replaces the bridge, and Agent HQ always runs it with `acp`; otherwise `agentkit-bridge` from PATH. Nothing is
+  hardcoded yet; the bridge's install location comes from the coordinator once it exists.
+- Status (`AgentDetect.agentkit`): available when `agentkit-bridge` on PATH answers `acp --help` with exit 0 and output
+  that names `acp`. Otherwise "AgentKit bridge not found", or "this AgentKit bridge has no ACP mode yet". Starting a
+  session without the bridge or a launch command fails with that reason. To adjust once the bridge's real `--help`
+  output is known.
+
+## Tests (wave 6)
+
+| Test                                                                                     | What it proves                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agentkit.test.ts` detection (fake `agentkit-bridge` on a temp PATH)                     | Available with an ACP mode; "this AgentKit bridge has no ACP mode yet" when `acp` is an unknown command; "AgentKit bridge not found" when missing, and a session cannot start then                                                                                          |
+| AHQ-15 (scripted ACP agent behind a fake `agentkit-bridge`, through the session manager) | Under the `agentkit` provider: a streamed reply; a diff becomes `file.changed` (what review picks up); a permission request waits (`needs_approval`) and the human's answer reaches the agent; cancel records `cancelled`, and what the agent says after it is not recorded |
+| `agentkit.test.ts` real check (`SPICY_REAL_AGENTKIT=status`)                             | `initialize` and one `session/new` with the Workbench MCP server against the real bridge, never a prompt. Skipped, with "no agentkit-bridge on PATH yet" in its name, until the bridge is installed                                                                         |
+| AHQ-07 (updated)                                                                         | Six providers, one `provider.updated` each                                                                                                                                                                                                                                  |
+
+The scripted ACP agent gained a `hang` script (it says "working", waits for `session/cancel`, then talks after it).
+
+Results (from `packages/opencode`):
+
+| Command                                             | Result                                                                                                                                   |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `bun test --timeout 120000 test/agenthq`            | 40 pass, 3 skip (the opt-in real Claude, Codex and AgentKit checks), 0 fail                                                              |
+| `bun test --timeout 30000 test/server test/session` | 721 pass, 9 skip, 1 todo, 1 fail: the upstream `httpapi-v2-pty` timing flake at a load average of 16; it passed 3 of 3 alone right after |
+| `bun run typecheck`                                 | clean                                                                                                                                    |
+
+`packages/app` typecheck only reports `@codemirror/state` as missing, because this worktree's `node_modules` predates the
+editor's dependencies. The new `ProviderID` value needs no app change, since the app keeps no per-provider tables.
+
+No upstream-owned files were edited in wave 6.

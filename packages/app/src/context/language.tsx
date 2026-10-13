@@ -40,6 +40,7 @@ type PluralKey =
   | "session.revertDock.summary"
   | "workbench.git.unreviewed" // spicy: git panel
   | WorkbenchPluralKey
+  | "workbench.git.changeCount" // spicy: git panel
 type Source = { dict: Record<string, string> }
 
 function cookie(locale: Locale) {

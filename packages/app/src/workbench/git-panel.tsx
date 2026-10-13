@@ -1,6 +1,7 @@
 // The Files Changed panel's commit area and the Git palette commands. State: git.ts; routes: /workbench/git. Push and
-// pull requests reach the network, so each is confirmed in a dialog first, and push never forces. Committing while the
-// Agent changes review has undecided hunks asks first.
+// pull requests reach the network, so each is confirmed in a dialog first, and push never forces. The area is a one-line
+// bar until the human expands it (remembered per workspace), and it stays a bar while the Agent changes review has
+// undecided hunks: the review comes first, and the bar never takes the review's room.
 import {
   createEffect,
   createMemo,
@@ -30,8 +31,10 @@ import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
+import { useServerSDK } from "@/context/server-sdk"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { useReview } from "@/review/context"
+import { Persist, persisted } from "@/utils/persist"
 import { showToast } from "@/utils/toast"
 import { errorText } from "./client"
 import { canCommit, changes, createGitState, STATE_LETTER, type GitState } from "./git"
@@ -41,6 +44,7 @@ import { Glyph } from "./ui"
 const BRANCH =
   '<circle cx="7" cy="5.5" r="2"/><circle cx="7" cy="18.5" r="2"/><circle cx="17" cy="7.5" r="2"/><path d="M7 7.5v9M17 9.5c0 4.5-10 3-10 7"/>'
 const REFRESH = '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>'
+const COLLAPSE = '<path d="M7 10l5 5 5-5"/>'
 const SECTION = "text-[11px] font-[530] uppercase tracking-[0.04em] text-v2-text-text-muted"
 const LINK = "rounded px-1 text-[11px] text-v2-text-text-muted hover:text-v2-text-text-base disabled:opacity-50"
 const ALERT =
@@ -57,6 +61,7 @@ export const { use: useGit, provider: GitProvider } = createSimpleContext({
     const workbench = useWorkbench()
     const review = useReview()
     const sdk = useSDK()
+    const serverSDK = useServerSDK()
     const command = useCommand()
     const language = useLanguage()
     const dialog = useDialog()
@@ -82,6 +87,12 @@ export const { use: useGit, provider: GitProvider } = createSimpleContext({
     // Hunks the Agent changes review has not decided yet.
     const unreviewed = createMemo(() => review.pending().reduce((sum, row) => sum + row.file.hunks.length, 0))
     const git: Git = { ...state, unreviewed }
+    // Collapsed by default, remembered per workspace; forced collapsed while hunks are undecided.
+    const [view, setView] = persisted(
+      Persist.serverWorkspace(serverSDK().scope, sdk().directory, "git-panel"),
+      createStore({ expanded: false }),
+    )
+    const expanded = () => view.expanded && !unreviewed()
 
     // A layout view only while a command needs it, in a root disposed right away (as workbench/panel.tsx does).
     const openPanel = () =>
@@ -97,6 +108,7 @@ export const { use: useGit, provider: GitProvider } = createSimpleContext({
     let focusWanted = false
     const focusMessage = () => {
       openPanel()
+      setView("expanded", true)
       focusWanted = true
       setFocusTick((tick) => tick + 1)
     }
@@ -107,31 +119,15 @@ export const { use: useGit, provider: GitProvider } = createSimpleContext({
     }
 
     const commit = () => {
-      if (!canCommit(state.state.status, state.state.message) || state.state.busy) return
-      const run = () =>
-        void state.commit().then((result) => {
-          if (!result) return
-          showToast({
-            variant: "success",
-            title: language.t("workbench.git.committed", { sha: result.sha.slice(0, 7) }),
-            description: result.subject,
-          })
+      if (!canCommit(state.state.status, state.state.message) || state.state.busy || unreviewed()) return
+      void state.commit().then((result) => {
+        if (!result) return
+        showToast({
+          variant: "success",
+          title: language.t("workbench.git.committed", { sha: result.sha.slice(0, 7) }),
+          description: result.subject,
         })
-      const count = unreviewed()
-      if (!count) return run()
-      dialog.show(() => (
-        <UnreviewedDialog
-          count={count}
-          onCommit={() => {
-            dialog.close()
-            run()
-          }}
-          onReview={() => {
-            dialog.close()
-            review.show()
-          }}
-        />
-      ))
+      })
     }
     const generate = () => {
       focusMessage()
@@ -161,19 +157,21 @@ export const { use: useGit, provider: GitProvider } = createSimpleContext({
       const status = state.state.status
       const busy = !!state.state.busy
       const remote = !!status?.branch && !!status.remotes.length
+      // The commit area opens only once the Agent changes review is decided.
+      const blocked = !status || !!unreviewed()
       return [
         {
           id: "git.show",
           title: language.t("workbench.git.command.show"),
           category,
-          disabled: !status,
+          disabled: blocked,
           onSelect: focusMessage,
         },
         {
           id: "git.commit",
           title: language.t("workbench.git.command.commit"),
           category,
-          disabled: !status?.staged.length || busy,
+          disabled: blocked || !status?.staged.length || busy,
           // Without a message the box takes focus; with one, the commit runs as the button would.
           onSelect: () => (state.state.message.trim() ? commit() : focusMessage()),
         },
@@ -181,7 +179,7 @@ export const { use: useGit, provider: GitProvider } = createSimpleContext({
           id: "git.generate",
           title: language.t("workbench.git.command.generate"),
           category,
-          disabled: !status?.generate.available || !status.staged.length || busy,
+          disabled: blocked || !status?.generate.available || !status.staged.length || busy,
           onSelect: generate,
         },
         {
@@ -222,7 +220,21 @@ export const { use: useGit, provider: GitProvider } = createSimpleContext({
       ]
     })
 
-    return { git, focusTick, takeFocus, commit, generate, push, pullRequest, branches, all, showReview: review.show }
+    return {
+      git,
+      expanded,
+      setExpanded: (value: boolean) => setView("expanded", value),
+      focusMessage,
+      focusTick,
+      takeFocus,
+      commit,
+      generate,
+      push,
+      pullRequest,
+      branches,
+      all,
+      showReview: review.show,
+    }
   },
 })
 
@@ -243,152 +255,201 @@ export function GitCommitArea() {
   return (
     <Show when={git.state.status}>
       {(status) => (
-        <section
-          data-component="git-commit-area"
-          aria-label={language.t("workbench.git.title")}
-          class="flex max-h-[50%] shrink-0 flex-col gap-2 overflow-y-auto border-t border-v2-border-border-muted px-3 py-2 text-[12px] text-v2-text-text-base"
-        >
-          <div class="flex min-w-0 items-center gap-1.5">
-            <button
-              type="button"
-              data-action="git-branches"
-              class="flex min-w-0 items-center gap-1 rounded-[4px] px-1 py-0.5 hover:bg-v2-background-bg-layer-02 disabled:opacity-50"
-              title={language.t("workbench.git.branch.switch")}
-              disabled={busy()}
-              onClick={panel.branches}
-            >
-              <Glyph path={BRANCH} size={14} />
-              <span data-slot="git-branch" class="truncate font-[530]">
-                {status().branch ?? language.t("workbench.git.detached")}
-              </span>
-            </button>
-            <Show when={status().upstream}>
-              {(upstream) => <span class="min-w-0 truncate text-v2-text-text-faint">{upstream()}</span>}
-            </Show>
-            <Show when={status().ahead}>
-              <span data-slot="git-ahead" class="text-v2-text-text-muted">
-                {language.t("workbench.git.ahead", { count: status().ahead })}
-              </span>
-            </Show>
-            <Show when={status().behind}>
-              <span class="text-v2-text-text-muted">
-                {language.t("workbench.git.behind", { count: status().behind })}
-              </span>
-            </Show>
-            <span class="flex-1" />
-            <Show when={busy()}>
-              <LoaderV2 width={12} height={12} />
-            </Show>
-            <IconButtonV2
-              size="small"
-              variant="ghost"
-              data-action="git-refresh"
-              aria-label={language.t("workbench.git.refresh")}
-              onClick={() => void git.refresh()}
-            >
-              <Glyph path={REFRESH} size={14} />
-            </IconButtonV2>
-          </div>
-          <FileGroup kind="staged" files={status().staged} git={git} onAll={() => panel.all(true)} />
-          <FileGroup kind="changes" files={changes(status())} git={git} onAll={() => panel.all(false)} />
-          <TextareaV2
-            ref={(element: HTMLTextAreaElement) => (input = element)}
-            name="commit-message"
-            rows={3}
-            class="!w-full"
-            aria-label={language.t("workbench.git.message")}
-            placeholder={language.t("workbench.git.message.placeholder", {
-              keys: formatKeybind("mod+enter", language.t),
-            })}
-            value={git.state.message}
-            onInput={(event) => git.setMessage(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return
-              event.preventDefault()
-              panel.commit()
-            }}
-          />
-          <Show when={git.unreviewed()}>
+        <Show
+          when={panel.expanded()}
+          fallback={
+            // One line: the review above keeps the panel.
             <div
-              role="status"
-              data-slot="git-unreviewed"
-              class="flex items-center gap-2 rounded-[6px] bg-v2-state-bg-warning px-2 py-1 text-v2-state-fg-warning"
+              data-component="git-commit-area"
+              data-state="collapsed"
+              aria-label={language.t("workbench.git.title")}
+              class="flex h-9 shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-3 text-[12px] text-v2-text-text-base"
             >
-              <span class="min-w-0 flex-1">
-                <Unreviewed count={git.unreviewed()} />
+              <BranchButton status={status()} disabled={busy()} onClick={panel.branches} />
+              <span data-slot="git-change-count" class="shrink-0 text-v2-text-text-muted">
+                {language.plural(
+                  "workbench.git.changeCount",
+                  // a file partly staged is one change
+                  new Set([...status().staged, ...status().unstaged, ...status().untracked].map((file) => file.path))
+                    .size,
+                )}
               </span>
-              <button type="button" class="shrink-0 underline" onClick={panel.showReview}>
-                {language.t("workbench.git.unreviewed.review")}
-              </button>
-            </div>
-          </Show>
-          <Show when={git.state.error}>
-            {(error) => (
-              <div role="alert" data-slot="git-error" class={ALERT}>
-                {error()}
-              </div>
-            )}
-          </Show>
-          <div class="flex flex-wrap items-center gap-2">
-            <span
-              title={
-                status().generate.available
-                  ? language.t("workbench.git.generate.title", { model: status().generate.model ?? "" })
-                  : status().generate.reason
-              }
-            >
+              <Show when={git.unreviewed()}>
+                <button
+                  type="button"
+                  data-slot="git-unreviewed"
+                  class="min-w-0 truncate text-v2-state-fg-warning hover:underline"
+                  title={language.plural("workbench.git.unreviewed", git.unreviewed())}
+                  onClick={panel.showReview}
+                >
+                  {language.t("workbench.git.reviewFirst")}
+                </button>
+              </Show>
+              <span class="flex-1" />
               <ButtonV2
                 type="button"
                 size="small"
                 variant="neutral"
-                data-action="git-generate"
-                disabled={!status().generate.available || !status().staged.length || busy()}
-                onClick={panel.generate}
+                data-action="git-expand"
+                class="shrink-0"
+                disabled={!!git.unreviewed()}
+                onClick={panel.focusMessage}
               >
-                {language.t("workbench.git.generate")}
+                {language.t("workbench.git.expand")}
               </ButtonV2>
-            </span>
-            <span class="flex-1" />
-            <ButtonV2
-              type="button"
-              size="small"
-              variant="ghost"
-              data-action="git-push"
-              disabled={!status().branch || !status().remotes.length || busy()}
-              onClick={panel.push}
-            >
-              {language.t(status().upstream ? "workbench.git.push" : "workbench.git.publish")}
-            </ButtonV2>
-            <ButtonV2
-              type="button"
-              size="small"
-              variant="ghost"
-              data-action="git-pr"
-              disabled={!status().branch || !status().remotes.length || busy()}
-              onClick={panel.pullRequest}
-            >
-              {language.t("workbench.git.pr")}
-            </ButtonV2>
-            <ButtonV2
-              type="button"
-              size="small"
-              variant="contrast"
-              data-action="git-commit"
-              disabled={!canCommit(status(), git.state.message) || busy()}
-              onClick={panel.commit}
-            >
-              {language.t("workbench.git.commit")}
-            </ButtonV2>
-          </div>
-        </section>
+            </div>
+          }
+        >
+          {/* At most 40% of the panel, scrolling inside itself: the review keeps the rest. */}
+          <section
+            data-component="git-commit-area"
+            data-state="expanded"
+            aria-label={language.t("workbench.git.title")}
+            class="flex max-h-[40%] shrink-0 flex-col gap-2 overflow-y-auto border-t border-v2-border-border-muted px-3 py-2 text-[12px] text-v2-text-text-base"
+          >
+            <div class="flex min-w-0 items-center gap-1.5">
+              <BranchButton status={status()} disabled={busy()} onClick={panel.branches} />
+              <Show when={status().upstream}>
+                {(upstream) => <span class="min-w-0 truncate text-v2-text-text-faint">{upstream()}</span>}
+              </Show>
+              <Show when={status().ahead}>
+                <span data-slot="git-ahead" class="text-v2-text-text-muted">
+                  {language.t("workbench.git.ahead", { count: status().ahead })}
+                </span>
+              </Show>
+              <Show when={status().behind}>
+                <span class="text-v2-text-text-muted">
+                  {language.t("workbench.git.behind", { count: status().behind })}
+                </span>
+              </Show>
+              <span class="flex-1" />
+              <Show when={busy()}>
+                <LoaderV2 width={12} height={12} />
+              </Show>
+              <IconButtonV2
+                size="small"
+                variant="ghost"
+                data-action="git-refresh"
+                aria-label={language.t("workbench.git.refresh")}
+                onClick={() => void git.refresh()}
+              >
+                <Glyph path={REFRESH} size={14} />
+              </IconButtonV2>
+              <IconButtonV2
+                size="small"
+                variant="ghost"
+                data-action="git-collapse"
+                aria-label={language.t("workbench.git.collapse")}
+                onClick={() => panel.setExpanded(false)}
+              >
+                <Glyph path={COLLAPSE} size={14} />
+              </IconButtonV2>
+            </div>
+            <FileGroup kind="staged" files={status().staged} git={git} onAll={() => panel.all(true)} />
+            <FileGroup kind="changes" files={changes(status())} git={git} onAll={() => panel.all(false)} />
+            <TextareaV2
+              ref={(element: HTMLTextAreaElement) => {
+                input = element
+                // Opened by "Commit…" or a command: the message box takes focus once it is in the page.
+                if (panel.takeFocus()) queueMicrotask(() => element.focus())
+              }}
+              name="commit-message"
+              rows={3}
+              class="!w-full"
+              aria-label={language.t("workbench.git.message")}
+              placeholder={language.t("workbench.git.message.placeholder", {
+                keys: formatKeybind("mod+enter", language.t),
+              })}
+              value={git.state.message}
+              onInput={(event) => git.setMessage(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return
+                event.preventDefault()
+                panel.commit()
+              }}
+            />
+            <Show when={git.state.error}>
+              {(error) => (
+                <div role="alert" data-slot="git-error" class={ALERT}>
+                  {error()}
+                </div>
+              )}
+            </Show>
+            <div class="flex flex-wrap items-center gap-2">
+              <span
+                title={
+                  status().generate.available
+                    ? language.t("workbench.git.generate.title", { model: status().generate.model ?? "" })
+                    : status().generate.reason
+                }
+              >
+                <ButtonV2
+                  type="button"
+                  size="small"
+                  variant="neutral"
+                  data-action="git-generate"
+                  disabled={!status().generate.available || !status().staged.length || busy()}
+                  onClick={panel.generate}
+                >
+                  {language.t("workbench.git.generate")}
+                </ButtonV2>
+              </span>
+              <span class="flex-1" />
+              <ButtonV2
+                type="button"
+                size="small"
+                variant="ghost"
+                data-action="git-push"
+                disabled={!status().branch || !status().remotes.length || busy()}
+                onClick={panel.push}
+              >
+                {language.t(status().upstream ? "workbench.git.push" : "workbench.git.publish")}
+              </ButtonV2>
+              <ButtonV2
+                type="button"
+                size="small"
+                variant="ghost"
+                data-action="git-pr"
+                disabled={!status().branch || !status().remotes.length || busy()}
+                onClick={panel.pullRequest}
+              >
+                {language.t("workbench.git.pr")}
+              </ButtonV2>
+              <ButtonV2
+                type="button"
+                size="small"
+                variant="contrast"
+                data-action="git-commit"
+                disabled={!canCommit(status(), git.state.message) || busy()}
+                onClick={panel.commit}
+              >
+                {language.t("workbench.git.commit")}
+              </ButtonV2>
+            </div>
+          </section>
+        </Show>
       )}
     </Show>
   )
 }
 
-function Unreviewed(props: { count: number }) {
+function BranchButton(props: { status: WorkbenchGit.Status; disabled: boolean; onClick: () => void }) {
   const language = useLanguage()
-  return <>{language.plural("workbench.git.unreviewed", props.count)}</>
+  return (
+    <button
+      type="button"
+      data-action="git-branches"
+      class="flex min-w-0 items-center gap-1 rounded-[4px] px-1 py-0.5 hover:bg-v2-background-bg-layer-02 disabled:opacity-50"
+      title={language.t("workbench.git.branch.switch")}
+      disabled={props.disabled}
+      onClick={props.onClick}
+    >
+      <Glyph path={BRANCH} size={14} />
+      <span data-slot="git-branch" class="truncate font-[530]">
+        {props.status.branch ?? language.t("workbench.git.detached")}
+      </span>
+    </button>
+  )
 }
 
 function FileGroup(props: {
@@ -507,39 +568,6 @@ function GitDialog(props: {
           {props.submit}
         </DialogFooter>
       </form>
-    </Dialog>
-  )
-}
-
-function UnreviewedDialog(props: { count: number; onCommit: () => void; onReview: () => void }) {
-  const language = useLanguage()
-  const dialog = useDialog()
-  return (
-    <Dialog fit>
-      <div class="contents" data-component="git-unreviewed-dialog">
-        <DialogHeader>
-          <DialogTitle>{language.t("workbench.git.unreviewed.title")}</DialogTitle>
-        </DialogHeader>
-        <DividerV2 />
-        <DialogBody class="flex w-[min(440px,calc(100vw-48px))] flex-col gap-2 px-4 pt-4 pb-1 text-[13px]">
-          <p class="font-[530] text-v2-state-fg-warning">
-            <Unreviewed count={props.count} />
-          </p>
-          <p class="text-v2-text-text-muted">{language.t("workbench.git.unreviewed.description")}</p>
-        </DialogBody>
-        <DialogFooter>
-          <ButtonV2 type="button" variant="neutral" onClick={() => dialog.close()}>
-            {language.t("common.cancel")}
-          </ButtonV2>
-          <span class="flex-1" />
-          <ButtonV2 type="button" variant="neutral" data-action="git-review" onClick={props.onReview}>
-            {language.t("workbench.git.unreviewed.review")}
-          </ButtonV2>
-          <ButtonV2 type="button" variant="contrast" data-action="git-commit-anyway" onClick={props.onCommit}>
-            {language.t("workbench.git.unreviewed.commit")}
-          </ButtonV2>
-        </DialogFooter>
-      </div>
     </Dialog>
   )
 }

@@ -19,6 +19,7 @@ import { errorText } from "@/workbench/client"
 import { PanelState, RequestErrorState, TONE_CLASS } from "@/workbench/ui"
 import { useWorkbench } from "@/workbench/panel"
 import { draftedTool } from "@/workbench/tools"
+import { PatchView } from "@/workbench/patch-view"
 import { AgentAvatar } from "./avatar"
 import { AgentDialog, createAgentDraft } from "./agent-dialog"
 import { useAgentHQ } from "./context"
@@ -580,6 +581,14 @@ function ToolRow(props: { tool: ToolItem }) {
 function PermissionCard(props: { permission: PermissionItem; sessionID: string }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
+  const always = (permission: PermissionItem) =>
+    language.t(
+      permission.preview?.kind === "edit"
+        ? "agenthq.permission.alwaysEdits"
+        : permission.preview?.kind === "command"
+          ? "agenthq.permission.alwaysCommand"
+          : "agenthq.permission.always",
+    )
   return (
     <div
       role="group"
@@ -601,11 +610,55 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
       <Show when={props.permission.tool}>
         <div class="font-mono text-[11px] text-v2-text-text-muted">{props.permission.tool}</div>
       </Show>
-      <Show when={props.permission.details}>
-        <pre class="mt-1 max-h-40 select-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[16px] text-v2-text-text-muted">
-          {props.permission.details}
-        </pre>
-      </Show>
+      {/* UX #3: what is being approved, readable: the edit as a diff, the command and where it runs, or one line */}
+      <Switch
+        fallback={
+          <Show when={props.permission.details}>
+            <pre class="mt-1 max-h-40 select-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[16px] text-v2-text-text-muted">
+              {props.permission.details}
+            </pre>
+          </Show>
+        }
+      >
+        <Match when={props.permission.preview?.kind === "edit" ? props.permission.preview : undefined}>
+          {(edit) => (
+            <div
+              data-slot="permission-edit"
+              class="mt-1.5 max-h-80 overflow-auto rounded-[6px] bg-v2-background-bg-base"
+            >
+              <PatchView diff={edit().diff} />
+              <Show when={edit().truncated}>
+                <p class="px-2 py-1 text-[11px] text-v2-text-text-muted">
+                  {language.t("agenthq.permission.truncated")}
+                </p>
+              </Show>
+            </div>
+          )}
+        </Match>
+        <Match when={props.permission.preview?.kind === "command" ? props.permission.preview : undefined}>
+          {(command) => (
+            <div data-slot="permission-command" class="mt-1.5 flex flex-col gap-0.5">
+              <pre class="select-text overflow-x-auto whitespace-pre-wrap break-words rounded-[6px] bg-v2-background-bg-base px-2 py-1 font-mono text-[12px] text-v2-text-text-base">
+                {`$ ${command().command}`}
+              </pre>
+              <Show when={command().cwd}>
+                {(cwd) => (
+                  <span class="font-mono text-[11px] text-v2-text-text-muted">
+                    {language.t("agenthq.permission.cwd", { cwd: cwd() })}
+                  </span>
+                )}
+              </Show>
+            </div>
+          )}
+        </Match>
+        <Match when={props.permission.preview?.kind === "other" ? props.permission.preview : undefined}>
+          {(other) => (
+            <p data-slot="permission-other" class="mt-1 select-text text-[12px] text-v2-text-text-base">
+              {other().summary}
+            </p>
+          )}
+        </Match>
+      </Switch>
       <Show
         when={!props.permission.outcome}
         fallback={
@@ -619,7 +672,8 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
             {(option) => (
               <ButtonV2
                 size="small"
-                variant={option.kind.startsWith("allow") ? "contrast" : "neutral"}
+                // Only "Allow once" is the primary answer; "always" says what it covers.
+                variant={option.kind === "allow_once" ? "contrast" : "neutral"}
                 disabled={!!props.permission.responding}
                 data-option={option.id}
                 onClick={() => void agenthq.respond(props.sessionID, props.permission.requestID, option.id)}
@@ -627,7 +681,7 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
                 <Show when={props.permission.responding === option.id}>
                   <LoaderV2 width={12} height={12} />
                 </Show>
-                {option.label}
+                {option.kind === "allow_always" ? always(props.permission) : option.label}
               </ButtonV2>
             )}
           </For>

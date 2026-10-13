@@ -135,6 +135,7 @@ const decoders = {
   tasks: Schema.decodeUnknownOption(Schema.Array(AgentHQ.Task)),
   task: Schema.decodeUnknownOption(AgentHQ.Task),
   taskReview: Schema.decodeUnknownOption(AgentHQ.TaskReview),
+  taskReviewDiff: Schema.decodeUnknownOption(AgentHQ.TaskReviewDiff),
   messages: Schema.decodeUnknownOption(Schema.Array(AgentHQ.AgentMessage)),
   message: Schema.decodeUnknownOption(AgentHQ.AgentMessage),
   investigations: Schema.decodeUnknownOption(Schema.Array(Workbench.InvestigationSummary)),
@@ -301,6 +302,16 @@ export function createWorkbenchClient(input: {
     // Dry run of approving: what merging the task's branch would bring in, as of the branch commit `head`. Touches
     // nothing outside the task's own branch.
     taskReview: (id: string) => decoded(decoders.taskReview, "GET", `${task(id)}/review`),
+    // What approving merges (base...head) for one file or all of them; pass the review's head so it is exactly that.
+    // 409 when the head is no longer on the branch, or the branch is gone.
+    taskReviewDiff: (id: string, query: { path?: string; head?: string }) =>
+      decoded(
+        decoders.taskReviewDiff,
+        "GET",
+        `${task(id)}/review/diff?${new URLSearchParams(
+          Object.entries(query).filter((entry): entry is [string, string] => !!entry[1]),
+        )}`,
+      ),
     // Merges exactly the reviewed `head`; the server refuses when the task changed since that review.
     approveTask: (id: string, head?: string) => decoded(decoders.task, "POST", `${task(id)}/approve`, { head }),
     messages: (filter: { taskID?: string; agentID?: string }) =>

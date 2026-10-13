@@ -272,6 +272,77 @@ test("UI-01 5,000 problems stay virtualized while searching and scrolling", asyn
   expect(await rows.count()).toBeLessThan(200)
 })
 
+test("UX #3 permission cards show what they approve: a diff, a command with its cwd, one line", async ({ page }) => {
+  const mock = await setup(page)
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="agents"]').click()
+  await page.locator('[data-component="agenthq-card"][data-agent="agt_ada"]').click()
+  const workspace = page.locator('[data-component="agenthq-workspace"]')
+  await expect(workspace.locator('[data-row="message"][data-role="user"]')).toContainText("Fix the parser bug")
+  const options = [
+    { id: "once", label: "Allow once", kind: "allow_once" },
+    { id: "always", label: "Always allow", kind: "allow_always" },
+    { id: "reject", label: "Reject", kind: "reject_once" },
+  ]
+  mock.emit(
+    envelope(1, {
+      type: "permission.requested",
+      requestID: "perm_edit",
+      title: "Edit src/parser.ts",
+      tool: "edit",
+      details: '{"filepath":"/private/var/folders/x/src/parser.ts","diff":"…"}',
+      preview: {
+        kind: "edit",
+        path: "src/parser.ts",
+        diff: "Index: src/parser.ts\n===================================================================\n--- src/parser.ts\n+++ src/parser.ts\n@@ -1,2 +1,2 @@\n-const a = 1\n+const a = 2\n const b = 3\n",
+      },
+      options,
+    }),
+    envelope(2, {
+      type: "permission.requested",
+      requestID: "perm_bash",
+      title: "Run the tests",
+      tool: "bash",
+      preview: { kind: "command", command: "bun test parser", cwd: "packages/parser" },
+      options,
+    }),
+    envelope(3, {
+      type: "permission.requested",
+      requestID: "perm_other",
+      title: "Fetch a page",
+      preview: { kind: "other", summary: "GET https://example.com/docs" },
+      options,
+    }),
+    envelope(4, {
+      type: "permission.requested",
+      requestID: "perm_old",
+      title: "Old adapter",
+      details: '{"raw":true}',
+      options,
+    }),
+  )
+  const edit = workspace.locator('[data-row="permission"][data-request="perm_edit"]')
+  await expect(edit.locator('[data-slot="permission-edit"] [data-component="file"][data-mode="diff"]')).toBeVisible()
+  await expect(edit.locator('[data-slot="permission-edit"]')).toContainText("src/parser.ts")
+  await expect(edit).not.toContainText("/private/var/folders")
+  // Only Allow once is primary; "always" says what it covers.
+  await expect(edit.locator("[data-option]")).toHaveText(["Allow once", "Always allow edits in this session", "Reject"])
+  await expect(edit.locator('[data-option="once"]')).toHaveAttribute("data-variant", "contrast")
+  await expect(edit.locator('[data-option="always"]')).not.toHaveAttribute("data-variant", "contrast")
+  const bash = workspace.locator('[data-row="permission"][data-request="perm_bash"]')
+  await expect(bash.locator('[data-slot="permission-command"]')).toContainText("$ bun test parser")
+  await expect(bash.locator('[data-slot="permission-command"]')).toContainText("in packages/parser")
+  await expect(bash.locator('[data-option="always"]')).toHaveText("Always allow this command in this session")
+  await expect(workspace.locator('[data-request="perm_other"] [data-slot="permission-other"]')).toHaveText(
+    "GET https://example.com/docs",
+  )
+  await expect(workspace.locator('[data-request="perm_old"]')).toContainText('{"raw":true}')
+  await edit.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: test.info().outputPath("ux3-permission-preview.png") })
+})
+
 function agent(id: string, name: string, projectDirectory: string) {
   return {
     id,

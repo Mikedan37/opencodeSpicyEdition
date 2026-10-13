@@ -74,6 +74,7 @@ type Client = Pick<
   | "startTask"
   | "cancelTask"
   | "taskReview"
+  | "taskReviewDiff"
   | "approveTask"
   | "messages"
   | "sendMessage"
@@ -208,6 +209,8 @@ export function createTasksState(client: Client) {
     // Merges the reviewed commit of the task's branch into the project. Only ever called from the user's Approve
     // click, with the `head` of the review the user is looking at.
     approve: (id: string, head?: string) => act(id, "approve", () => client.approveTask(id, head)),
+    // The merge gate's diff (UX #4): read-only, nothing is cached.
+    reviewDiff: (id: string, query: { path?: string; head?: string }) => client.taskReviewDiff(id, query),
     upsertMessage,
     loadThread,
     thread,

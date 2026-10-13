@@ -14,6 +14,7 @@ import { useLanguage } from "@/context/language"
 import { getRelativeTime } from "@/utils/time"
 import { showToast } from "@/utils/toast"
 import { errorText } from "@/workbench/client"
+import { PatchView } from "@/workbench/patch-view"
 import { PanelState, TONE_CLASS } from "@/workbench/ui"
 import { AgentAvatar } from "./avatar"
 import { useAgentHQ } from "./context"
@@ -235,7 +236,8 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
   const tasks = agenthq.tasks
   const [confirm, setConfirm] = createSignal(false)
   const assignee = () => agenthq.state.agents.find((agent) => agent.id === props.task.assignee)
-  const busy = () => !!tasks.state.busy[props.task.id]
+  // UX #12: while an approval finishes merging, nothing else may touch the task.
+  const busy = () => !!tasks.state.busy[props.task.id] || !!props.task.merging
   const dependencies = () => props.task.dependsOn.map((id) => ({ id, task: tasks.find(id) }))
   const fail = (title: string) => (error: unknown) =>
     showToast({ variant: "error", title, description: errorText(error) })
@@ -251,6 +253,16 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
       <div class="flex flex-wrap items-center gap-2">
         <h3 class="min-w-0 truncate text-[14px] font-[530] text-v2-text-text-base">{props.task.title}</h3>
         <TaskStatusPill status={props.task.status} />
+        <Show when={props.task.merging}>
+          <span
+            role="status"
+            data-slot="task-merging"
+            class="flex shrink-0 items-center gap-1.5 text-[12px] text-v2-text-text-muted"
+          >
+            <LoaderV2 width={12} height={12} />
+            {language.t("agenthq.task.merging")}
+          </span>
+        </Show>
         <span class="flex-1" />
         <Show when={STARTABLE.has(props.task.status)}>
           <ButtonV2
@@ -296,6 +308,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
             size="small"
             variant="ghost"
             data-action="task-delete"
+            disabled={!!props.task.merging}
             onClick={remove}
             onBlur={() => setConfirm(false)}
           >
@@ -433,17 +446,27 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
 }
 
 // Approving merges the task's branch into the user's project, so the dry run comes first and Approve is always an
-// explicit click; a refusal (409) is shown as the server words it.
+// explicit click; a refusal (409) is shown as the server words it. UX #4: every file of the dry run (and all of them)
+// opens the diff Approve would merge, read at the review's head, and Approve sits under the summary.
 function ReviewGate(props: { task: Task }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
   const tasks = agenthq.tasks
   const state = () => tasks.state.reviews[props.task.id]
   const [refusal, setRefusal] = createSignal<string>()
+  const [diff, setDiff] = createStore({
+    // the file whose diff is open, or ALL
+    open: undefined as string | undefined,
+    status: "idle" as "idle" | "loading" | "ready" | "failed",
+    text: "",
+    truncated: false,
+    error: undefined as string | undefined,
+  })
   // One dry run per review; a failure waits for "Check again".
   createEffect(() => {
     if (!state()) void tasks.review(props.task.id)
   })
+  const merging = () => !!props.task.merging
   const blocked = () => {
     const review = state()?.review
     if (!review) return language.t("agenthq.task.review.loading")
@@ -452,6 +475,31 @@ function ReviewGate(props: { task: Task }) {
   const approve = () => {
     setRefusal(undefined)
     tasks.approve(props.task.id, state()?.review?.head).catch((error: unknown) => setRefusal(errorText(error)))
+  }
+  const show = (path?: string) => {
+    const key = path ?? ALL
+    if (diff.open === key) return setDiff({ open: undefined, status: "idle" })
+    setDiff({ open: key, status: "loading", error: undefined })
+    tasks.reviewDiff(props.task.id, { path, head: state()?.review?.head }).then(
+      (result) => {
+        if (diff.open === key) setDiff({ status: "ready", text: result.diff, truncated: !!result.truncated })
+      },
+      (error: unknown) => {
+        if (diff.open === key) setDiff({ status: "failed", error: errorText(error) })
+      },
+    )
+  }
+  const checkAgain = () => {
+    setDiff({ open: undefined, status: "idle" })
+    void tasks.review(props.task.id)
+  }
+  const totals = () => {
+    const files = state()?.review?.files ?? []
+    return {
+      count: files.length,
+      additions: files.reduce((sum, file) => sum + file.additions, 0),
+      deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+    }
   }
   return (
     <section
@@ -468,21 +516,10 @@ function ReviewGate(props: { task: Task }) {
           variant="ghost"
           class="shrink-0 whitespace-nowrap"
           data-action="task-review-refresh"
-          disabled={state()?.status === "loading"}
-          onClick={() => void tasks.review(props.task.id)}
+          disabled={state()?.status === "loading" || merging()}
+          onClick={checkAgain}
         >
           {language.t("agenthq.task.review.refresh")}
-        </ButtonV2>
-        <ButtonV2
-          size="small"
-          variant="contrast"
-          class="shrink-0 whitespace-nowrap"
-          data-action="task-approve"
-          disabled={!!blocked() || !!tasks.state.busy[props.task.id]}
-          title={blocked()}
-          onClick={approve}
-        >
-          {language.t("agenthq.task.approve")}
         </ButtonV2>
       </div>
       <Switch>
@@ -520,7 +557,7 @@ function ReviewGate(props: { task: Task }) {
                   <For each={review().commits}>
                     {(commit) => (
                       <li class="flex min-w-0 gap-2">
-                        <span class="shrink-0 font-mono text-[11px] text-v2-text-text-faint">
+                        <span class="shrink-0 font-mono text-[11px] text-v2-text-text-muted">
                           {commit.sha.slice(0, 7)}
                         </span>
                         <span class="min-w-0 truncate text-v2-text-text-base">{commit.subject}</span>
@@ -536,19 +573,105 @@ function ReviewGate(props: { task: Task }) {
                 <ul data-slot="review-files" class="flex flex-col gap-0.5">
                   <For each={review().files}>
                     {(file) => (
-                      <li class="flex min-w-0 items-center gap-2 font-mono text-[11px]">
-                        <span class="min-w-0 flex-1 truncate text-v2-text-text-base">{file.path}</span>
-                        <span class="shrink-0 text-v2-state-fg-success">+{file.additions}</span>
-                        <span class="shrink-0 text-v2-state-fg-danger">−{file.deletions}</span>
+                      <li>
+                        <button
+                          type="button"
+                          data-review-file={file.path}
+                          aria-expanded={diff.open === file.path}
+                          class="flex w-full min-w-0 items-center gap-2 rounded-[4px] px-1 py-0.5 text-left font-mono text-[11px] outline-none hover:bg-v2-overlay-simple-overlay-hover focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)]"
+                          classList={{ "bg-v2-background-bg-layer-02": diff.open === file.path }}
+                          onClick={() => show(file.path)}
+                        >
+                          <span class="min-w-0 flex-1 truncate text-v2-text-text-base">{file.path}</span>
+                          <span class="shrink-0 text-v2-state-fg-success">+{file.additions}</span>
+                          <span class="shrink-0 text-v2-state-fg-danger">−{file.deletions}</span>
+                        </button>
                       </li>
                     )}
                   </For>
                 </ul>
+                <div>
+                  <ButtonV2
+                    size="small"
+                    variant="ghost"
+                    data-action="task-review-all"
+                    aria-expanded={diff.open === ALL}
+                    onClick={() => show()}
+                  >
+                    {language.t("agenthq.task.review.all")}
+                  </ButtonV2>
+                </div>
+              </Show>
+              <Show when={diff.open}>
+                <div data-slot="review-diff" class="max-h-[480px] overflow-auto rounded-[6px]">
+                  <Switch>
+                    <Match when={diff.status === "loading"}>
+                      <div class="flex items-center gap-2 px-2 py-1 text-v2-text-text-muted">
+                        <LoaderV2 width={12} height={12} />
+                        {language.t("agenthq.task.review.diffLoading")}
+                      </div>
+                    </Match>
+                    <Match when={diff.status === "failed"}>
+                      <div
+                        role="alert"
+                        data-slot="review-diff-error"
+                        class="flex flex-wrap items-center gap-2 rounded-[6px] bg-v2-state-bg-danger px-2 py-1 text-v2-state-fg-danger"
+                      >
+                        <span class="min-w-0 flex-1 select-text">{diff.error}</span>
+                        <ButtonV2 size="small" variant="neutral" onClick={checkAgain}>
+                          {language.t("agenthq.task.review.refresh")}
+                        </ButtonV2>
+                      </div>
+                    </Match>
+                    <Match when={diff.status === "ready"}>
+                      <Show
+                        when={diff.text.trim()}
+                        fallback={<p class="text-v2-text-text-muted">{language.t("agenthq.task.review.noFiles")}</p>}
+                      >
+                        <PatchView diff={diff.text} />
+                      </Show>
+                      <Show when={diff.truncated}>
+                        <p class="pt-1 text-[11px] text-v2-text-text-muted">
+                          {language.t("agenthq.task.review.diffTruncated")}
+                        </p>
+                      </Show>
+                    </Match>
+                  </Switch>
+                </div>
               </Show>
             </div>
           )}
         </Match>
       </Switch>
+      {/* Approve under what it merges, with its size */}
+      <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-v2-border-border-muted pt-2">
+        <Show when={state()?.review}>
+          <span data-slot="review-totals" class="text-[12px] text-v2-text-text-muted">
+            {language.plural("agenthq.task.review.totals", totals().count, {
+              additions: totals().additions,
+              deletions: totals().deletions,
+            })}
+          </span>
+        </Show>
+        <span class="flex-1" />
+        <Show when={merging()}>
+          <span role="status" class="flex items-center gap-1.5 text-[12px] text-v2-text-text-muted">
+            <LoaderV2 width={12} height={12} />
+            {language.t("agenthq.task.merging")}
+          </span>
+        </Show>
+        <ButtonV2
+          size="small"
+          variant="contrast"
+          class="shrink-0 whitespace-nowrap"
+          data-action="task-approve"
+          disabled={!!blocked() || !!tasks.state.busy[props.task.id] || merging()}
+          title={blocked()}
+          onClick={approve}
+        >
+          {language.t("agenthq.task.approve")}
+        </ButtonV2>
+      </div>
       <Show when={refusal()}>
         <p
           role="alert"
@@ -561,6 +684,8 @@ function ReviewGate(props: { task: Task }) {
     </section>
   )
 }
+
+const ALL = "*"
 
 const USER = "user"
 

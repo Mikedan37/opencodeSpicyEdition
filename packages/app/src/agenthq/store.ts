@@ -24,6 +24,8 @@ export type FeedItem =
       title: string
       tool?: string
       details?: string
+      // What it is about (UX #3): an edit's diff, a command, or one line; `details` is the fallback without it.
+      preview?: AgentHQ.PermissionPreview
       options: readonly PermissionOption[]
       outcome?: "allowed" | "rejected" | "cancelled"
       // optionID whose answer is in flight; the item only resolves on the server's permission.resolved event
@@ -314,6 +316,7 @@ export function applyEvent(items: FeedItem[], envelope: Envelope) {
       title: event.title,
       tool: event.tool,
       details: event.details,
+      preview: event.preview,
       options: event.options,
     })
     return

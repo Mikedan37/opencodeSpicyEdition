@@ -24,7 +24,7 @@ import { type ImageAttachmentPart, usePrompt } from "@/context/prompt"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
-import { AutoApproveChip } from "@/workbench/auto-approve" // spicy: per-session auto-approve chip
+import { ApprovalModePill } from "@/workbench/auto-approve" // spicy: the session's approval mode
 import { createSessionTabs } from "@/pages/session/helpers"
 import { showToast } from "@/utils/toast"
 import { PromptInputV2, type PromptInputV2Suggestion } from "@opencode-ai/session-ui/v2/prompt-input"
@@ -61,8 +61,8 @@ export function PromptInputV2Composer(props: PromptInputV2ComposerProps) {
         attachShortcut={command.keybind("file.attach")}
         modelControl={
           <>
-            {/* spicy: per-session auto-approve chip, next to the agent (see SPICY.md) */}
-            <AutoApproveChip />
+            {/* spicy: the session's approval mode (Ask / Auto edits / Auto), next to the model (see SPICY.md) */}
+            <ApprovalModePill />
             <PromptInputV2ModelControl
               loading={props.controller.model.loading}
               paid={props.controller.model.paid}

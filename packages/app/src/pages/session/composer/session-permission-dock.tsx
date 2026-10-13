@@ -43,8 +43,7 @@ export function SessionPermissionDock(props: {
               onClick={() => props.onDecide("always")}
               disabled={props.responding}
             >
-              {/* spicy: an "always" is remembered for this session only (see SPICY.md) */}
-              {language.t("workbench.permission.allowSession")}
+              {language.t("ui.permission.allowAlways")}
             </Button>
             <Button variant="primary" size="normal" onClick={() => props.onDecide("once")} disabled={props.responding}>
               {language.t("ui.permission.allowOnce")}

@@ -1,0 +1,64 @@
+/* spicy: the approval card's motion (approval-card.tsx). It rises 8px into place on a spring-like curve, a queued
+   request slides in after the one answered, and the card leaves quicker than it came: out of the layout, over the
+   composer that takes its place (the region's inner column is relative), so nothing below it jumps. Reduced motion
+   keeps the fades only. */
+[data-component="approval-card"] {
+  animation: approval-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+[data-component="approval-card"][data-state="closed"] {
+  position: absolute;
+  inset-inline: 12px;
+  bottom: 0;
+  z-index: 80;
+  pointer-events: none;
+  animation: approval-out 120ms cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+
+[data-component="approval-card"] [data-next] {
+  animation: approval-next 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes approval-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes approval-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes approval-next {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+@keyframes approval-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes approval-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-component="approval-card"],
+  [data-component="approval-card"] [data-next] {
+    animation-name: approval-fade-in;
+  }
+
+  [data-component="approval-card"][data-state="closed"] {
+    animation-name: approval-fade-out;
+  }
+}

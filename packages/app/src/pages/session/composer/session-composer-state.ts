@@ -8,7 +8,7 @@ import { useLanguage } from "@/context/language"
 import { usePermission } from "@/context/permission"
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
-import { sessionPermissionRequest, sessionQuestionRequest } from "./session-request-tree"
+import { sessionPermissionRequest, sessionPermissionRequests, sessionQuestionRequest } from "./session-request-tree"
 
 export const todoState = (input: {
   count: number
@@ -42,6 +42,13 @@ export function createSessionComposerController(options?: { closeMs?: number | (
       return !permission.autoResponds(item, sdk().directory)
     })
   })
+
+  // spicy: every pending request behind the dock's, for the approval card's "2 of 3"
+  const permissionQueue = createMemo(() =>
+    sessionPermissionRequests(sync().data.session, sync().data.permission, params.id, (item) => {
+      return !permission.autoResponds(item, sdk().directory)
+    }),
+  )
 
   const blocked = createMemo(() => {
     const id = params.id
@@ -189,6 +196,7 @@ export function createSessionComposerController(options?: { closeMs?: number | (
     blocked,
     questionRequest,
     permissionRequest,
+    permissionQueue, // spicy
     permissionResponding,
     decide,
     todos,

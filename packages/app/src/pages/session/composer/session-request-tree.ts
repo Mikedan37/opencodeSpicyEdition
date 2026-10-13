@@ -8,6 +8,13 @@ function sessionTreeRequest<T>(
 ) {
   if (!sessionID) return
 
+  const id = sessionTreeIDs(session, sessionID).find((id) => request[id]?.some(include))
+  if (!id) return
+  return request[id]?.find(include)
+}
+
+// spicy: the session and its subagents' sessions, parents first (sessionTreeRequest's walk, shared with the queue below)
+function sessionTreeIDs(session: Session[], sessionID: string) {
   const map = session.reduce((acc, item) => {
     if (!item.parentID) return acc
     const list = acc.get(item.parentID)
@@ -27,10 +34,18 @@ function sessionTreeRequest<T>(
       ids.push(child)
     }
   }
+  return ids
+}
 
-  const id = ids.find((id) => request[id]?.some(include))
-  if (!id) return
-  return request[id]?.find(include)
+// spicy: every pending permission request in the tree, in the order the dock shows them (the approval card's "2 of 3")
+export function sessionPermissionRequests(
+  session: Session[],
+  request: Record<string, PermissionRequest[] | undefined>,
+  sessionID?: string,
+  include: (item: PermissionRequest) => boolean = () => true,
+) {
+  if (!sessionID) return []
+  return sessionTreeIDs(session, sessionID).flatMap((id) => (request[id] ?? []).filter(include))
 }
 
 export function sessionPermissionRequest(

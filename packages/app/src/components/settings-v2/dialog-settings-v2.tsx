@@ -15,6 +15,7 @@ import { useLayout } from "@/context/layout"
 import { useTabs } from "@/context/tabs"
 import { useServerSync } from "@/context/server-sync"
 import { SettingsWorkbench } from "@/workbench/setup-view" // spicy: IDE setup (the Workbench doctor)
+import { SettingsApprovals } from "@/workbench/settings-approvals" // spicy: the project's saved approvals
 
 export const DialogSettings: Component<{
   sessionID?: string
@@ -89,6 +90,11 @@ export const DialogSettings: Component<{
                       <Icon name="code" />
                       {language.t("workbench.setup.title")}
                     </TabsV2.Trigger>
+                    {/* spicy: the project's saved approvals */}
+                    <TabsV2.Trigger value="permissions">
+                      <Icon name="shield" />
+                      {language.t("settings.permissions.title")}
+                    </TabsV2.Trigger>
                   </div>
                 </div>
               </div>
@@ -117,6 +123,10 @@ export const DialogSettings: Component<{
         {/* spicy: IDE setup */}
         <TabsV2.Content value="workbench" class="settings-v2-panel">
           <SettingsWorkbench directory={directory} />
+        </TabsV2.Content>
+        {/* spicy: the project's saved approvals */}
+        <TabsV2.Content value="permissions" class="settings-v2-panel">
+          <SettingsApprovals directory={directory} />
         </TabsV2.Content>
       </TabsV2>
     </Dialog>

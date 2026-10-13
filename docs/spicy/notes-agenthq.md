@@ -1341,3 +1341,27 @@ with Agent HQ's folder alike, so the owner's Cursor login is not there for this 
 project, which was removed.
 
 Results: `bun test --timeout 120000 test/agenthq` 50 pass, 5 skip (the opt-in real checks), 0 fail; typecheck clean.
+
+# UX audit fixes
+
+## #12 An approval cut off mid-merge
+
+The audit aborted an approve after 1 s: the merge was on `main`, the task stayed in Review, its worktree was gone but
+still recorded and its branch was left. Merge, worktree removal and the status save were all interruptible.
+
+- `approve` records the reviewed head as `merging` on the task (an additive, optional `AgentHQ.Task` field), then
+  merges, removes the worktree and its branch, and saves `done`, all in one uninterruptible step: a client that goes
+  away no longer stops it halfway. A merge that fails is aborted and `merging` cleared.
+- `reconcile` finishes or undoes what a crash cut off, on the first call after a start (`ready`), and before `review`
+  and `approve`: with `merging` recorded, the task is done when that head is in the project, and back to plain review
+  otherwise; without it (an approval from before), a merge commit of the branch tip in the project counts. A branch
+  with no commits of its own never counts, so such a task keeps waiting for the human. Finishing removes the worktree
+  and deletes the branch, which `Worktree.remove` leaves when git no longer lists the worktree.
+- A second approve after the first one finished is refused ("Task is done"); one whose merge already landed but was
+  not yet marked is answered with the done task.
+
+Tests (`orchestrator.test.ts`): an approval interrupted while its merge runs (a slow `post-merge` hook) still ends done,
+merged (`HEAD^2` is the head), worktree and branch gone; after a crash at each point (merged with worktree and branch
+left; merged with the worktree removed; recorded but not merged; merged by an approval without the record) a new
+server lifetime finishes or undoes each, and a task whose branch has nothing of its own stays in review. Without the
+uninterruptible step the first test fails.

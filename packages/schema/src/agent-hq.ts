@@ -211,6 +211,9 @@ export const Task = Schema.Struct({
   status: TaskStatus,
   isolated: Schema.Boolean, // runs in its own git worktree and branch
   worktree: optional(Schema.Struct({ path: Schema.String, branch: Schema.String })),
+  // The reviewed head an approval is merging. Set just before the merge and gone once the task is done, so a merge that
+  // a crash interrupted is finished (or undone) on the next start.
+  merging: optional(Schema.String),
   result: optional(
     Schema.Struct({
       summary: optional(Schema.String),

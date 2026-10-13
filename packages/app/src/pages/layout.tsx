@@ -423,6 +423,8 @@ export default function LegacyLayout(props: ParentProps) {
         const directory = e.name
         const props = e.details.properties
         if (e.details.type === "permission.asked" && permission.autoResponds(e.details.properties, directory)) return
+        // spicy: a debug.lldbCommand ask shows in the Debug Console that raised it; its session is synthetic (no page)
+        if (e.details.type === "permission.asked" && e.details.properties.permission === "debug.lldbCommand") return
 
         const [store] = serverSync().child(directory, { bootstrap: false })
         const session = store.session.find((s) => s.id === props.sessionID)

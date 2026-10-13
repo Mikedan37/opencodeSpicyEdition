@@ -55,6 +55,7 @@ export type ScopeState = {
   items: Workbench.DebugScope[]
   error?: string
 }
+export type Attempt = { expression: string; after: number; error?: string }
 export type WatchValue = { at: string; text: string; error: boolean; ref?: number }
 export type VerifiedBreakpoint = { line: number; verified: boolean; message?: string }
 
@@ -197,6 +198,9 @@ export function createDebugState(input: {
     watch: {} as Record<string, WatchValue>,
     verified: {} as Record<string, Record<string, VerifiedBreakpoint[]>>,
     exits: {} as Record<string, number>,
+    // The human's evaluation per session until its rows arrive: shown while it waits (a debug.lldbCommand ask) and,
+    // when it fails, with the error. `after`: the last console row when it was sent, where it is shown.
+    attempts: {} as Record<string, Attempt | undefined>,
   })
 
   const find = (id: string | undefined) => (id ? state.sessions.find((item) => item.id === id) : undefined)
@@ -392,15 +396,27 @@ export function createDebugState(input: {
     setPrefs("history", (list) => [...list.filter((item) => item !== expression), expression].slice(-HISTORY))
   }
 
-  // Runs program code in the selected frame; the eval and result rows also arrive as console output.
+  // Runs program code in the selected frame; the eval and result rows also arrive as console output. A failure stays
+  // in `attempts` with its error.
   function evaluate(expression: string) {
     const session = selected()
     if (!session) return Promise.reject(new Error("no debug session"))
     remember(expression)
-    return client.debugEvaluate(session.id, expression, frameID(session)).then((row) => {
-      output(session.id, [row])
-      return row
-    })
+    const id = session.id
+    setState("attempts", id, { expression, after: state.consoles[id]?.rows.at(-1)?.seq ?? -1, error: undefined })
+    return client.debugEvaluate(id, expression, frameID(session)).then(
+      (row) => {
+        batch(() => {
+          output(id, [row])
+          setState("attempts", id, undefined)
+        })
+        return row
+      },
+      (error: unknown) => {
+        setState("attempts", id, "error", errorText(error))
+        throw error
+      },
+    )
   }
 
   const completions = (text: string, column: number) => {

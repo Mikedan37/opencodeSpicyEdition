@@ -30,6 +30,9 @@ export function createInvestigationsState(client: Client) {
     error: undefined as string | undefined,
     details: {} as Record<string, DetailState>,
     busy: {} as Record<string, string | undefined>,
+    // What another view pointed the Activity tab at (a console row's evidence); `n` counts requests, so repeating one
+    // scrolls again.
+    focus: undefined as { id: string; evidenceID?: string; n: number } | undefined,
   })
   const find = (id: string | undefined) => (id ? state.list.find((item) => item.id === id) : undefined)
 
@@ -96,6 +99,19 @@ export function createInvestigationsState(client: Client) {
     resume: (id: string) => act(id, "resume", () => client.resumeInvestigation(id)),
     cancel: (id: string) => act(id, "cancel", () => client.cancelInvestigation(id)),
     waiting: () => state.list.filter((item) => WAITING.has(item.status)).length,
+    focus(id: string, evidenceID?: string) {
+      batch(() => {
+        setState("focus", { id, evidenceID, n: (state.focus?.n ?? 0) + 1 })
+        // Evidence the loaded record does not have yet: load it again.
+        const current = state.details[id]
+        if (
+          evidenceID &&
+          current?.status === "ready" &&
+          !current.detail?.evidence.some((item) => item.id === evidenceID)
+        )
+          setState("details", id, "stale", true)
+      })
+    },
   }
 }
 

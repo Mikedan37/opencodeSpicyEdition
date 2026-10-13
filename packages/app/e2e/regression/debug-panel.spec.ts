@@ -561,7 +561,7 @@ test("UI-03 a breakpoint is still shown after scrolling away and back", async ({
     editor.locator(".cm-content").evaluate((el, top) => {
       const scroller = (node: HTMLElement | null): HTMLElement | null =>
         !node || node.scrollHeight > node.clientHeight + 1 ? node : scroller(node.parentElement)
-      const target = scroller(el)
+      const target = scroller(el as HTMLElement)
       if (target) target.scrollTop = top ? 0 : target.scrollHeight
     }, top)
   await scroll(false)
@@ -573,9 +573,9 @@ test("UI-03 a breakpoint is still shown after scrolling away and back", async ({
   await expect(dot).toBeInViewport()
 })
 
-async function openConsole(page: Page, backlog: Record<string, unknown>[]) {
+async function openConsole(page: Page, backlog: Record<string, unknown>[], patch: Record<string, unknown> = {}) {
   const mock = await setup(page)
-  mock.sessions = [session({ state: "stopped", stop: stopAt(1) })]
+  mock.sessions = [session({ state: "stopped", stop: stopAt(1), ...patch })]
   mock.backlog = backlog
   await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
   await expectSessionTitle(page, title)
@@ -657,6 +657,185 @@ test("CON-05 an agent's evaluation is attributed to the agent", async ({ page })
   await expect(panel.locator('[data-console-row="7"]')).toContainText("(0, 0)")
 })
 
+test("CON-05 an agent's evaluation links to its evidence in the Activity tab", async ({ page }) => {
+  const mock = await setup(page)
+  mock.sessions = [session({ state: "stopped", stop: stopAt(1), owner: "agent", investigationID: "inv_debug" })]
+  // Many evidence items, the evaluation's last, so opening it has to scroll; another investigation is newer, so it
+  // would be the one shown by default.
+  const evidence = Array.from({ length: 30 }, (_, index) => ({
+    id: `ev_${index + 1}`,
+    investigationID: "inv_debug",
+    kind: index === 29 ? "console-eval" : "debug-stop",
+    class: "observed",
+    summary: index === 29 ? "len(xs) → 0" : `stopped at app.py:${index + 1}`,
+    refs: { debugSessionID: debugID },
+    at: 1_700_000_000_000 + index,
+  }))
+  mock.investigations = [
+    { id: "inv_other", title: "Another bug", status: "resolved", attempts: 1, evidenceCount: 2, updatedAt: 9 },
+    {
+      id: "inv_debug",
+      title: "average() divides by zero",
+      status: "debugging",
+      attempts: 0,
+      evidenceCount: 30,
+      updatedAt: 5,
+    },
+  ]
+  mock.investigation.inv_debug = {
+    investigation: {
+      id: "inv_debug",
+      projectID,
+      directory,
+      title: "average() divides by zero",
+      status: "debugging",
+      policy: {
+        maxRepairAttempts: 2,
+        maxDebugSteps: 200,
+        maxInvestigationDurationMs: 1_800_000,
+        requireApprovalForExecution: true,
+        requireApprovalForAttach: true,
+        stopOnRepeatedFailures: true,
+        stopOnPermissionDenial: true,
+      },
+      attempts: [],
+      evidence: evidence.map((item) => item.id),
+      notes: [],
+      checkpoints: [{ status: "debugging", at: 1_700_000_000_000 }],
+      processes: [],
+      debugSessions: [debugID],
+      steps: 3,
+      crashes: 0,
+      since: 1_700_000_000_000,
+      seq: 30,
+      unverified: [],
+      host: { pid: 1 },
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_030,
+    },
+    evidence,
+    report: "",
+  }
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="debug"]').click()
+  const panel = page.locator('[data-component="workbench-debug-console"]')
+
+  // The agent's eval and result rows share the evidence id: one chip. The human's rows have none.
+  mock.emit(
+    output(
+      { ...row(6, "eval", "agent", "len(xs)"), evidenceID: "ev_30" },
+      { ...row(7, "result", "agent", "0"), evidenceID: "ev_30" },
+      row(8, "eval", "human", "xs"),
+      row(9, "result", "human", "[]"),
+    ),
+  )
+  await expect(panel.locator('[data-console-row="9"]')).toContainText("[]")
+  const chip = panel.locator('[data-slot="console-evidence"]')
+  await expect(chip).toHaveCount(1)
+  await expect(panel.locator('[data-console-row="6"] [data-slot="console-evidence"]')).toHaveText("Evidence")
+  await page.screenshot({ path: test.info().outputPath("con05-console.png") })
+
+  // It opens the Activity tab on the session's investigation, scrolled to the evaluation's evidence.
+  await chip.click()
+  await expect(page.locator('[data-workbench-tab="activity"]')).toHaveAttribute("aria-selected", "true")
+  const detail = page.locator('[data-component="workbench-investigation"][data-investigation="inv_debug"]')
+  const item = detail.locator('[data-evidence="ev_30"]')
+  await expect(item).toHaveAttribute("aria-current", "true")
+  await expect(item).toContainText("len(xs) → 0")
+  await expect(item).toBeInViewport()
+  await expect(detail.locator('[data-evidence="ev_1"]')).not.toBeInViewport()
+  await page.screenshot({ path: test.info().outputPath("con05-activity.png") })
+})
+
+test("CON-07 a raw LLDB command waits for its ask under the command; a rejection is the row's error", async ({
+  page,
+}) => {
+  const { mock, panel } = await openConsole(page, [row(5, "stdout", "program", "hello")], {
+    adapter: "lldb-dap",
+    program: `${directory}/app`,
+    capabilities: [],
+  })
+  const ask = `ses_${debugID}`
+  // The server's evaluate route: it asks debug.lldbCommand and waits for the answer.
+  mock.evaluate = async (body) => {
+    const expression = String(body.expression)
+    const command = expression.slice(1).trim()
+    const id = `per_${mock.evaluations.length}`
+    mock.emit({
+      type: "permission.asked",
+      properties: {
+        id,
+        sessionID: ask,
+        permission: "debug.lldbCommand",
+        patterns: [command],
+        always: ["*"],
+        metadata: { command, debugSessionID: debugID },
+      },
+    })
+    const reply = await replyTo(mock, id)
+    mock.emit({ type: "permission.replied", properties: { sessionID: ask, requestID: id, reply } })
+    if (reply === "reject")
+      return {
+        status: 403,
+        message: "debug.lldbCommand was not allowed: The user rejected permission to use this specific tool call.",
+      }
+    mock.emit(output(row(20, "eval", "human", expression), row(21, "result", "human", "hi")))
+    return row(21, "result", "human", "hi")
+  }
+  const input = panel.locator('[data-slot="debug-console-input"]')
+  const attempt = panel.locator("[data-console-attempt]")
+  const buttons = attempt.locator('[data-slot="lldb-ask"] button')
+
+  // The ask shows under the typed command, and nowhere else: no toast pointing at its synthetic session.
+  await input.fill("`platform shell echo hi")
+  await input.press("Enter")
+  await expect(attempt).toContainText("`platform shell echo hi")
+  await expect(buttons).toHaveText(["Allow once", "Allow always", "Reject"])
+  await expect(page.getByText("Permission required")).toHaveCount(0)
+  await page.screenshot({ path: test.info().outputPath("con07-ask.png") })
+
+  // Allowed once: the command runs and its rows replace the attempt.
+  await buttons.filter({ hasText: "Allow once" }).click()
+  await expect.poll(() => mock.replies).toEqual([{ id: "per_1", reply: "once" }])
+  await expect(attempt).toHaveCount(0)
+  await expect(panel.locator('[data-console-row="20"]')).toHaveText("you› `platform shell echo hi")
+  await expect(panel.locator('[data-console-row="21"]')).toContainText("hi")
+
+  // Rejected: the server's 403 is the row's error, and the row stays where it was typed.
+  await input.fill("`script import os")
+  await input.press("Enter")
+  await expect(buttons).toHaveCount(3)
+  await buttons.filter({ hasText: "Reject" }).click()
+  await expect(attempt.locator('[data-slot="attempt-error"]')).toHaveText(
+    "debug.lldbCommand was not allowed: The user rejected permission to use this specific tool call.",
+  )
+  await expect(attempt.locator('[data-slot="lldb-ask"]')).toHaveCount(0)
+  await expect(attempt).toContainText("`script import os")
+  expect(mock.replies.at(-1)).toEqual({ id: "per_2", reply: "reject" })
+  mock.emit(output(row(22, "stdout", "program", "later output")))
+  await expect(panel.locator('[data-console-row="22"]')).toBeVisible()
+  const top = async (locator: typeof attempt) => (await locator.boundingBox())!.y
+  expect(await top(attempt)).toBeGreaterThan(await top(panel.locator('[data-console-row="21"]')))
+  expect(await top(attempt)).toBeLessThan(await top(panel.locator('[data-console-row="22"]')))
+  await page.screenshot({ path: test.info().outputPath("con07-rejected.png") })
+  expect(mock.evaluations.map((item) => (item as { expression: string }).expression)).toEqual([
+    "`platform shell echo hi",
+    "`script import os",
+  ])
+})
+
+// The reply the page sends for a permission ask, within 10 s.
+async function replyTo(mock: { replies: { id: string; reply: unknown }[] }, id: string) {
+  for (let tries = 0; tries < 200; tries++) {
+    const found = mock.replies.find((item) => item.id === id)
+    if (found) return found.reply
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error(`no reply to ${id}`)
+}
+
 test("CON-04 stderr is styled apart from stdout", async ({ page }) => {
   const { panel } = await openConsole(page, [
     row(5, "stdout", "program", "plain line"),
@@ -716,8 +895,13 @@ async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
     sessions: [] as unknown[],
     // null: the server no longer has the session's output (404)
     backlog: [] as unknown[] | null,
-    // Reply to POST .../evaluate; defaults to a plain result.
+    // Reply to POST .../evaluate (`{ status, message }` answers with that error); defaults to a plain result.
     evaluate: undefined as ((body: Record<string, unknown>) => unknown) | undefined,
+    // GET /workbench/investigations and /workbench/investigations/:id
+    investigations: [] as unknown[],
+    investigation: {} as Record<string, unknown>,
+    // POST /permission/:id/reply
+    replies: [] as { id: string; reply: unknown }[],
     completions: [] as string[],
     startError: undefined as string | undefined,
     starts: [] as unknown[],
@@ -791,12 +975,21 @@ async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
       body: JSON.stringify(body),
     })
 
-  await page.route(`${server}/workbench/**`, (route) => {
+  await page.route(`${server}/permission/*/reply*`, (route) => {
+    const id = new URL(route.request().url()).pathname.split("/")[2]!
+    mock.replies.push({ id, reply: (route.request().postDataJSON() as { reply?: unknown }).reply })
+    return json(route, true)
+  })
+
+  await page.route(`${server}/workbench/**`, async (route) => {
     const request = route.request()
     const url = new URL(request.url())
     const path = url.pathname
     const body = request.postDataJSON() as Record<string, unknown> | null
     if (path === "/workbench/debug/sessions" && request.method() === "GET") return json(route, mock.sessions)
+    if (path === "/workbench/investigations") return json(route, mock.investigations)
+    const investigation = path.match(/^\/workbench\/investigations\/([^/]+)$/)?.[1]
+    if (investigation && mock.investigation[investigation]) return json(route, mock.investigation[investigation])
     // The editor reads files through the editor's own route.
     if (path === "/workbench/file" && url.searchParams.get("path") === "app.py")
       return json(route, { content: source, hash: "h1" })
@@ -853,17 +1046,16 @@ async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
     }
     if (action === "evaluate") {
       mock.evaluations.push(body)
-      return json(
-        route,
-        mock.evaluate?.(body ?? {}) ?? {
-          // watch and hover results are only returned (seq 0); repl results are console rows
-          seq: body?.context === "watch" ? 0 : 90 + mock.evaluations.length,
-          at: 1,
-          kind: "result",
-          by: "human",
-          text: "2",
-        },
-      )
+      const reply = (await mock.evaluate?.(body ?? {})) ?? {
+        // watch and hover results are only returned (seq 0); repl results are console rows
+        seq: body?.context === "watch" ? 0 : 90 + mock.evaluations.length,
+        at: 1,
+        kind: "result",
+        by: "human",
+        text: "2",
+      }
+      const status = (reply as { status?: unknown }).status
+      return typeof status === "number" ? json(route, reply, status) : json(route, reply)
     }
     if (action === "completions") {
       mock.completions.push(url.search)

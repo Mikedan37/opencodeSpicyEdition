@@ -185,6 +185,40 @@ describe("debug console", () => {
     expect(debug.state.consoles.dbg_1?.rows.at(-1)).toMatchObject({ seq: 100, kind: "result" })
   })
 
+  test("CON-07 the human's evaluation stays as an attempt while it waits and with its error when it fails", async () => {
+    let answer: (value: Workbench.ConsoleRow) => void = () => undefined
+    let refuse: (error: unknown) => void = () => undefined
+    const { debug } = setup({
+      debugEvaluate: () =>
+        new Promise((resolve, reject) => {
+          answer = resolve
+          refuse = reject
+        }),
+    })
+    debug.update(session("dbg_1", { adapter: "lldb-dap", state: "stopped", stop: stop(1) }))
+    debug.output("dbg_1", [row(4)])
+
+    const allowed = debug.evaluate("`bt")
+    expect(debug.state.attempts.dbg_1).toEqual({ expression: "`bt", after: 4 })
+    answer(row(6, "frame #0", "result"))
+    await allowed
+    expect(debug.state.attempts.dbg_1).toBeUndefined()
+
+    const rejected = debug.evaluate("`platform shell id")
+    refuse(new WorkbenchRequestError("failed", "debug.lldbCommand was not allowed: rejected", 403))
+    await expect(rejected).rejects.toThrow("not allowed")
+    expect(debug.state.attempts.dbg_1).toEqual({
+      expression: "`platform shell id",
+      after: 6,
+      error: "debug.lldbCommand was not allowed: rejected",
+    })
+    // The next evaluation replaces it.
+    const next = debug.evaluate("`bt")
+    expect(debug.state.attempts.dbg_1).toEqual({ expression: "`bt", after: 6 })
+    answer(row(8, "frame #0", "result"))
+    await next
+  })
+
   test("program output joins the program's rows and counts every drop", () => {
     expect(programOutput(undefined)).toEqual({ text: "", dropped: 0 })
     const console: DebugConsole = { rows: [], bytes: 0, dropped: 2, floor: -1, backlog: "ready" }

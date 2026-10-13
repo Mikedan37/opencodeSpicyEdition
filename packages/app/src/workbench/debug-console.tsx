@@ -4,12 +4,12 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { useLanguage } from "@/context/language"
-import { showToast } from "@/utils/toast"
-import { errorText, type DebugCompletion } from "./client"
+import { type DebugCompletion } from "./client"
 import { completionRange, type ConsoleRow } from "./debug"
 import { useDebug } from "./debug-context"
 import { DebugToolbar, OwnerChip, SessionPicker, VariableNode } from "./debug-ui"
 import { useFileLineOpener } from "./open-file"
+import { useWorkbench } from "./panel"
 import { BUG_GLYPH, Glyph, PanelState, TONE_CLASS } from "./ui"
 import { VirtualList } from "./virtual-list"
 
@@ -61,6 +61,28 @@ export default function DebugConsolePanel() {
       list.filter((row, index) => row.by !== "system" && row.by !== list[index - 1]?.by).map((row) => row.seq),
     )
   })
+  // One Evidence chip per evaluation: its eval and result rows share the id.
+  const evidence = createMemo(() => {
+    const list = rows()
+    return new Set(
+      list
+        .filter((row, index) => row.evidenceID && row.evidenceID !== list[index - 1]?.evidenceID)
+        .map((row) => row.seq),
+    )
+  })
+  // The human's evaluation that is waiting for an LLDB command ask or failed, after the row that was last when it was
+  // sent; an ask without one (the page reloaded while it waited) goes last.
+  // One object per session, so the list keeps the entry (and a focused button in it) mounted as rows arrive.
+  const entry = createMemo(() => debug.state.selected && { attempt: debug.state.selected })
+  const items = createMemo((): Item[] => {
+    const list = rows()
+    const current = entry()
+    if (!current) return list
+    const attempt = debug.state.attempts[current.attempt]
+    if (!attempt?.error && !debug.lldbAsk(current.attempt)) return list
+    const at = attempt ? list.findIndex((row) => row.seq > attempt.after) : -1
+    return at === -1 ? [...list, current] : [...list.slice(0, at), current, ...list.slice(at)]
+  })
 
   return (
     <div data-component="workbench-debug-console" class="flex min-h-0 flex-1 flex-col">
@@ -101,14 +123,20 @@ export default function DebugConsolePanel() {
               <Show when={debug.selected()}>{(session) => <OwnerChip session={session()} />}</Show>
             </div>
             <VirtualList
-              items={rows()}
-              itemKey={(row) => String(row.seq)}
+              items={items()}
+              itemKey={(item) => ("attempt" in item ? "attempt" : String(item.seq))}
               estimate={18}
               follow
               label={language.t("workbench.debug.console.label")}
               class="flex-1 select-text py-1"
             >
-              {(row) => <Line row={row} chip={chips().has(row.seq)} />}
+              {(item) =>
+                "attempt" in item ? (
+                  <Attempt sessionID={item.attempt} />
+                ) : (
+                  <Line row={item} chip={chips().has(item.seq)} evidence={evidence().has(item.seq)} />
+                )
+              }
             </VirtualList>
             <Input />
           </>
@@ -133,9 +161,12 @@ export default function DebugConsolePanel() {
   )
 }
 
-function Line(props: { row: ConsoleRow; chip: boolean }) {
+type Item = ConsoleRow | { attempt: string }
+
+function Line(props: { row: ConsoleRow; chip: boolean; evidence: boolean }) {
   const language = useLanguage()
   const debug = useDebug()
+  const workbench = useWorkbench()
   const openAt = useFileLineOpener()
   const text = () => props.row.text.replace(ANSI, "")
   const by = () => (props.row.by === "system" ? undefined : props.row.by)
@@ -193,6 +224,96 @@ function Line(props: { row: ConsoleRow; chip: boolean }) {
           </button>
         )}
       </Show>
+      <Show when={props.evidence && props.row.evidenceID}>
+        {(id) => (
+          // The agent's evaluation is evidence in its debug session's investigation (CON-05).
+          <button
+            type="button"
+            data-slot="console-evidence"
+            data-evidence={id()}
+            disabled={!debug.selected()?.investigationID}
+            title={language.t("workbench.debug.console.evidence.title")}
+            class={`shrink-0 rounded-full px-1.5 font-sans text-[10px] font-[530] leading-4 outline-none enabled:hover:underline focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)] ${TONE_CLASS.success}`}
+            onClick={() => {
+              workbench.investigations.focus(debug.selected()!.investigationID!, id())
+              workbench.open("activity")
+            }}
+          >
+            {language.t("workbench.debug.console.evidence")}
+          </button>
+        )}
+      </Show>
+    </div>
+  )
+}
+
+// The human's evaluation while a debug.lldbCommand ask holds it (CON-07), or after it failed: the typed command, the
+// ask under it, and the error.
+function Attempt(props: { sessionID: string }) {
+  const debug = useDebug()
+  const language = useLanguage()
+  const attempt = () => debug.state.attempts[props.sessionID]
+  const ask = () => debug.lldbAsk(props.sessionID)
+  const command = () => attempt()?.expression ?? `\`${String(ask()?.metadata?.command ?? "")}`
+  return (
+    <div data-console-attempt class="flex min-w-0 items-start gap-2 px-3 font-mono text-[12px] leading-[18px]">
+      <span class="flex w-16 shrink-0 justify-end pt-px">
+        <span
+          data-slot="console-chip"
+          class={`rounded-full px-1.5 font-sans text-[10px] font-[530] leading-4 ${TONE_CLASS[CHIP_TONE.human]}`}
+        >
+          {language.t("workbench.debug.console.by.human")}
+        </span>
+      </span>
+      <div class="min-w-0 flex-1 whitespace-pre-wrap break-words text-v2-text-text-base">
+        <span class="text-v2-text-text-faint">› </span>
+        {command()}
+        <Show when={ask()}>
+          {(value) => (
+            <div
+              role="group"
+              data-slot="lldb-ask"
+              data-request={value().id}
+              aria-label={language.t("workbench.debug.lldb.label")}
+              class="my-1 flex flex-wrap items-center gap-2 whitespace-normal rounded-[6px] bg-v2-state-bg-warning px-2 py-1.5 font-sans text-[12px] text-v2-text-text-base"
+            >
+              <span class="min-w-0 flex-1">{language.t("workbench.debug.lldb.ask")}</span>
+              <ButtonV2
+                size="small"
+                variant="contrast"
+                disabled={debug.answering(value().id)}
+                onClick={() => void debug.answer(value().id, "once")}
+              >
+                {language.t("workbench.debug.lldb.once")}
+              </ButtonV2>
+              <ButtonV2
+                size="small"
+                variant="neutral"
+                disabled={debug.answering(value().id)}
+                title={language.t("workbench.debug.lldb.always.title")}
+                onClick={() => void debug.answer(value().id, "always")}
+              >
+                {language.t("workbench.debug.lldb.always")}
+              </ButtonV2>
+              <ButtonV2
+                size="small"
+                variant="neutral"
+                disabled={debug.answering(value().id)}
+                onClick={() => void debug.answer(value().id, "reject")}
+              >
+                {language.t("workbench.debug.lldb.reject")}
+              </ButtonV2>
+            </div>
+          )}
+        </Show>
+        <Show when={attempt()?.error}>
+          {(error) => (
+            <div data-slot="attempt-error" class="text-v2-state-fg-danger">
+              {error()}
+            </div>
+          )}
+        </Show>
+      </div>
     </div>
   )
 }
@@ -256,15 +377,10 @@ function Input() {
     if (!expression || !ready() || state.busy) return
     asked++
     setState({ text: "", items: [], history: -1, busy: true })
+    // A failure shows in the console under the expression (debug.state.attempts).
     debug
       .evaluate(expression)
-      .catch((error: unknown) =>
-        showToast({
-          variant: "error",
-          title: language.t("workbench.debug.console.failed"),
-          description: errorText(error),
-        }),
-      )
+      .catch(() => undefined)
       .finally(() => {
         setState("busy", false)
         input.focus()

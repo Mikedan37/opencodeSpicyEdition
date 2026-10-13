@@ -141,6 +141,7 @@ describe("workbench bridge token", () => {
           ["GET", "/agenthq/agents"],
           ["POST", "/workbench/debug/sessions", {}],
           ["GET", "/workbench/file?path=check.js"],
+          ["GET", "/workbench/search?query=x"],
           ["PUT", "/workbench/file", { path: "a.txt", content: "x", baseHash: "x" }],
           ["GET", "/workbench/runs"],
           ["POST", "/workbench/tools", { name: "x", description: "x", source: "x" }],

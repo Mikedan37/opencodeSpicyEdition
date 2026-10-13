@@ -292,7 +292,8 @@ Delivered on the instance stream `GET /event` (SSE; each item `{ id, type, prope
 - **Debug Console**: load `output?after=0`, then follow `workbench.debug.output`. Row `kind`: `stdout`/`stderr`
   (`by: "program"`), `console` (`by: "adapter"`), `eval` + `result`/`exception` (`by: "agent" | "human"`), `stop`,
   `exception` (`by: "adapter"`, with `location`), `system`. Telemetry never appears. Completions: send the input
-  and the 1-based cursor column.
+  and the 1-based cursor column. An agent's `eval`/`result` rows carry `evidenceID` (its investigation's evidence);
+  a human's `` ` `` LLDB command first asks `debug.lldbCommand` (wave 6).
 - **Run tab**: when `ptyID` is set, the program runs in that PTY: attach with the existing PTY routes
   (`POST /pty/:ptyID/connect-token`, then the `/pty/:ptyID/connect` WebSocket) for live I/O and stdin. Its output is
   also mirrored into console rows (`stdout`, ANSI stripped). Without `ptyID` (debugpy's default internal console),
@@ -606,3 +607,70 @@ For drafts, `description` and `args` are read from the source; once enabled they
 '@codemirror/state'` (two lines in the merged editor code): this worktree's `node_modules` predates the CodeMirror
   dependencies (needs `bun install --frozen-lockfile`); no app file changed here. `bun run generate` in
   `packages/client`: no diff. DiagnosticReports (without intelligencetasksd) 60 before and after.
+
+## Wave 6: console evidence and the LLDB command gate
+
+### CON-05: agent evaluations are evidence, and their console rows say so
+
+- No contract change: `ConsoleRow.evidenceID` (optional `EvidenceID`, `ev_…`) already existed and is now set. An
+  agent's evaluation (the in-process `debug` tool, and so MCP `debug_evaluate`) in a session with an investigation is
+  recorded as `console-eval` evidence (summary `expression → result`), and both of its console rows, `eval` and
+  `result` (or `exception`), carry that evidence's id. The tool creates the id first and passes it to the session
+  (rows) and to the investigation (evidence), so the link exists from the first published row.
+- It resolves in `GET /workbench/investigations/:investigationID` → `evidence[].id` (the session's
+  `DebugSessionInfo.investigationID` names the investigation). A human's evaluation is not evidence: its rows have no
+  `evidenceID`, and the evaluate route cannot set one.
+
+### CON-07: a human's raw LLDB command asks `debug.lldbCommand`
+
+- lldb-dap runs input after the `` ` `` escape as an LLDB command (`platform shell`, `script`); sessions run with
+  `--repl-mode variable` and our `commandEscapePrefix` (it overrides launch.json's), so only that prefix enters command
+  mode. Agents stay refused before anything is sent (`DebugConsole.evaluate`, 400 "LLDB command mode is not
+  available to the agent").
+- For the human, `POST …/evaluate` with an expression starting with `` ` `` on an lldb-dap session (while stopped)
+  first asks `debug.lldbCommand` through the permission service, under the default agent's rules: agent defaults
+  gain `"debug.lldbCommand": "ask"` (next to the other debug keys, marked `spicy:`). The request waits for the answer.
+  Once: the command runs. Always: no more LLDB command asks in this instance. Reject, or a `deny` rule: 403
+  "debug.lldbCommand was not allowed: …" and nothing reaches the adapter. A config rule can allow it, also per command
+  (`"debug.lldbCommand": { "bt*": "allow" }`).
+- The ask, as `permission.asked` / `GET /permission`: `{ id, permission: "debug.lldbCommand", sessionID:
+"ses_<debugSessionID>", patterns: [command], always: ["*"], metadata: { command, debugSessionID } }`, answered with
+  `POST /permission/:id/reply { reply: "once" | "always" | "reject" }`. Its session is synthetic, one per debug
+  session, so answering it never rejects an agent's pending asks (a reject clears the asking session's other asks).
+  For the UI: show it in the Debug Console by `permission === "debug.lldbCommand"` and `metadata.debugSessionID`;
+  there is no opencode session behind it (a notification link to it would 404), and the app's auto-accept for the
+  directory answers it like any other ask.
+
+### Not applicable
+
+- DAP-16 / SEC-08 (TCP adapters bound to localhost): opencode starts no adapter on TCP. debugpy and lldb-dap run on
+  stdio; the only TCP connections go out to `127.0.0.1` (`DapTransport`), to a launch.json `debugServer` or a
+  `python -m debugpy --listen 127.0.0.1:PORT` program the user started.
+- SEC-06 (adapter checksums): nothing is downloaded. debugpy comes from the user's Python or the VS Code extension,
+  lldb-dap from Xcode (`xcrun -f lldb-dap`).
+
+### Files touched (wave 6)
+
+- `src/workbench/dap/console.ts`, `dap/session.ts` (evaluate takes the evidence id for its rows),
+  `investigation/investigation.ts` (`console.eval` may name its evidence id), `tool/debug.ts` (creates it).
+- `handlers/workbench-debug.ts` (the human LLDB gate), `groups/workbench-debug.ts` (evaluate may answer 403).
+- Upstream: `src/agent/agent.ts` (`"debug.lldbCommand": "ask"`, marked `spicy:`).
+
+### Wave 6 runs
+
+- `test/workbench/tool/debug.test.ts` CON-05 (fake adapter): the agent's `eval` and `result` rows share an `ev_` id
+  that is the investigation's `console-eval` evidence (`len(xs) → <len(xs)>`); the human's evaluation and rows
+  have none. `test/workbench/mcp-debug.test.ts` (real debugpy): after `debug_evaluate`, the agent's result row's
+  `evidenceID` resolves through `GET /workbench/investigations/:id`.
+- `test/server/httpapi-workbench-debug.test.ts` CON-07 (fake adapter speaking for lldb-dap over TCP; no lldb):
+  a plain expression is not asked; `` `platform shell echo hi `` asks `debug.lldbCommand` (synthetic session,
+  command and debug session in the metadata), runs once allowed; `` `script import os `` rejected → 403, and only
+  the allowed input reached the adapter. The agent refusal stays covered by `test/workbench/dap/session.test.ts`.
+- `test/workbench` + debug HTTP test: 173 pass / 2 skip (Rust and C launches, "Developer Mode off") / 0 fail.
+- `test/tool test/server test/session test/agent test/permission` + `permission-task` + `event-manifest`: 1272 pass /
+  13 skip / 1 todo / 0 fail.
+- `bun run test:httpapi`: 269 pass in all three modes (`opencode/crisp-sailor`, `opencode/misty-harbor` at our HEAD
+  deleted after `git worktree prune`; stray `packages/opencode/config.json` removed).
+- Typecheck clean in `packages/opencode`, `packages/schema` and `packages/app` (after the cache-only
+  `bun install --frozen-lockfile --offline --ignore-scripts`); `bun run generate` in `packages/client`: no diff.
+  No lldb launch; DiagnosticReports (without intelligencetasksd) 35 before and after.

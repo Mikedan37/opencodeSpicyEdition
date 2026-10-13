@@ -2,9 +2,13 @@
 // `agent`, which runs the agent's debug tool for an agent outside opencode, with its permission asks.
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { Agent } from "@/agent/agent"
+import { Permission } from "@/permission"
+import { SessionID } from "@/session/schema"
 import { Tool } from "@/tool/tool"
 import { DebugError } from "@/workbench/dap/client"
 import { WorkbenchDebug } from "@/workbench/dap/service"
+import type { DebugSession } from "@/workbench/dap/session"
 import { WorkbenchInvestigation } from "@/workbench/investigation/investigation"
 import { DebugTool } from "@/workbench/tool/debug"
 import { InstanceHttpApi } from "../api"
@@ -12,6 +16,7 @@ import type { AgentPayload } from "../groups/workbench-debug"
 import { WorkbenchAgent } from "./workbench-agent"
 import {
   ConflictError,
+  ForbiddenError,
   InvalidRequestError,
   notFound,
   ServiceUnavailableError,
@@ -37,8 +42,35 @@ export const workbenchDebugHandlers = HttpApiBuilder.group(InstanceHttpApi, "wor
     const debug = yield* WorkbenchDebug.Service
     const investigations = yield* WorkbenchInvestigation.Service
     const asAgent = yield* WorkbenchAgent.runner
+    const permission = yield* Permission.Service
+    const agents = yield* Agent.Service
     const tool = yield* Tool.init(yield* DebugTool)
     const session = (id: string) => debug.get(id)
+
+    // CON-07: lldb-dap runs anything after the ` escape as an LLDB command (platform shell, script). Agents are
+    // refused outright (DebugConsole.evaluate); the human is asked debug.lldbCommand through the permission
+    // service under the default agent's rules. The ask has a session of its own per debug session, so answering it
+    // never touches an agent's pending asks; the console finds it by metadata.debugSessionID.
+    const lldbCommand = (item: DebugSession.Session, expression: string) => {
+      const command = expression.trimStart()
+      // Only when it can run: otherwise evaluate fails as usual and nothing is asked.
+      if (item.adapter !== "lldb-dap" || !command.startsWith("`") || item.info().state !== "stopped") return Effect.void
+      return agents.defaultInfo().pipe(
+        Effect.flatMap((info) =>
+          permission.ask({
+            sessionID: SessionID.make(`ses_${item.id}`),
+            permission: "debug.lldbCommand",
+            patterns: [command.slice(1).trim() || "*"],
+            always: ["*"],
+            metadata: { command: command.slice(1).trim(), debugSessionID: item.id },
+            ruleset: info.permission,
+          }),
+        ),
+        Effect.mapError(
+          (error) => new ForbiddenError({ message: `debug.lldbCommand was not allowed: ${error.message}` }),
+        ),
+      )
+    }
 
     // Exactly the in-process tool, acting as the agent of `sessionID`; a cancelled request ends the agent's debug
     // sessions, like aborting the in-process tool.
@@ -88,8 +120,9 @@ export const workbenchDebugHandlers = HttpApiBuilder.group(InstanceHttpApi, "wor
       )
       .handle("evaluate", (ctx) =>
         session(ctx.params.debugSessionID).pipe(
-          Effect.flatMap((item) => item.evaluate(ctx.payload, human)),
           Effect.mapError(toApi),
+          Effect.tap((item) => lldbCommand(item, ctx.payload.expression)),
+          Effect.flatMap((item) => item.evaluate(ctx.payload, human).pipe(Effect.mapError(toApi))),
         ),
       )
       .handle("completions", (ctx) =>

@@ -118,6 +118,39 @@ describe("agenthq cursor (cursor-agent acp)", () => {
     }),
   )
 
+  it.live("waits for a slow cursor-agent, asks it once per binary, and a session start reuses the answer", () =>
+    Effect.gen(function* () {
+      const bin = yield* tmpdirScoped()
+      const runs = path.join(bin, "runs")
+      const slow = path.join(bin, "slow")
+      // Slower than the old 5-second probe limit, as the real CLI is under load.
+      yield* Effect.promise(() => fs.writeFile(slow, ""))
+      const cli = yield* fake(bin, "cursor-agent", "2026.10.01-e373342", ACP_USAGE, [
+        `echo "$*" >> '${runs}'`,
+        `if [ -e '${slow}' ] && [ "$1" = "acp" ] && [ "$2" = "--help" ]; then sleep 6; fi`,
+        `if [ "$1" = "acp" ] && [ "$2" != "--help" ]; then exec '${process.execPath}' '${FIXTURE}'; fi`,
+      ])
+      const asked = Effect.promise(() =>
+        fs.readFile(runs, "utf8").then((text) => text.split("\n").filter(Boolean).toSorted()),
+      )
+      const provider = yield* AgentDetect.cursor({ PATH: bin })
+      expect(yield* provider.status).toMatchObject({ available: true, version: "2026.10.01-e373342" })
+      expect(yield* asked).toEqual(["--version", "acp --help"])
+      // Listed again and started: the same binary is not asked again; the session only runs `acp`.
+      expect(yield* provider.status).toMatchObject({ available: true })
+      const session = yield* provider.createSession({ agent: kit(yield* tmpdirScoped()), emit: () => {} })
+      yield* Effect.addFinalizer(() => session.close)
+      expect(yield* asked).toEqual(["--version", "acp", "acp --help"])
+      // A changed binary is asked again.
+      yield* Effect.promise(async () => {
+        await fs.rm(slow)
+        await fs.utimes(cli, new Date(), new Date(Date.now() + 1000))
+      })
+      expect(yield* provider.status).toMatchObject({ available: true })
+      expect(yield* asked).toEqual(["--version", "--version", "acp", "acp --help", "acp --help"])
+    }),
+  )
+
   it.live("a Cursor that is not logged in: the start says to run cursor-agent login, and nothing logs in", () =>
     Effect.gen(function* () {
       const bin = yield* tmpdirScoped()
@@ -173,6 +206,8 @@ describe("agenthq cursor (real, opt-in)", () => {
           })}`,
         )
         expect(status.available).toBe(true)
+        // The check is for a real session: anything short of one fails it.
+        expect(result).toMatchObject({ sessionNew: "ok" })
       }),
     120_000,
   )

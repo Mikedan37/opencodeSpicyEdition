@@ -16,7 +16,7 @@ import { TestConfig } from "../fixture/config"
 
 // REG-07 (audit, tool/registry.ts): plugin tools can't stream progress. A plugin's `context.metadata(...)` is
 // typed `void` but receives the host's Effect-returning `metadata`, so the progress Effect is built and never run.
-// Still open: `test.failing` passes while the progress is dropped. When it is fixed this goes red: make it `test`.
+// Fixed: the plugin context's `metadata` now runs the host's Effect, so progress reaches the session.
 const layer = LayerNode.compile(LayerNode.group([ToolRegistry.node, Agent.node]), [
   [
     Config.node,
@@ -32,7 +32,7 @@ afterEach(async () => {
 })
 
 describe("plugin tool progress (REG-07)", () => {
-  test.failing("a plugin tool's context.metadata reaches the host as progress", () =>
+  test("a plugin tool's context.metadata reaches the host as progress", () =>
     Effect.gen(function* () {
       const dir = (yield* TestInstance).directory
       const tools = path.join(dir, ".opencode", "tools")

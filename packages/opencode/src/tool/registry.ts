@@ -160,6 +160,8 @@ const layer = Layer.effect(
                 const pluginCtx: PluginToolContext = {
                   ...toolCtx,
                   ask: (req) => bridge.promise(toolCtx.ask(req)),
+                  // spicy: REG-07, the spread `metadata` returns an Effect nobody ran, so plugin progress was dropped
+                  metadata: (input) => void bridge.promise(toolCtx.metadata(input)),
                   directory: ctx.directory,
                   worktree: ctx.worktree,
                 }

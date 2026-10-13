@@ -18,9 +18,11 @@ export const EDITOR_KEYS = {
 // EDITABLE_KEYBIND_IDS, so later fork keys are added here, not there.
 export const SPICY_EDITABLE_KEYBIND_IDS = [
   DEBUG_KEYS.continue,
+  DEBUG_KEYS.pause,
   DEBUG_KEYS.next,
   DEBUG_KEYS.stepIn,
   DEBUG_KEYS.stepOut,
   DEBUG_KEYS.stop,
   DEBUG_KEYS.toggleBreakpoint,
+  DEBUG_KEYS.show,
 ]

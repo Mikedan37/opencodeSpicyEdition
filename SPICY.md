@@ -18,6 +18,8 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 | `packages/opencode/src/session/prompt.ts` | Turn-end verification gate at the loop exit | P2 gate (`OPENCODE_VERIFY_GATE=off\|report-only\|fix`) |
 | `packages/opencode/src/cli/cmd/debug/index.ts` | `debug workbench` subcommand | Doctor |
 | `packages/opencode/src/server/routes/instance/httpapi/{api,server}.ts` | Compose `AgentHQApi`, `WorkbenchApi`, `WorkbenchDebugApi`, `WorkbenchToolsApi`, `ReviewApi`; provide their handlers and services (Agent HQ orchestrator, verification runs, review store) | New route groups |
+| `packages/opencode/src/server/routes/instance/httpapi/middleware/authorization.ts` | A Workbench bridge token (Bearer) passes only to its allow-listed endpoints, its own session and its own directory; everything else 403 | External agents never hold the server password (security findings 1 and 2) |
+| `packages/opencode/src/config/config.ts` | The loader doesn't write `$schema` into config files inside opencode-made worktrees (`<data>/worktree/…`) | Task reviews showed `opencode.json +1 −0` as the agent's change |
 | `packages/opencode/src/index.ts` | Register `WorkbenchCommand` (`opencode workbench mcp`) | Workbench MCP bridge for agents outside opencode |
 | `packages/opencode/package.json`, `bun.lock` | Add `@anthropic-ai/claude-agent-sdk` pinned to `0.3.293` | Claude Code provider adapter (approved by the owner 2026-10-11) |
 | `packages/opencode/test/server/httpapi-exercise/index.ts` | Register Agent HQ, Workbench, debug and review route scenarios | `test:httpapi --fail-on-missing` covers every route |

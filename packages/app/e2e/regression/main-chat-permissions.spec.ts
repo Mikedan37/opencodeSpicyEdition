@@ -63,6 +63,8 @@ test("main chat: an edit asks in the dock; with auto-approve on, edits and bash 
     const dock = page.locator('[data-component="dock-prompt"][data-kind="permission"]')
     await expect(dock).toBeVisible({ timeout: 30_000 })
     await expect(dock.getByText("a.txt")).toBeVisible()
+    // "Always" is remembered for this session only, and the button says so.
+    await expect(dock.getByRole("button", { name: "Always allow in this session" })).toBeVisible()
     expect(await read("a.txt")).toBeUndefined()
     await page.screenshot({ path: info.outputPath("permission-dock.png") })
     await dock.getByRole("button", { name: "Allow once" }).click()

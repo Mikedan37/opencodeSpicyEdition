@@ -11,6 +11,7 @@ export const dict = {
   "workbench.command.agents": "Show agents",
   "workbench.command.problems": "Show problems",
   "workbench.retry": "Try again",
+  "workbench.permission.allowSession": "Always allow in this session",
   "workbench.autoApprove.off": "Asks before edits",
   "workbench.autoApprove.on": "Auto-approving this session",
   "workbench.autoApprove.tooltip.off":
@@ -165,7 +166,7 @@ export const dict = {
   "workbench.debug.lldb.label": "LLDB command permission",
   "workbench.debug.lldb.ask": "Run this LLDB command? LLDB commands can run shell commands and scripts.",
   "workbench.debug.lldb.once": "Allow once",
-  "workbench.debug.lldb.always": "Allow always",
+  "workbench.debug.lldb.always": "Always allow in this debug session",
   "workbench.debug.lldb.always.title": "Run LLDB commands without asking until the server restarts",
   "workbench.debug.lldb.reject": "Reject",
   "workbench.debug.lldb.failed": "Could not answer the LLDB command request",

@@ -42,7 +42,7 @@ export const status: AgentHQ.ProviderStatus = {
 
 const OPTIONS: Extract<AgentHQ.AgentEvent, { type: "permission.requested" }>["options"] = [
   { id: "once", label: "Allow once", kind: "allow_once" },
-  { id: "always", label: "Always allow", kind: "allow_always" },
+  { id: "always", label: "Always allow in this session", kind: "allow_always" },
   { id: "reject", label: "Reject", kind: "reject_once" },
 ]
 

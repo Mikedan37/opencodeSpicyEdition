@@ -1,6 +1,6 @@
 import { afterEach, describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect } from "effect"
+import { Cause, Effect, Exit, Fiber } from "effect"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
@@ -9,6 +9,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { Provider } from "@/provider/provider"
+import { SessionID } from "@/session/schema"
 import { Skill } from "@/skill"
 import { SessionAutoApprove } from "@/workbench/auto-approve"
 import { disposeAllInstances } from "../fixture/fixture"
@@ -16,7 +17,16 @@ import { testEffect } from "../lib/effect"
 
 const it = testEffect(
   LayerNode.compile(
-    LayerNode.group([Agent.node, Plugin.node, Provider.node, Auth.node, Config.node, Skill.node, RuntimeFlags.node]),
+    LayerNode.group([
+      Agent.node,
+      Plugin.node,
+      Provider.node,
+      Auth.node,
+      Config.node,
+      Skill.node,
+      RuntimeFlags.node,
+      Permission.node,
+    ]),
   ),
 )
 
@@ -163,5 +173,78 @@ describe("per-session auto-approve", () => {
       // Without the switch the ruleset is exactly upstream's merge, so ordinary session rules keep their meaning.
       expect(SessionAutoApprove.ruleset(other, other)).toEqual(Permission.merge(other, other))
     }),
+  )
+})
+
+describe('"Allow always" is remembered for its session and never beats a deny', () => {
+  // An edit ask the way the edit tool makes it: "always" covers every file.
+  const edit = (sessionID: string, file: string, ruleset: PermissionV1.Ruleset) =>
+    Permission.Service.use((svc) =>
+      svc.ask({
+        sessionID: SessionID.make(sessionID),
+        permission: "edit",
+        patterns: [file],
+        always: ["*"],
+        metadata: {},
+        ruleset,
+      }),
+    )
+  const pending = Effect.gen(function* () {
+    while (true) {
+      const list = yield* Permission.Service.use((svc) => svc.list())
+      if (list.length) return list
+      yield* Effect.sleep("10 millis")
+    }
+  }).pipe(Effect.timeout("2 seconds"))
+  const answer = (reply: "always" | "reject") =>
+    Effect.gen(function* () {
+      const [asked] = yield* pending
+      yield* Permission.Service.use((svc) => svc.reply({ requestID: asked.id, reply }))
+      return asked
+    })
+  const alwaysForEdits = (sessionID: string, ruleset: PermissionV1.Ruleset) =>
+    Effect.gen(function* () {
+      const first = yield* edit(sessionID, "src/a.ts", ruleset).pipe(Effect.forkScoped)
+      yield* answer("always")
+      yield* Fiber.join(first)
+    })
+
+  it.instance("an always in one session does not approve the same edit in another", () =>
+    Effect.gen(function* () {
+      const build = (yield* agents)("build").permission
+      yield* alwaysForEdits("ses_a", build)
+      // The same session: no ask.
+      yield* edit("ses_a", "src/b.ts", build)
+      expect(yield* Permission.Service.use((svc) => svc.list())).toEqual([])
+      // Another session asks for the same edit.
+      const other = yield* edit("ses_b", "src/b.ts", build).pipe(Effect.forkScoped)
+      expect((yield* answer("reject")).sessionID).toBe(SessionID.make("ses_b"))
+      expect(Exit.isFailure(yield* Fiber.await(other))).toBe(true)
+    }),
+  )
+
+  it.instance("an always does not lift plan mode's edit deny in the same session", () =>
+    Effect.gen(function* () {
+      const agent = yield* agents
+      yield* alwaysForEdits("ses_a", agent("build").permission)
+      // The session switches to plan mode: its deny still applies, its plan files still write.
+      const denied = yield* edit("ses_a", "src/app.ts", agent("plan").permission).pipe(Effect.exit)
+      expect(Exit.isFailure(denied) && Cause.squash(denied.cause) instanceof PermissionV1.DeniedError).toBe(true)
+      yield* edit("ses_a", ".opencode/plans/next.md", agent("plan").permission)
+      expect(yield* Permission.Service.use((svc) => svc.list())).toEqual([])
+    }),
+  )
+
+  it.instance(
+    "an always does not lift a user's deny for some files",
+    () =>
+      Effect.gen(function* () {
+        const build = (yield* agents)("build").permission
+        yield* alwaysForEdits("ses_a", build)
+        const denied = yield* edit("ses_a", "bun.lock", build).pipe(Effect.exit)
+        expect(Exit.isFailure(denied) && Cause.squash(denied.cause) instanceof PermissionV1.DeniedError).toBe(true)
+        yield* edit("ses_a", "src/b.ts", build)
+      }),
+    { config: { permission: { edit: { "*.lock": "deny" } } } },
   )
 })

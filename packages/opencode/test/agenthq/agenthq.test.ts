@@ -923,8 +923,10 @@ describe("agenthq", () => {
   it.live("AHQ-16 AgentKit's change flow and an agent without session/load (scripted)", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
-      // A stand-in for agentkit-bridge 0.1.0: no session/load, changes proposed before they are written.
+      // A stand-in for agentkit-bridge 0.1.0: no session/load, changes proposed before they are written, and a
+      // per-process state folder it removes only when it exits on its own.
       const bridge = path.join(dir, "..", `agentkit-bridge-${path.basename(dir)}`)
+      const state = path.join(dir, "..", `agentkit-state-${path.basename(dir)}`)
       yield* Effect.promise(async () => {
         await fs.writeFile(
           bridge,
@@ -932,12 +934,17 @@ describe("agenthq", () => {
             "#!/bin/sh",
             '[ "$1" = "acp" ] || exit 2',
             "export FAKE_ACP_NO_LOAD=1",
+            `export FAKE_ACP_STATE='${state}'`,
             `exec '${process.execPath}' '${path.join(import.meta.dir, "../fixture/agenthq/fake-acp-agent.ts")}'`,
           ].join("\n"),
         )
         await fs.chmod(bridge, 0o755)
       })
-      yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(bridge, { force: true })))
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() =>
+          Promise.all([fs.rm(bridge, { force: true }), fs.rm(state, { recursive: true, force: true })]),
+        ),
+      )
       const registry = yield* AgentRegistry.Service
       const sessions = yield* AgentSessions.Service
       const agent = yield* registry.create({
@@ -1003,6 +1010,19 @@ describe("agenthq", () => {
       const after = (yield* sessions.get(started.id)).session.providerSessionID
       expect(after).toMatch(/^fake-session-/)
       expect(after).not.toBe(first)
+
+      // Closing a session gives the agent the end of its input and time to exit on its own before it is killed,
+      // which is when AgentKit removes its temp state.
+      const folder = path.join(state, after!.split("-")[2]!)
+      const exists = Effect.promise(() =>
+        fs.stat(folder).then(
+          () => true,
+          () => false,
+        ),
+      )
+      expect(yield* exists).toBe(true)
+      yield* sessions.forget(agent.id)
+      expect(yield* exists).toBe(false)
     }),
   )
 

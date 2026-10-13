@@ -33,6 +33,7 @@ import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
+import { SessionAutoApprove } from "@/workbench/auto-approve" // spicy: per-session auto-approve
 import { SessionStatus } from "./status"
 import { LLM } from "./llm"
 import { Shell } from "@opencode-ai/core/shell"
@@ -345,7 +346,7 @@ const layer = Layer.effect(
               .ask({
                 ...req,
                 sessionID,
-                ruleset: Permission.merge(taskAgent.permission, session.permission ?? []),
+                ruleset: SessionAutoApprove.ruleset(taskAgent.permission, session.permission ?? []), // spicy: auto-approve
               })
               .pipe(Effect.orDie),
         })

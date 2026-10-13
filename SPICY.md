@@ -16,6 +16,7 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 | `packages/opencode/src/tool/{edit,write,apply_patch}.ts` | Metadata keeps touched files' diagnostics plus counts, not the workspace map | REG-08 |
 | `packages/opencode/src/tool/registry.ts` | Register the `check`, `debug` and `tool_create` tools; `ToolRegistry.refresh()`; created `custom_*` tools imported fresh (`?v=<mtime>`), asked before every call, and skipped with a warning if they fail to load | Verification engine, debugger, tool creator |
 | `packages/opencode/src/session/prompt.ts` | Turn-end verification gate at the loop exit | P2 gate (`OPENCODE_VERIFY_GATE=off\|report-only\|fix`) |
+| `packages/opencode/src/session/{tools,prompt}.ts` | Tool and subtask asks are checked against `SessionAutoApprove.ruleset(agent, session)`: upstream's merge, plus allows after the blanket edit/bash asks when the session's switch is on | Per-session auto-approve (composer chip, `PUT /workbench/sessions/:id/auto-approve`) |
 | `packages/opencode/src/cli/cmd/debug/index.ts` | `debug workbench` subcommand | Doctor |
 | `packages/opencode/src/server/routes/instance/httpapi/{api,server}.ts` | Compose `AgentHQApi`, `WorkbenchApi`, `WorkbenchDebugApi`, `WorkbenchToolsApi`, `ReviewApi`; provide their handlers and services (Agent HQ orchestrator, verification runs, review store) | New route groups |
 | `packages/opencode/src/index.ts` | Register `WorkbenchCommand` (`opencode workbench mcp`) | Workbench MCP bridge for agents outside opencode |

@@ -64,6 +64,30 @@ export const workbenchScenarios: Scenario[] = [
         }),
       "status",
     ),
+  http.protected
+    .get("/workbench/sessions/{sessionID}/auto-approve", "workbench.autoApprove.get")
+    .seeded((ctx) => ctx.session({ title: "Auto-approve owner" }))
+    .at((ctx) => ({
+      path: route("/workbench/sessions/{sessionID}/auto-approve", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(body.enabled === false, "a new session asks before edits")
+    }),
+  http.protected
+    .put("/workbench/sessions/{sessionID}/auto-approve", "workbench.autoApprove.set")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Auto-approve switch" }))
+    .at((ctx) => ({
+      path: route("/workbench/sessions/{sessionID}/auto-approve", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { enabled: true },
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(body.enabled === true, "the session now auto-approves edits and bash")
+    }),
   http.protected.get("/workbench/doctor", "workbench.doctor").json(200, (body) => {
     object(body)
     check(Array.isArray(body.languages) && body.languages.length > 0, "doctor should list languages")

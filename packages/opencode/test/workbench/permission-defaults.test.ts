@@ -10,6 +10,7 @@ import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { Provider } from "@/provider/provider"
 import { Skill } from "@/skill"
+import { SessionAutoApprove } from "@/workbench/auto-approve"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -102,5 +103,65 @@ describe("the main chat asks before it changes anything", () => {
         expect(action(rules, MCP_TOOL)).toBe("ask")
       }),
     { config: { permission: { edit: "allow", bash: "allow" } } },
+  )
+})
+
+describe("per-session auto-approve", () => {
+  it.instance("turns asks for edit and bash into allows in that session only, and never lifts a deny", () =>
+    Effect.gen(function* () {
+      const agent = yield* agents
+      const on = SessionAutoApprove.apply([], true)
+      const build = SessionAutoApprove.ruleset(agent("build").permission, on)
+      expect(action(build, "edit")).toBe("allow")
+      expect(action(build, "bash", "rm -rf build")).toBe("allow")
+      for (const key of [MCP_TOOL, "task", "doom_loop", "verify.exec", "custom_lint", "some.future.tool"])
+        expect([key, action(build, key)]).toEqual([key, "ask"])
+      expect(action(build, "external_directory", "/elsewhere/a.ts")).toBe("ask")
+      expect(action(build, "read", "/repo/.env")).toBe("ask")
+      expect(action(build, "debug.memory")).toBe("deny")
+      // Another session (no switch) still asks; the switch alone changes nothing for a session without it.
+      expect(action(SessionAutoApprove.ruleset(agent("build").permission, []), "edit")).toBe("ask")
+      // Plan mode in the same session stays read-only outside its plan files and sees the same tools.
+      const plan = SessionAutoApprove.ruleset(agent("plan").permission, on)
+      expect(action(plan, "edit", "src/app.ts")).toBe("deny")
+      expect(action(plan, "edit", ".opencode/plans/next.md")).toBe("allow")
+      const tools = ["edit", "write", "apply_patch", "bash", "read"]
+      expect(Permission.disabled(tools, plan)).toEqual(Permission.disabled(tools, agent("plan").permission))
+      // A session's own deny wins over its switch.
+      const denied = SessionAutoApprove.apply([{ permission: "bash", pattern: "*", action: "deny" }], true)
+      expect(action(SessionAutoApprove.ruleset(agent("build").permission, denied), "bash")).toBe("deny")
+    }),
+  )
+
+  it.instance(
+    "a user's deny for some files and ask for some commands still apply with the switch on",
+    () =>
+      Effect.gen(function* () {
+        const build = SessionAutoApprove.ruleset(
+          (yield* agents)("build").permission,
+          SessionAutoApprove.apply([], true),
+        )
+        expect(action(build, "edit", "bun.lock")).toBe("deny")
+        expect(action(build, "edit", "src/app.ts")).toBe("allow")
+        expect(action(build, "bash", "git push origin main")).toBe("ask")
+        expect(action(build, "bash", "git status")).toBe("allow")
+      }),
+    { config: { permission: { edit: { "*.lock": "deny" }, bash: { "git push*": "ask" } } } },
+  )
+
+  it.instance("turning it off removes only the switch", () =>
+    Effect.gen(function* () {
+      const other: PermissionV1.Rule[] = [
+        { permission: "todowrite", pattern: "*", action: "deny" },
+        { permission: "external_directory", pattern: "/tmp/*", action: "allow" },
+      ]
+      const on = SessionAutoApprove.apply(other, true)
+      expect(SessionAutoApprove.enabled(on)).toBe(true)
+      expect(SessionAutoApprove.enabled(other)).toBe(false)
+      expect(SessionAutoApprove.apply(on, true)).toEqual(on)
+      expect(SessionAutoApprove.apply(on, false)).toEqual(other)
+      // Without the switch the ruleset is exactly upstream's merge, so ordinary session rules keep their meaning.
+      expect(SessionAutoApprove.ruleset(other, other)).toEqual(Permission.merge(other, other))
+    }),
   )
 })

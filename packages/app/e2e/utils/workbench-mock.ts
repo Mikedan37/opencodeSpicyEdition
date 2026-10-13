@@ -57,6 +57,8 @@ export async function mockWorkbench(
     checks: [] as unknown[],
     config: [] as unknown[],
     replies: [] as { id: string; reply: unknown }[],
+    // POST /instance/dispose (the project reloads on the server)
+    disposed: 0,
     emit(...items: Record<string, unknown>[]) {
       pending.push(...items.map((item) => ({ directory, payload: { id: `evt_${Math.random()}`, ...item } })))
     },
@@ -98,6 +100,7 @@ export async function mockWorkbench(
     events: () => pending.splice(0),
     fileList: () => [],
     fileContent: (path) => ({ type: "text", content: mock.files[path] ?? "" }),
+    onInstanceDispose: () => mock.disposed++,
   })
   const json = (route: Route, body: unknown, status = 200) =>
     route.fulfill({

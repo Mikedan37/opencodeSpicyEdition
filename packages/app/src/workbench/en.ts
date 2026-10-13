@@ -357,6 +357,15 @@ export const dict = {
   "workbench.problems.refresh": "Refresh problems",
   "workbench.problems.loading": "Loading problems",
   "workbench.problems.empty": "No problems detected",
+  "workbench.problems.unchecked": "Nothing checked yet",
+  "workbench.problems.unchecked.description":
+    "Run checks to type-check and lint the project. Language servers report problems in the files you open.",
+  "workbench.problems.lastChecked": "Last checked: {{time}} · {{tools}}",
+  "workbench.problems.lsp.enable": "Turn on language servers",
+  "workbench.problems.lsp.confirm.title": "Turn on language servers?",
+  "workbench.problems.lsp.confirm.description":
+    'This sets "lsp": true in {{file}} in this project and reloads the project on the server. Language servers then start for the files you open.',
+  "workbench.problems.lsp.failed": "Language servers could not be turned on",
   "workbench.problems.empty.filtered": "No problems match the filters",
   "workbench.problems.noFile": "Without a file",
   "workbench.problems.stale": "Stale",

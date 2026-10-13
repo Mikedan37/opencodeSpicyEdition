@@ -1,6 +1,7 @@
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { expect, test, type Page, type Route } from "@playwright/test"
 import { mockOpenCodeServer } from "../utils/mock-server"
+import { mockWorkbench, problemsSnapshot } from "../utils/workbench-mock"
 import { expectSessionTitle } from "../utils/waits"
 
 // The Problems tab against mocked workbench routes: merged sources (DIAG-01), a crashed language server's stale
@@ -75,13 +76,15 @@ test("DIAG-12 language servers off: a banner over the list, and the empty state 
   mock.snapshot = { ...snapshot([problem("p_tsc", 9, "Cannot find name 'foo'.", [tsc])]), lsp: "off" }
   const panel = await openProblems(page)
   const off = 'Language servers are off: set "lsp": true in your opencode config.'
-  await expect(panel.locator('[data-slot="problems-lsp-off"]')).toHaveText(off)
+  const banner = panel.locator('[data-slot="problems-lsp-off"]')
+  await expect(banner).toContainText(off)
+  await expect(banner.getByRole("button", { name: "Turn on language servers" })).toBeVisible()
   await page.screenshot({ path: test.info().outputPath("diag12-banner.png") })
 
-  // No problems: the empty state carries the same line, and no banner.
+  // No problems: the empty state carries the same line, and no banner. Nothing reported, so not an all-clear.
   mock.snapshot = { ...snapshot([]), lsp: "off" }
   mock.emit({ type: "workbench.problems.updated", properties: { producers: [], counts: snapshot([]).counts } })
-  await expect(panel).toContainText("No problems detected")
+  await expect(panel).toContainText("Nothing checked yet")
   await expect(panel).toContainText(off)
   await expect(panel.locator('[data-slot="problems-lsp-off"]')).toHaveCount(0)
   await page.screenshot({ path: test.info().outputPath("diag12-empty.png") })
@@ -226,6 +229,49 @@ const FIX_FILE = [
   "",
   VERIFIED,
 ].join("\n")
+
+test("first run: Nothing checked yet, Run checks, Last checked, and Turn on language servers after asking", async ({
+  page,
+}) => {
+  const { mock, open } = await mockWorkbench(page, { directory: "/work/first", title: "First run" })
+  mock.snapshot = { ...problemsSnapshot([]), lsp: "off" }
+  mock.files["opencode.json"] = '{\n  "model": "test/test"\n}\n'
+  await open()
+  await page.locator('[data-status="problems"]').click()
+  const panel = page.locator('[data-component="workbench-problems"]')
+  // Nothing reported yet: no false all-clear, and the way to get a real answer.
+  await expect(panel).toContainText("Nothing checked yet")
+  await expect(panel).not.toContainText("No problems detected")
+  await page.screenshot({ path: test.info().outputPath("first-run-unchecked.png") })
+  await panel.getByRole("button", { name: "Run checks" }).last().click()
+  await expect.poll(() => mock.checks).toEqual([{ unit: "/work/first" }])
+
+  // Once a checker reported: the all-clear, with when and what.
+  mock.snapshot = {
+    ...problemsSnapshot(
+      [],
+      [{ producer: "check:tsc", kind: "typecheck", tool: "tsc", state: "idle", updatedAt: Date.now() }],
+    ),
+    lsp: "off",
+  }
+  mock.emit({ type: "workbench.problems.updated", properties: { producers: [], counts: mock.snapshot.counts } })
+  await expect(panel).toContainText("No problems detected")
+  await expect(panel.locator('[data-slot="problems-checked"]')).toHaveText("Last checked: Just now · tsc")
+
+  // Turn on language servers: asks, then writes the project's opencode.json and reloads the project.
+  await panel.locator('[data-action="problems-lsp"]').click()
+  const dialog = page.getByRole("dialog")
+  await expect(dialog).toContainText("Turn on language servers?")
+  await expect(dialog).toContainText('This sets "lsp": true in opencode.json in this project')
+  await page.screenshot({ path: test.info().outputPath("first-run-lsp-confirm.png") })
+  mock.snapshot = { ...mock.snapshot, lsp: "on" }
+  await dialog.locator('[data-choice="enable"]').click()
+  await expect
+    .poll(() => mock.config)
+    .toEqual([{ path: "opencode.json", content: '{\n  "model": "test/test",\n  "lsp": true\n}\n', baseHash: "h1" }])
+  await expect.poll(() => mock.disposed).toBe(1)
+  await expect(panel.locator('[data-action="problems-lsp"]')).toHaveCount(0)
+})
 
 function problem(id: string, line: number, message: string, sources: Record<string, unknown>[]) {
   return {

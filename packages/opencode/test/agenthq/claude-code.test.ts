@@ -7,6 +7,8 @@ import { AppProcess } from "@opencode-ai/core/process"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Effect } from "effect"
 import { readFileSync } from "fs"
+import fs from "fs/promises"
+import path from "path"
 import type { AgentProvider } from "../../src/agenthq/provider"
 import { ClaudeCodeProvider } from "../../src/agenthq/providers/claude-code"
 import { AgentDetect } from "../../src/agenthq/providers/detect"
@@ -110,6 +112,21 @@ function scripted(mcpErrors: Record<string, string> = {}) {
               ],
             },
           })
+          yield result({})
+        }
+        // Asks only, for the previews: an Edit of a real file, a Write of a new one, a Bash command.
+        if (text === "previews") {
+          const ask = (tool: string, input: Record<string, unknown>, id: string) =>
+            params.options.canUseTool!(tool, input, {
+              signal: new AbortController().signal,
+              toolUseID: id,
+              requestId: id,
+              suggestions: [],
+            })
+          const cwd = params.options.cwd!
+          await ask("Edit", { file_path: `${cwd}/src/app.ts`, old_string: "one", new_string: "two" }, "toolu_e")
+          await ask("Write", { file_path: `${cwd}/src/new.ts`, content: "fresh\n" }, "toolu_w")
+          await ask("Bash", { command: "npm test -- --watch=false", description: "Run the tests" }, "toolu_b")
           yield result({})
         }
         if (text === "hang") {
@@ -307,6 +324,38 @@ describe("agenthq claude code adapter (scripted SDK)", () => {
     }),
   )
 
+  it.live("permission previews: an edit as the file's diff, a new file whole, a command and where it runs", () =>
+    Effect.gen(function* () {
+      const fake = scripted()
+      const started = yield* start({ run: fake.run })
+      const dir = started.dir
+      yield* Effect.promise(async () => {
+        await fs.mkdir(path.join(dir, "src"), { recursive: true })
+        await fs.writeFile(path.join(dir, "src/app.ts"), "one\nkeep\n")
+      })
+      yield* started.session.send("previews")
+      const asked = yield* waitFor(
+        started.events,
+        (list) => {
+          const requests = ofType(list, "permission.requested")
+          if (requests.length === 0) return
+          // Each ask waits; answer it so the script moves on.
+          const last = requests.at(-1)!
+          if (!ofType(list, "permission.resolved").some((item) => item.requestID === last.requestID))
+            Effect.runFork(started.session.respondPermission!(last.requestID, "deny").pipe(Effect.ignore))
+          return requests.length === 3 ? requests : undefined
+        },
+        "never asked three times",
+      )
+      const [edit, write, bash] = asked.map((request) => request.preview)
+      expect(edit).toMatchObject({ kind: "edit", path: "src/app.ts" })
+      expect(edit?.kind === "edit" && edit.diff).toContain("-one\n+two\n keep")
+      expect(write).toMatchObject({ kind: "edit", path: "src/new.ts" })
+      expect(write?.kind === "edit" && write.diff).toContain("+fresh")
+      expect(bash).toEqual({ kind: "command", command: "npm test -- --watch=false", cwd: dir })
+    }),
+  )
+
   it.live("a permission prompt waits for the human; always is scoped to the session", () =>
     Effect.gen(function* () {
       const fake = scripted()
@@ -314,6 +363,9 @@ describe("agenthq claude code adapter (scripted SDK)", () => {
       yield* started.session.send("edit")
       const request = yield* waitFor(started.events, (list) => ofType(list, "permission.requested")[0], "never asked")
       expect(request).toMatchObject({ requestID: "cc_toolu_1", tool: "Edit", title: "Edit: /tmp/agenthq-a.ts" })
+      // A file that is not there: the change of the strings alone, under the path as given.
+      expect(request.preview).toMatchObject({ kind: "edit", path: "/tmp/agenthq-a.ts" })
+      expect(request.preview?.kind === "edit" && request.preview.diff).toContain("-a\n+b")
       expect(request.options.map((option) => [option.id, option.kind])).toEqual([
         ["allow", "allow_once"],
         ["always", "allow_always"],

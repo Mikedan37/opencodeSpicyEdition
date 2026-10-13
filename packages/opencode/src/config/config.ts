@@ -12,7 +12,7 @@ import { Auth } from "../auth"
 import { Env } from "../env"
 import { applyEdits, modify } from "jsonc-parser"
 import { InstallationLocal, InstallationVersion } from "@opencode-ai/core/installation/version"
-import { existsSync } from "fs"
+import { existsSync, realpathSync } from "fs" // spicy: realpathSync for worktree paths
 import { Account } from "@/account/account"
 import { isRecord } from "@/util/record"
 import type { ConsoleState } from "@opencode-ai/core/v1/config/console-state"
@@ -242,7 +242,14 @@ const layer = Layer.effect(
       if (!("path" in options)) return data
 
       yield* Effect.promise(() => resolveLoadedPlugins(data, options.path))
-      if (!data.$schema) {
+      // spicy: never into a worktree opencode made (Agent HQ's task worktrees live there): the edit would land on the
+      // task's branch and be merged as if the agent had made it.
+      const worktrees = path.join(Global.Path.data, "worktree")
+      const worktree = [worktrees, ...(existsSync(worktrees) ? [realpathSync(worktrees)] : [])].some((root) => {
+        const inside = path.relative(root, options.path)
+        return !!inside && !inside.startsWith("..") && !path.isAbsolute(inside)
+      })
+      if (!data.$schema && !worktree) {
         data.$schema = "https://opencode.ai/config.json"
         const updated = text.replace(/^\s*\{/, '{\n  "$schema": "https://opencode.ai/config.json",')
         yield* fs.writeFileString(options.path, updated).pipe(Effect.catch(() => Effect.void))

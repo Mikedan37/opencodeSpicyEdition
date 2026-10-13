@@ -5,6 +5,7 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Wildcard } from "@opencode-ai/core/util/wildcard"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { AgentPreview } from "../preview"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Cause, Effect, Exit, Option, Schema, Scope } from "effect"
@@ -106,6 +107,9 @@ export const make = Effect.gen(function* () {
     const assistant = new Set<string>()
     const texts = new Set<string>()
     const tools = new Map<string, string>()
+    // Each tool call's input, for the command a bash ask is about.
+    const inputs = new Map<string, Record<string, unknown>>()
+    const directory = agent.workingDirectory ?? agent.projectDirectory
     // `turn` changes on cancel/close so a finishing prompt fiber from before stays silent.
     let turn = 0
     let inflight = 0
@@ -125,6 +129,7 @@ export const make = Effect.gen(function* () {
       }
       if (input.type === "patch") return input.files.forEach((file) => emit({ type: "file.changed", path: file }))
       if (input.type !== "tool") return
+      if ("input" in input.state && input.state.input) inputs.set(input.callID, input.state.input)
       const state = TOOL_STATE[input.state.status]
       if (tools.get(input.callID) === state) return
       tools.set(input.callID, state)
@@ -144,6 +149,18 @@ export const make = Effect.gen(function* () {
         ...(title ? { title } : {}),
         ...(output !== undefined ? { output: output.slice(0, PREVIEW_LIMIT) } : {}),
       })
+    }
+
+    // edit asks carry the tool's unified diff; a bash ask's patterns are its parsed commands, so the command line comes
+    // from the tool call's input.
+    const ask = (request: PermissionV1.Request, title: string) => {
+      const diff = request.metadata.diff
+      if (request.permission === "edit" && typeof diff === "string")
+        return AgentPreview.edit(request.patterns.join(", "), AgentPreview.relativeHeaders(diff, directory))
+      const command = request.tool ? inputs.get(request.tool.callID)?.command : undefined
+      if (request.permission === "bash")
+        return AgentPreview.command(typeof command === "string" ? command : request.patterns.join(" "), directory)
+      return AgentPreview.other(title)
     }
 
     const observe = (event: EventV2.Payload) => {
@@ -173,12 +190,14 @@ export const make = Effect.gen(function* () {
       if (is(PermissionV1.Event.Asked, event)) {
         if (!watched.has(event.data.sessionID)) return
         const metadata = Object.keys(event.data.metadata).length ? JSON.stringify(event.data.metadata) : undefined
+        const title = `${event.data.permission}: ${event.data.patterns.join(", ")}`
         emit({
           type: "permission.requested",
           requestID: event.data.id,
-          title: `${event.data.permission}: ${event.data.patterns.join(", ")}`,
+          title,
           tool: event.data.permission,
           ...(metadata ? { details: metadata.slice(0, PREVIEW_LIMIT) } : {}),
+          preview: ask(event.data, title),
           options: OPTIONS,
         })
         return

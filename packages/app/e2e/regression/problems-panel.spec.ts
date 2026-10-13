@@ -142,6 +142,20 @@ test("UI-07 Fix with agent sends the problem's snapshot; Fix all in file sends t
   const action = (selector: string) => panel.locator(selector).locator("xpath=..").locator('[data-action="handoff"]')
   const menu = page.locator("[data-handoff-menu]")
 
+  // UX #10: a "Fix" text button shows on the hovered row and on the row the keyboard is on, and Tab reaches it.
+  const fix = action('[data-problem="p_assign"]')
+  await expect(fix).toHaveText("Fix")
+  await expect(fix).toHaveAttribute("aria-label", "Fix with agent: Type 'string' is not assignable to type 'number'.")
+  await expect.poll(() => fix.evaluate((el) => getComputedStyle(el).opacity)).toBe("0")
+  await panel.locator('[data-problem="p_assign"]').hover()
+  await expect.poll(() => fix.evaluate((el) => getComputedStyle(el).opacity)).toBe("1")
+  await page.mouse.move(0, 0)
+  await panel.locator('[data-problem="p_assign"]').focus()
+  await expect.poll(() => fix.evaluate((el) => getComputedStyle(el).opacity)).toBe("1")
+  await page.keyboard.press("Tab")
+  await expect(fix).toBeFocused()
+  await expect(action('[data-row="file"]')).toHaveText("Fix all")
+
   // A problem row's picker: this session and the Agent HQ identity. This session gets exactly the problem's snapshot.
   await action('[data-problem="p_assign"]').click()
   await expect(menu.locator("[data-target]")).toHaveText(["This session", "Ada"])
@@ -150,10 +164,26 @@ test("UI-07 Fix with agent sends the problem's snapshot; Fix all in file sends t
   await expect.poll(() => mock.prompts.length).toBe(1)
   const prompt = mock.prompts[0]!
   expect(prompt.path).toBe(`/session/${sessionID}/prompt_async`)
-  expect((prompt.body as { parts: { type: string; text: string }[] }).parts).toEqual([
-    expect.objectContaining({ type: "text", text: FIX_ONE }),
+  // UX #10: a one-line message, with the snapshot attached as "Problem context" (the server hands it to the model
+  // whole).
+  const parts = (prompt.body as { parts: { type: string; text?: string; url?: string; filename?: string }[] }).parts
+  expect(parts).toEqual([
+    expect.objectContaining({
+      type: "text",
+      text: "Fix the problem at src/app.ts:12: Type 'string' is not assignable to type 'number'.",
+    }),
+    expect.objectContaining({ type: "file", mime: "text/plain", filename: "Problem context" }),
   ])
+  const attached = parts[1]!.url!
+  expect(Buffer.from(attached.slice(attached.indexOf(",") + 1), "base64").toString("utf8")).toBe(FIX_ONE)
   await expect(page.getByText("Sent to this session", { exact: true })).toBeVisible()
+  // The timeline shows it as a collapsible chip, not a wall of text.
+  const chip = page.locator('[data-slot="user-message-context"]')
+  await expect(chip.locator("summary")).toHaveText("Problem context")
+  await expect(chip.locator("pre")).toBeHidden()
+  await chip.locator("summary").click()
+  expect(await chip.locator("pre").textContent()).toBe(FIX_ONE)
+  await page.screenshot({ path: test.info().outputPath("ui07-context-chip.png") })
 
   // Fix all in file: the last used target comes first; Ada gets the file's snapshot as an Agent HQ message, and the
   // toast links to the session that received it.

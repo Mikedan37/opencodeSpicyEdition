@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { Workbench } from "@opencode-ai/schema/workbench"
-import { excerpt, latestRun, problemSnapshot, rangeText, stopSnapshot } from "./snapshot"
+import { excerpt, latestRun, problemSnapshot, problemSummary, rangeText, stopSnapshot, stopSummary } from "./snapshot"
 
 const root = "/repo"
 const tsc = { kind: "typecheck", tool: "tsc", producer: "check:tsc:/repo/tsconfig.json" } as const
@@ -234,5 +234,34 @@ describe("snapshots", () => {
         "Locals of average:\n(none)",
       ].join("\n"),
     )
+  })
+
+  test("the message's one line: the problem with its place, a file's count, a stop's exception and frame", () => {
+    expect(
+      problemSummary({ root, file: "/repo/src/app.ts", problems: [problem({ message: "Bad type.\nMore." })] }),
+    ).toBe("Fix the problem at src/app.ts:12: Bad type.")
+    expect(problemSummary({ root, file: "/repo/src/app.ts", problems: [problem(), problem({ id: "p2" })] })).toBe(
+      "Fix the 2 problems in src/app.ts.",
+    )
+    expect(problemSummary({ root, problems: [problem({ file: undefined, range: undefined })] })).toBe(
+      "Fix this problem: Type 'string' is not assignable to type 'number'.",
+    )
+    const session = {
+      id: "dbg_1",
+      adapter: "debugpy",
+      state: "stopped",
+      owner: "human",
+      capabilities: [],
+      startedAt: 1,
+      stop: {
+        reason: "exception",
+        threadID: 1,
+        frames: [{ id: 1, name: "average", file: "/repo/avg.py", line: 8 }],
+        locals: [],
+        exception: { id: "ZeroDivisionError" },
+        at: 2,
+      },
+    } as unknown as Workbench.DebugSessionInfo
+    expect(stopSummary({ root, session })).toBe("Investigate the debugger stop: ZeroDivisionError at avg.py:8.")
   })
 })

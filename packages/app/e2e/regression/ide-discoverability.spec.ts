@@ -292,6 +292,27 @@ test("IDE setup: the doctor's languages × tools grid, with fix commands to copy
   await expect.poll(() => requests).toBe(before + 1)
 })
 
+test("the palette's Fix sends the open file's problems through the agent picker", async ({ page }) => {
+  const { mock, open } = await mockWorkbench(page, { directory, title })
+  mock.agents = [{ ...ada, projectDirectory: directory }]
+  mock.files["src/app.ts"] = "const a = 1\nconst b: number = 'x'\n"
+  mock.snapshot = problemsSnapshot([problem("p1", "error")])
+  await open()
+  // No file open: nothing to fix.
+  await palette(page, "Fix problems in the open file with an agent")
+  await expect(page.getByText("The open file has no problems", { exact: true })).toBeVisible()
+  // Open src/app.ts from its problem, then Fix from the palette.
+  await page.locator('[data-status="problems"]').click()
+  await page.locator('[data-component="workbench-problems"] [data-problem="p1"]').click()
+  await expect(page.locator("#review-panel").getByRole("tab", { name: "app.ts" })).toBeVisible()
+  await palette(page, "Fix problems in the open file with an agent")
+  const picker = page.locator("[data-handoff-dialog]")
+  await expect(picker.locator("[data-target]")).toHaveText(["This session", "Ada"])
+  await picker.locator('[data-target="agent:agt_ada"]').click()
+  await expect.poll(() => mock.messages.length).toBe(1)
+  expect((mock.messages[0] as { text: string }).text).toContain("Message: message p1")
+})
+
 async function palette(page: Page, command: string) {
   await openPalette(page)
   await page.getByPlaceholder("Search files, commands, and sessions").fill(command)

@@ -439,6 +439,14 @@ test("editor: a Problems event puts its lint marker in the gutter and under the 
   await expect(editor.locator(".cm-lintRange-error")).toHaveText("list")
   await editor.locator(".cm-lintRange-error").hover()
   await expect(page.locator(".cm-tooltip-lint")).toContainText('"range" is shadowed')
+
+  // UX #10: the tooltip's Fix opens the agent picker for that problem; Ada gets its snapshot.
+  await page.locator(".cm-tooltip-lint").getByRole("button", { name: "Fix" }).click()
+  const picker = page.locator("[data-handoff-dialog]")
+  await expect(picker.locator("[data-target]")).toHaveText(["This session", "Ada"])
+  await picker.locator('[data-target="agent:agt_ada"]').click()
+  await expect.poll(() => mock.messages.length).toBe(1)
+  expect((mock.messages[0] as { text: string }).text).toContain('Message: "range" is shadowed')
 })
 
 test("a stop brings its file forward over the Review tab but leaves the Debug tab in front", async ({ page }) => {

@@ -1,9 +1,10 @@
-import { createSignal, For, Show } from "solid-js"
+import { createSignal, For, Show, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useParams } from "@solidjs/router"
 import type { AgentHQ } from "@opencode-ai/schema/agent-hq"
-import { IconButton } from "@opencode-ai/ui/icon-button"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
+import { DialogBody, DialogHeader, DialogTitleGroup, DialogV2 } from "@opencode-ai/ui/v2/dialog-v2"
 import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
 import { AgentAvatar } from "@/agenthq/avatar"
 import { useAgentHQ } from "@/agenthq/context"
@@ -23,6 +24,10 @@ export type HandoffTarget =
   | { key: "session"; sessionID: string }
   | { key: `agent:${string}`; agent: AgentHQ.AgentIdentity }
 
+// What a target receives: a one-line summary, and the structured snapshot (workbench/snapshot.ts) under its name.
+export type HandoffPayload = { summary: string; context: string; name: string }
+type Build = () => HandoffPayload | Promise<HandoffPayload>
+
 // UI-07: where "Fix with agent" and "Investigate with agent" send their snapshot: this opencode session, or an Agent HQ
 // identity through its messages (its newest session, else a new one). The last target used comes first. Only a
 // message is sent: nothing is approved on the agent's behalf, and its tools still ask.
@@ -35,6 +40,7 @@ export function createHandoff(input: { directory: string; showAgents: () => void
   const serverSDK = useServerSDK()
   const local = useLocal()
   const language = useLanguage()
+  const dialog = useDialog()
   const [prefs, setPrefs] = persisted(
     Persist.serverWorkspace(serverSDK().scope, input.directory, "workbench-handoff"),
     createStore({ last: "" }),
@@ -52,9 +58,9 @@ export function createHandoff(input: { directory: string; showAgents: () => void
     "agent" in target ? target.agent.name : language.t("workbench.handoff.session.name")
 
   // Resolves to what opens the session that received it (an Agent HQ session; this session is already in view).
-  async function deliver(target: HandoffTarget, text: string) {
+  async function deliver(target: HandoffTarget, payload: HandoffPayload) {
     if ("agent" in target) {
-      const message = await agenthq.tasks.send({ to: target.agent.id, text })
+      const message = await agenthq.tasks.send({ to: target.agent.id, text: payload.context })
       if (message.delivery === "failed") throw new Error(message.reason ?? language.t("workbench.handoff.notDelivered"))
       const sessionID = message.sessionID
       if (!sessionID) return
@@ -66,6 +72,9 @@ export function createHandoff(input: { directory: string; showAgents: () => void
     const model = local.model.current()
     const agent = local.agent.current()
     if (!model || !agent) throw new Error(language.t("workbench.handoff.noModel"))
+    // UX #10: the summary is the message; the snapshot rides along as a text attachment, which the server hands the
+    // model whole and the timeline shows as a collapsible chip named after it.
+    const url = URL.createObjectURL(new Blob([payload.context], { type: "text/plain" }))
     // The composer's own path (queued follow-ups use it too): the message shows at once in the timeline.
     await sendFollowupDraft({
       api: sdk().api.session,
@@ -74,17 +83,26 @@ export function createHandoff(input: { directory: string; showAgents: () => void
       draft: {
         sessionID: target.sessionID,
         sessionDirectory: sdk().directory,
-        prompt: [{ type: "text", content: text, start: 0, end: text.length }],
+        prompt: [
+          { type: "text", content: payload.summary, start: 0, end: payload.summary.length },
+          {
+            type: "image",
+            id: "workbench-context",
+            filename: payload.name,
+            mime: "text/plain",
+            blob: { id: url, url },
+          },
+        ],
         context: [],
         agent: agent.name,
         model: { providerID: model.provider.id, modelID: model.id },
         variant: local.model.variant.current(),
       },
       optimisticBusy: true,
-    })
+    }).finally(() => URL.revokeObjectURL(url))
   }
 
-  async function send(target: HandoffTarget, build: () => string | Promise<string>) {
+  async function send(target: HandoffTarget, build: Build) {
     setPrefs("last", target.key)
     try {
       const open = await deliver(target, await build())
@@ -102,20 +120,65 @@ export function createHandoff(input: { directory: string; showAgents: () => void
     }
   }
 
-  return { targets, last: () => prefs.last, name, send }
+  // The same picker as a dialog, for actions without a button to hang a menu on (the editor's lint tooltip, the
+  // palette).
+  const choose = (title: string, build: Build) =>
+    dialog.show(() => (
+      <DialogV2 fit>
+        <DialogHeader>
+          <DialogTitleGroup title={title} description={language.t("workbench.handoff.to")} />
+        </DialogHeader>
+        <DialogBody>
+          <div data-handoff-dialog="" class="flex flex-col gap-1 pb-2">
+            <For each={targets()} fallback={<p class="text-[13px]">{language.t("workbench.handoff.none")}</p>}>
+              {(target) => (
+                <ButtonV2
+                  variant="ghost"
+                  data-target={target.key}
+                  class="justify-start"
+                  onClick={() => {
+                    dialog.close()
+                    void send(target, build)
+                  }}
+                >
+                  <TargetLabel target={target} last={target.key === prefs.last} />
+                </ButtonV2>
+              )}
+            </For>
+          </div>
+        </DialogBody>
+      </DialogV2>
+    ))
+
+  return { targets, last: () => prefs.last, name, send, choose }
 }
 
 export type Handoff = ReturnType<typeof createHandoff>
 
+function TargetLabel(props: { target: HandoffTarget; last: boolean }) {
+  const language = useLanguage()
+  const agent = () => ("agent" in props.target ? props.target.agent : undefined)
+  return (
+    <span class="flex min-w-0 items-center gap-1.5">
+      <Show when={agent()} fallback={language.t("workbench.handoff.session")}>
+        {(value) => (
+          <>
+            <AgentAvatar avatar={value().avatar} name={value().name} size={14} />
+            {value().name}
+          </>
+        )}
+      </Show>
+      <Show when={props.last}>
+        <span class="text-[11px] text-v2-text-text-muted">{language.t("workbench.handoff.last")}</span>
+      </Show>
+    </span>
+  )
+}
+
 // The picker behind the actions: this session or an Agent HQ identity, the last used first. `build` makes the
-// snapshot when a target is picked, so it describes the state at that moment.
-export function HandoffMenu(props: {
-  label: string
-  build: () => string | Promise<string>
-  // A text button (the Debug tab header) instead of an icon (Problems rows).
-  text?: boolean
-  class?: string
-}) {
+// snapshot when a target is picked, so it describes the state at that moment. `row`: a small text button that a
+// list row shows on hover and focus (Problems); otherwise a toolbar button.
+export function HandoffMenu(props: { label: string; title?: string; build: Build; row?: boolean; class?: string }) {
   const workbench = useWorkbench()
   const language = useLanguage()
   const [busy, setBusy] = createSignal(false)
@@ -125,32 +188,18 @@ export function HandoffMenu(props: {
   }
   return (
     <MenuV2 gutter={4} modal={false} placement="bottom-end">
-      <Show
-        when={props.text}
-        fallback={
-          <MenuV2.Trigger
-            as={IconButton}
-            icon="brain"
-            variant="ghost"
-            data-action="handoff"
-            class={props.class}
-            aria-label={props.label}
-            title={props.label}
-            disabled={busy()}
-          />
-        }
+      <MenuV2.Trigger
+        as={ButtonV2}
+        size="small"
+        variant={props.row ? "ghost" : "neutral"}
+        data-action="handoff"
+        class={props.class}
+        aria-label={props.title}
+        title={props.title}
+        disabled={busy()}
       >
-        <MenuV2.Trigger
-          as={ButtonV2}
-          size="small"
-          variant="neutral"
-          data-action="handoff"
-          class={props.class}
-          disabled={busy()}
-        >
-          {props.label}
-        </MenuV2.Trigger>
-      </Show>
+        {props.label}
+      </MenuV2.Trigger>
       <MenuV2.Portal>
         <MenuV2.Content data-handoff-menu="">
           <MenuV2.Group>
@@ -165,14 +214,7 @@ export function HandoffMenu(props: {
                   badge={target.key === workbench.handoff.last() ? language.t("workbench.handoff.last") : undefined}
                   onSelect={() => pick(target)}
                 >
-                  <Show when={"agent" in target && target.agent} fallback={language.t("workbench.handoff.session")}>
-                    {(agent) => (
-                      <span class="flex items-center gap-1.5">
-                        <AgentAvatar avatar={agent().avatar} name={agent().name} size={14} />
-                        {agent().name}
-                      </span>
-                    )}
-                  </Show>
+                  {(<TargetLabel target={target} last={false} />) as JSX.Element}
                 </MenuV2.Item>
               )}
             </For>

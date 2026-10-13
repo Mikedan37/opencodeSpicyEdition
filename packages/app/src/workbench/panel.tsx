@@ -30,6 +30,7 @@ import { useSDK } from "@/context/sdk"
 import { useServerSDK } from "@/context/server-sdk"
 import { useTerminal } from "@/context/terminal"
 import { useLayout } from "@/context/layout"
+import { useFile } from "@/context/file"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { Persist, persisted } from "@/utils/persist"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -37,11 +38,12 @@ import { showToast } from "@/utils/toast"
 import { createWorkbenchClient, errorText, WorkbenchRequestError } from "./client"
 import { DebugProvider } from "./debug-context"
 import { EditorProvider } from "./editor-context"
-import { createHandoff } from "./handoff"
+import { createHandoff, type HandoffPayload } from "./handoff"
 import { createProblemsState, type ProblemFilter } from "./problems"
 import { createInvestigationsState } from "./investigations"
 import { createRunsState, isFinished } from "./runs"
 import { createToolsState } from "./tools"
+import { latestRun, PROBLEM_CONTEXT, problemSnapshot, problemSummary, shortPath } from "./snapshot"
 import { PanelState, TONE_CLASS } from "./ui"
 
 const AgentsPanel = lazy(() => import("@/agenthq/agents-panel"))
@@ -78,6 +80,7 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
     const layout = useLayout()
     const dialog = useDialog()
     const agenthq = useAgentHQ()
+    const file = useFile()
     const { sessionKey } = useSessionKey()
     const owner = getOwner()
     // The session page remounts this provider per workspace, so the directory is fixed for its lifetime.
@@ -156,6 +159,48 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       withView((view) => view.terminal.open())
     }
     const handoff = createHandoff({ directory, showAgents: () => show("agents") })
+    // UI-07: what "Fix with agent" sends for these problems, made when a target is picked: a one-line summary, and the
+    // snapshot with the lines around them and the latest verification run.
+    const problemPayload = async (list: readonly Workbench.Problem[], file?: string): Promise<HandoffPayload> => {
+      const [source] = await Promise.all([
+        file
+          ? client.readFile(shortPath(directory, file)).then(
+              (result) => ({ text: result.content }),
+              (error: unknown) => ({ error: errorText(error) }),
+            )
+          : undefined,
+        runs.load(),
+      ])
+      const input = { root: directory, file, problems: list }
+      const latest = latestRun(
+        list,
+        runs.state.runs.map((entry) => entry.info),
+      )
+      return {
+        summary: problemSummary(input),
+        context: problemSnapshot({ ...input, source, run: latest }),
+        name: PROBLEM_CONTEXT,
+      }
+    }
+    // The picker as a dialog, for the editor's lint tooltip and the palette.
+    const fixProblems = (list: readonly Workbench.Problem[], file?: string) =>
+      handoff.choose(language.t("workbench.handoff.fix"), () => problemPayload(list, file))
+    // The open file tab's problems (the palette's Fix); a throwaway root so no layout memos pile up per call.
+    const openFileProblems = () =>
+      runWithOwner(owner, () =>
+        createRoot((dispose) => {
+          const active = layout.tabs(sessionKey()).active()
+          dispose()
+          const path = active ? file.pathFromTab(active) : undefined
+          if (!path) return { problems: [] as Workbench.Problem[] }
+          return {
+            path,
+            problems: (problems.state.snapshot?.problems ?? []).filter(
+              (problem) => problem.file && file.normalize(problem.file) === path,
+            ),
+          }
+        }),
+      )!
     // The Debug tab of the side panel (workbench/debug-side.tsx) shows over whatever tab the panel has selected.
     const [side, setSide] = createSignal(false)
     const showSide = () => {
@@ -236,6 +281,16 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
           onSelect: newTask,
         },
         {
+          id: "workbench.fix",
+          title: language.t("workbench.command.fix"),
+          category: ide,
+          onSelect: () => {
+            const open = openFileProblems()
+            if (!open.problems.length) return showToast({ title: language.t("workbench.handoff.noProblems") })
+            fixProblems(open.problems, open.problems[0]?.file)
+          },
+        },
+        {
           id: "workbench.tool.new",
           title: language.t("workbench.command.newTool"),
           category: ide,
@@ -273,6 +328,8 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       investigations,
       tools,
       handoff,
+      problemPayload,
+      fixProblems,
       runChecks,
       needsYou,
       problemFilter: { state: problemFilter, set: setProblemFilter },

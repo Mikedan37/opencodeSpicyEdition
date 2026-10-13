@@ -1266,6 +1266,9 @@ export function UserMessageDisplay(props: {
       <div data-slot="user-message-attachments">
         <For each={attachments()}>
           {(file) => {
+            // spicy: the IDE's snapshots open in place as text (see contextText)
+            const context = contextText(file)
+            if (context !== undefined) return <ContextAttachment name={file.filename!} text={context} />
             const type = kind(file)
             const name = file.filename ?? i18n.t("ui.message.attachment.alt")
 
@@ -1388,6 +1391,37 @@ export function UserMessageDisplay(props: {
         </div>
       </Show>
     </div>
+  )
+}
+
+// spicy: the text attachments the IDE sends with "Fix with agent" and "Investigate with agent" (their names come from
+// packages/app/src/workbench/snapshot.ts): a collapsible chip with their text instead of a download card.
+const CONTEXT_ATTACHMENTS = new Set(["Problem context", "Debug stop context"])
+
+function contextText(file: FilePart) {
+  if (file.mime !== "text/plain" || !CONTEXT_ATTACHMENTS.has(file.filename ?? "")) return
+  const comma = file.url.indexOf(",")
+  if (!file.url.startsWith("data:") || comma === -1) return
+  const body = file.url.slice(comma + 1)
+  try {
+    if (!file.url.slice(0, comma).endsWith(";base64")) return decodeURIComponent(body)
+    return new TextDecoder().decode(Uint8Array.from(atob(body), (char) => char.charCodeAt(0)))
+  } catch {
+    return
+  }
+}
+
+function ContextAttachment(props: { name: string; text: string }) {
+  return (
+    <details
+      data-slot="user-message-context"
+      class="max-w-full rounded-md border border-border-weak-base bg-background-base text-12-regular"
+    >
+      <summary class="cursor-pointer select-none px-2 py-1 text-text-base">{props.name}</summary>
+      <pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-border-weak-base px-2 py-1.5 font-mono text-text-weak">
+        {props.text}
+      </pre>
+    </details>
   )
 }
 

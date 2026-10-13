@@ -179,6 +179,8 @@ export type EditorDiagnostic = {
   severity: Workbench.Severity
   message: string
   source: string
+  // The problem it shows (the lint tooltip's Fix sends it).
+  id: string
 }
 
 // Problems of one file as document ranges. LSP positions are 0-based lines and UTF-16 columns, which is how
@@ -204,6 +206,7 @@ export function diagnosticsFor(problems: readonly Workbench.Problem[], doc: Text
         severity: problem.severity,
         message: problem.message,
         source: problem.source.tool,
+        id: problem.id,
       },
     ]
   })

@@ -495,7 +495,26 @@ function Editor(props: EditorViewProps) {
     const own = (workbench.problems.state.snapshot?.problems ?? []).filter(
       (problem) => problem.file && file.normalize(problem.file) === path,
     )
-    current.dispatch(setDiagnostics(current.state, diagnosticsFor(own, current.state.doc)))
+    const byID = new Map(own.map((problem) => [problem.id, problem]))
+    // UX #10: the hover tooltip offers Fix with agent for the problem it shows.
+    const fix = language.t("workbench.handoff.fixShort")
+    current.dispatch(
+      setDiagnostics(
+        current.state,
+        diagnosticsFor(own, current.state.doc).map((item) => ({
+          ...item,
+          actions: [
+            {
+              name: fix,
+              apply: () => {
+                const problem = byID.get(item.id)
+                if (problem) workbench.fixProblems([problem], problem.file)
+              },
+            },
+          ],
+        })),
+      ),
+    )
   })
 
   // The debugger: breakpoints, the selected frame's line, and the top frame's values under it.

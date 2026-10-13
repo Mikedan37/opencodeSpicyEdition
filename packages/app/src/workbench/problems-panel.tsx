@@ -14,7 +14,7 @@ import { showToast } from "@/utils/toast"
 import { useRelativeTime } from "./clock"
 import { errorText } from "./client"
 import { useEditor } from "./editor-context"
-import { HandoffMenu } from "./handoff"
+import { HandoffMenu, type HandoffPayload } from "./handoff"
 import { useWorkbench } from "./panel"
 import {
   crashReason,
@@ -29,7 +29,6 @@ import {
   type ProblemRow,
   withLsp,
 } from "./problems"
-import { latestRun, problemSnapshot, shortPath } from "./snapshot"
 import { PanelState, RequestErrorState } from "./ui"
 import { VirtualList } from "./virtual-list"
 import { useFileLineOpener } from "./open-file"
@@ -58,24 +57,9 @@ export default function ProblemsPanel() {
     if (problem.file) openAt(problem.file, (problem.range?.start.line ?? 0) + 1)
   }
   const crashed = (problem: Workbench.Problem) => crashReason(problem, problems.state.snapshot?.producers ?? [])
-  // UI-07: what "Fix with agent" sends, made when a target is picked: the problems, the lines around them and the
-  // latest verification run.
-  const snapshotOf = async (list: readonly Workbench.Problem[], file: string | undefined) => {
-    const [source] = await Promise.all([
-      file
-        ? workbench.client.readFile(shortPath(workbench.directory, file)).then(
-            (result) => ({ text: result.content }),
-            (error: unknown) => ({ error: errorText(error) }),
-          )
-        : undefined,
-      workbench.runs.load(),
-    ])
-    const runs = workbench.runs.state.runs.map((entry) => entry.info)
-    return problemSnapshot({ root: workbench.directory, file, problems: list, source, run: latestRun(list, runs) })
-  }
-  const fix = (problem: Workbench.Problem) => snapshotOf([problem], problem.file)
+  const fix = (problem: Workbench.Problem) => workbench.problemPayload([problem], problem.file)
   const fixFile = (file: string | undefined) =>
-    snapshotOf(groups().find((group) => group.file === file)?.problems ?? [], file)
+    workbench.problemPayload(groups().find((group) => group.file === file)?.problems ?? [], file)
   const lspOff = () => problems.state.snapshot?.lsp === "off"
   // Nothing has reported yet: no checker run and no language server, so an empty list proves nothing.
   const unchecked = () => !problems.state.snapshot?.producers.length
@@ -292,15 +276,15 @@ const NEW_CONFIG = `{\n  "$schema": "https://opencode.ai/config.json",\n  "lsp":
 
 // The row's "with agent" action shows on hover and focus, and stays while its picker is open.
 const ACTION =
-  "mr-2 h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[expanded]:opacity-100"
+  "mr-2 h-5 shrink-0 px-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[expanded]:opacity-100"
 
 function Row(props: {
   row: ProblemRow
   crashed: (problem: Workbench.Problem) => string | undefined
   onOpen: (problem: Workbench.Problem) => void
   onToggle: (key: string) => void
-  onFix: (problem: Workbench.Problem) => Promise<string>
-  onFixFile: (file: string | undefined) => Promise<string>
+  onFix: (problem: Workbench.Problem) => Promise<HandoffPayload>
+  onFixFile: (file: string | undefined) => Promise<HandoffPayload>
 }) {
   const language = useLanguage()
   return (
@@ -326,7 +310,9 @@ function Row(props: {
               </span>
             </button>
             <HandoffMenu
-              label={language.t("workbench.handoff.fixFile")}
+              row
+              label={language.t("workbench.handoff.fixAll")}
+              title={language.t("workbench.handoff.fixFile")}
               class={ACTION}
               build={() => props.onFixFile(row().file)}
             />
@@ -391,7 +377,9 @@ function Row(props: {
                 </Show>
               </button>
               <HandoffMenu
-                label={language.t("workbench.handoff.fix")}
+                row
+                label={language.t("workbench.handoff.fixShort")}
+                title={language.t("workbench.handoff.fixRow", { problem: problem().message.split("\n")[0]! })}
                 class={ACTION}
                 build={() => props.onFix(problem())}
               />

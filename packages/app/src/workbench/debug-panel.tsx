@@ -16,7 +16,7 @@ import { DebugToolbar, OwnerChip, SessionPicker, VariableNode } from "./debug-ui
 import { HandoffMenu } from "./handoff"
 import { useFileLineOpener } from "./open-file"
 import { useWorkbench } from "./panel"
-import { stopSnapshot } from "./snapshot"
+import { STOP_CONTEXT, stopSnapshot, stopSummary } from "./snapshot"
 import { BUG_GLYPH, Glyph } from "./ui"
 
 const SECTIONS = ["stack", "variables", "watch", "breakpoints"] as const
@@ -42,10 +42,12 @@ export default function DebugPanel() {
         {/* UI-07: the stop as it is when a target is picked. */}
         <Show when={session()?.state === "stopped" && session()?.stop}>
           <HandoffMenu
-            text
             label={language.t("workbench.handoff.investigate")}
             class="shrink-0"
-            build={() => stopSnapshot({ root: workbench.directory, session: debug.selected()! })}
+            build={() => {
+              const input = { root: workbench.directory, session: debug.selected()! }
+              return { summary: stopSummary(input), context: stopSnapshot(input), name: STOP_CONTEXT }
+            }}
           />
         </Show>
         <Show when={session()}>{(current) => <OwnerChip session={current()} />}</Show>

@@ -262,7 +262,8 @@ describe("opencode run (non-interactive subprocess)", () => {
         yield* llm.text("continued after rejection")
         const denied = yield* opencode.run("request permission", { permission: { bash: "ask" } })
         opencode.expectExit(denied, 0)
-        expect(denied.stderr).toContain("permission requested: bash")
+        // spicy: the line says what needs approval and how to give it (upstream: "permission requested: bash")
+        expect(denied.stderr).toContain("bash needs approval (rm -f denied-file); rerun with --auto")
         expect(denied.stdout).toBe("")
 
         yield* llm.reset
@@ -273,7 +274,7 @@ describe("opencode run (non-interactive subprocess)", () => {
           extraArgs: ["--dangerously-skip-permissions"],
         })
         opencode.expectExit(allowed, 0)
-        expect(allowed.stderr).not.toContain("permission requested: bash")
+        expect(allowed.stderr).not.toContain("needs approval") // spicy: the new rejection line
         expect(allowed.stdout).toContain("continued after approval")
 
         yield* llm.reset

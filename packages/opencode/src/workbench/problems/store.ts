@@ -4,15 +4,18 @@ import { Hash } from "@opencode-ai/core/util/hash"
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { Context, Effect, Layer, Option, Queue, Stream } from "effect"
 import path from "path"
+import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import type { LSPClient } from "@/lsp/client"
 import { LSP } from "@/lsp/lsp"
 import { LspSource } from "./lsp-source"
 
 // A problem before the store stamps its id, origin and observation time. `kind` overrides the
 // producer's kind for one problem (a link error inside a compiler run is a build problem).
-export type Draft = Omit<Workbench.Problem, "id" | "source" | "observedAt" | "stale"> & {
+export type Draft = Omit<Workbench.Problem, "id" | "source" | "sources" | "observedAt" | "stale"> & {
   readonly kind?: Workbench.SourceKind
+  readonly channel?: Workbench.ProblemSource["channel"]
 }
 export type Meta = { kind: Workbench.SourceKind; tool: string }
 export type ProducerState = Workbench.ProblemsSnapshot["producers"][number]["state"]
@@ -57,6 +60,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const lsp = yield* LSP.Service
     const fs = yield* FSUtil.Service
+    const config = yield* Config.Service
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("WorkbenchProblems.state")(function* () {
@@ -75,7 +79,7 @@ const layer = Layer.effect(
           }
           yield* events.publish(Workbench.Event.ProblemsUpdated, {
             producers: [...files].map(([producer, set]) => ({ producer, files: [...set] })),
-            counts: count([...s.slices.values()].flatMap((slice) => [...slice.files.values()].flat())),
+            counts: count(merge([...s.slices.values()].flatMap((slice) => [...slice.files.values()].flat()))),
           })
         }).pipe(Effect.forever, Effect.forkScoped)
 
@@ -144,8 +148,10 @@ const layer = Layer.effect(
           { concurrency: 16 },
         ),
       )
-      const problems = matches.map((item) =>
-        item.file ? { ...item, stale: (mtimes.get(item.file) ?? 0) > item.observedAt } : item,
+      const problems = merge(
+        matches.map((item) =>
+          item.file ? { ...item, stale: item.stale || (mtimes.get(item.file) ?? 0) > item.observedAt } : item,
+        ),
       )
       return {
         problems,
@@ -158,6 +164,7 @@ const layer = Layer.effect(
           reason: slice.reason,
           updatedAt: slice.updatedAt,
         })),
+        lsp: (yield* config.get()).lsp ? "on" : "off",
       } satisfies Workbench.ProblemsSnapshot
     })
 
@@ -166,15 +173,21 @@ const layer = Layer.effect(
 )
 
 // LSP updates replace one file of the server's slice; generations are not needed because the
-// client delivers them in order.
-function replaceFile(s: State, event: Parameters<typeof LspSource.producer>[0]) {
+// client delivers them in order. After a crash the file keeps its last report, marked stale, until the
+// restarted server reports it again (DIAG-07).
+function replaceFile(s: State, event: LSPClient.DiagnosticsEvent) {
   const producer = LspSource.producer(event)
   const meta = { kind: "lsp" as const, tool: event.serverID }
   const slice = s.slices.get(producer) ?? emptySlice(meta)
-  const items = stamp(producer, meta, LspSource.problems(event), { observedAt: event.at })
-  if (!items.length && !slice.files.has(event.file) && s.slices.has(producer)) return
+  const reported = stamp(producer, meta, LspSource.problems(event), { observedAt: event.at })
+  const items = event.exited
+    ? (slice.files.get(event.file) ?? reported).map((item) => ({ ...item, stale: true }))
+    : reported
+  if (!items.length && !slice.files.has(event.file) && s.slices.has(producer) && slice.reason === event.exited) return
   if (items.length) slice.files.set(event.file, items)
   if (!items.length) slice.files.delete(event.file)
+  slice.state = event.exited ? "failed" : "idle"
+  slice.reason = event.exited
   slice.updatedAt = event.at
   s.slices.set(producer, slice)
   Queue.offerUnsafe(s.changes, { producer, files: [event.file] })
@@ -190,23 +203,52 @@ function stamp(
   drafts: ReadonlyArray<Draft>,
   origin: { observedAt: number; runID?: Workbench.RunID },
 ): Workbench.Problem[] {
-  const seen = new Set<string>()
-  return drafts.flatMap(({ kind, ...draft }) => {
-    const id = Hash.fast(
-      JSON.stringify([producer, draft.file ?? "", draft.code ?? "", draft.message, draft.range?.start.line ?? -1]),
-    ).slice(0, 16)
-    if (seen.has(id)) return []
-    seen.add(id)
-    return [
-      {
-        ...draft,
-        id,
-        source: { kind: kind ?? meta.kind, tool: meta.tool, producer, runID: origin.runID },
-        observedAt: origin.observedAt,
-        stale: false,
-      },
-    ]
+  const items = drafts.map(({ kind, channel, ...draft }) => {
+    const source = { kind: kind ?? meta.kind, tool: meta.tool, producer, runID: origin.runID, channel }
+    return {
+      ...draft,
+      id: Hash.fast(
+        JSON.stringify([producer, draft.file ?? "", draft.code ?? "", draft.message, draft.range?.start.line ?? -1]),
+      ).slice(0, 16),
+      source,
+      sources: [source],
+      observedAt: origin.observedAt,
+      stale: false,
+    }
   })
+  // one producer reporting the same problem twice (push and pull) lists both channels (DIAG-01)
+  return combine(items, (item) => item.id)
+}
+
+// The same error from several producers (a language server and a checker) is one problem listing all of them:
+// same file, line, severity and first message line, ignoring case (clangd capitalizes what clang does not).
+function merge(problems: ReadonlyArray<Workbench.Problem>) {
+  return combine(problems, (item) =>
+    JSON.stringify([
+      item.file ?? "",
+      item.range?.start.line ?? -1,
+      item.severity,
+      item.message.split("\n")[0].trim().toLowerCase(),
+    ]),
+  )
+}
+
+// The first problem stands for the group; it is stale only when every report is.
+function combine(problems: ReadonlyArray<Workbench.Problem>, key: (item: Workbench.Problem) => string) {
+  return [...Map.groupBy(problems, key).values()].map(
+    (group): Workbench.Problem => ({
+      ...group[0],
+      sources: [
+        ...new Map(
+          group
+            .flatMap((item) => item.sources ?? [item.source])
+            .map((source) => [`${source.producer}\0${source.channel ?? ""}`, source]),
+        ).values(),
+      ],
+      observedAt: Math.max(...group.map((item) => item.observedAt)),
+      stale: group.every((item) => item.stale),
+    }),
+  )
 }
 
 export function count(problems: ReadonlyArray<Pick<Workbench.Problem, "severity">>): Workbench.ProblemCounts {
@@ -221,7 +263,7 @@ export function count(problems: ReadonlyArray<Pick<Workbench.Problem, "severity"
 export const node = LayerNode.make({
   service: Service,
   layer,
-  deps: [EventV2Bridge.node, LSP.node, FSUtil.node],
+  deps: [EventV2Bridge.node, LSP.node, FSUtil.node, Config.node],
 })
 
 export * as WorkbenchProblems from "./store"

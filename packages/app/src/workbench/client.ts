@@ -76,6 +76,8 @@ export type DebugAction = "continue" | "pause" | "next" | "stepIn" | "stepOut"
 // The IDE editor's file access (groups/workbench.ts `FileText` / `FileWritten`): exact text and the hash of its bytes.
 const FileText = Schema.Struct({ content: Schema.String, hash: Schema.String })
 const FileWritten = Schema.Struct({ hash: Schema.String })
+// The main chat's per-session switch (groups/workbench.ts `AutoApprove`): edits and bash run without asking there.
+const AutoApprove = Schema.Struct({ enabled: Schema.Boolean })
 
 // Agent HQ orchestration (groups/agenthq.ts; docs/spicy/notes-agenthq.md "Routes (wave 2)"). `description: null`
 // clears it on edit.
@@ -123,6 +125,7 @@ const decoders = {
   tool: Schema.decodeUnknownOption(Workbench.CustomTool),
   toolResult: Schema.decodeUnknownOption(Workbench.CustomToolResult),
   fileWritten: Schema.decodeUnknownOption(FileWritten),
+  autoApprove: Schema.decodeUnknownOption(AutoApprove),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -177,6 +180,7 @@ export function createWorkbenchClient(input: {
   const session = (id: string) => `/agenthq/sessions/${encodeURIComponent(id)}`
   const changeset = (id: string) => `/review/changesets/${encodeURIComponent(id)}`
   const tool = (name: string) => `/workbench/tools/${encodeURIComponent(name)}`
+  const autoApprove = (sessionID: string) => `/workbench/sessions/${encodeURIComponent(sessionID)}/auto-approve`
 
   return {
     providers: () => decoded(decoders.providers, "GET", "/agenthq/providers"),
@@ -209,6 +213,11 @@ export function createWorkbenchClient(input: {
     removeTool: (name: string) => call("DELETE", tool(name)),
     runTool: (name: string, args: Record<string, unknown>) =>
       decoded(decoders.toolResult, "POST", `${tool(name)}/run`, { args }),
+    // Whether edits and bash run without asking in this opencode session; the server keeps the switch per session.
+    autoApprove: (sessionID: string) =>
+      decoded(decoders.autoApprove, "GET", autoApprove(sessionID)).then((value) => value.enabled),
+    setAutoApprove: (sessionID: string, enabled: boolean) =>
+      decoded(decoders.autoApprove, "PUT", autoApprove(sessionID), { enabled }).then((value) => value.enabled),
     runs: () => decoded(decoders.runs, "GET", "/workbench/runs"),
     run: (id: string) => decoded(decoders.run, "GET", `/workbench/runs/${encodeURIComponent(id)}`),
     check: (body: CheckInput = {}) => decoded(decoders.report, "POST", "/workbench/check", body),

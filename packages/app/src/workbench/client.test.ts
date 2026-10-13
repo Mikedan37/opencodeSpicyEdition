@@ -66,6 +66,17 @@ describe("workbench client", () => {
     expect(await kind(broken.api.agents())).toBe("failed: provider crashed")
   })
 
+  test("the session's auto-approve switch is read and set on its own route", async () => {
+    const { api, calls } = client((_, init) => json({ enabled: init?.method === "PUT" }))
+    expect(await api.autoApprove("ses/1")).toBe(false)
+    expect(await api.setAutoApprove("ses/1", true)).toBe(true)
+    expect(calls.map((call) => [call.init?.method, call.url.pathname])).toEqual([
+      ["GET", "/workbench/sessions/ses%2F1/auto-approve"],
+      ["PUT", "/workbench/sessions/ses%2F1/auto-approve"],
+    ])
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ enabled: true })
+  })
+
   test("replies that do not match the contract are errors, not data", async () => {
     const { api } = client(() => json([{ id: "not-an-agent-id", name: 1 }]))
     await expect(api.agents()).rejects.toThrow("unexpected response")

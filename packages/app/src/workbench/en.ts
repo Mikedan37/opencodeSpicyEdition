@@ -11,6 +11,17 @@ export const dict = {
   "workbench.command.agents": "Show agents",
   "workbench.command.problems": "Show problems",
   "workbench.retry": "Try again",
+  "workbench.autoApprove.off": "Asks before edits",
+  "workbench.autoApprove.on": "Auto-approving this session",
+  "workbench.autoApprove.tooltip.off":
+    "Edits and shell commands in this session ask first. Click to auto-approve them.",
+  "workbench.autoApprove.tooltip.on":
+    "Edits and shell commands in this session run without asking. Click to ask again.",
+  "workbench.autoApprove.confirm.title": "Auto-approve this session?",
+  "workbench.autoApprove.confirm.description":
+    "Until you turn it off, the agent edits files and runs shell commands in this session without asking. Other sessions, subagents, MCP tools and files outside the project still ask.",
+  "workbench.autoApprove.confirm.accept": "Auto-approve",
+  "workbench.autoApprove.failed": "Auto-approve was not changed",
   "workbench.error.unavailable": "This server doesn't provide the Workbench yet.",
   "workbench.error.failed": "Request failed: {{message}}",
 

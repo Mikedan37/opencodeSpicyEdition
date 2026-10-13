@@ -395,7 +395,11 @@ try {
     await step("Tasks view", async () => {
       await backToList(renderer!)
       await renderer!.click('[data-agenthq-view="tasks"]')
-      await renderer!.waitFor(exists('[data-component="agenthq-tasks"] [data-action="task-new"]'), "Tasks view")
+      // New task sits in the Agents header row, outside the Tasks view
+      await renderer!.waitFor(
+        `${exists('[data-component="agenthq-tasks"]')} && ${exists('[data-action="task-new"]')}`,
+        "Tasks view",
+      )
     })
     const task = await step(
       "create an isolated task for Felix",
@@ -869,6 +873,7 @@ try {
   // ---------------------------------------------------------------- activity
   await section(() =>
     step("Activity tab renders (no investigations yet)", async () => {
+      await panelTab(renderer!, "agents") // Activity is a view inside the Agents tab
       await panelTab(renderer!, "activity")
       await renderer!.waitFor(
         `${textOf('[data-component="workbench-activity"]')}.includes("No investigations yet")`,
@@ -1425,7 +1430,7 @@ async function openAgentsTab(renderer: Renderer) {
   await step("Agents tab", async () => {
     await panelTab(renderer, "agents")
     await renderer.waitFor(
-      `document.querySelector('[data-component="workbench-panel"][data-tab="agents"] [data-component="agenthq-panel"]')`,
+      `document.querySelector('[data-component="workbench-panel"][data-surface="agents"] [data-component="agenthq-panel"]')`,
       "Agents panel",
     )
     await renderer.waitFor(

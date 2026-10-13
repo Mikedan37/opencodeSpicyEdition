@@ -22,7 +22,8 @@ interface PendingEntry {
 
 interface State {
   pending: Map<PermissionV1.ID, PendingEntry>
-  approved: PermissionV1.Rule[]
+  // spicy: "always" approvals are kept per session, not for the whole directory (see SPICY.md)
+  approved: Map<string, PermissionV1.Rule[]>
 }
 
 export function evaluate(permission: string, pattern: string, ...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule {
@@ -48,7 +49,7 @@ const layer = Layer.effect(
         void ctx
         const state = {
           pending: new Map<PermissionV1.ID, PendingEntry>(),
-          approved: [],
+          approved: new Map<string, PermissionV1.Rule[]>(), // spicy: per session
         }
 
         yield* Effect.addFinalizer(() =>
@@ -68,9 +69,12 @@ const layer = Layer.effect(
       const { approved, pending } = yield* InstanceState.get(state)
       const { ruleset, ...request } = input
       let needsAsk = false
+      const remembered = approved.get(request.sessionID) ?? [] // spicy: only this session's "always" approvals
 
       for (const pattern of request.patterns) {
-        const rule = evaluate(request.permission, pattern, ruleset, approved)
+        // spicy: an explicit deny is checked before the approvals, so an "always" never lifts it
+        const explicit = evaluate(request.permission, pattern, ruleset)
+        const rule = explicit.action === "deny" ? explicit : evaluate(request.permission, pattern, ruleset, remembered)
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
           return yield* new PermissionV1.DeniedError({
@@ -142,8 +146,11 @@ const layer = Layer.effect(
       yield* Deferred.succeed(existing.deferred, undefined)
       if (input.reply === "once") return
 
+      // spicy: remembered for this session only
+      const remembered = approved.get(existing.info.sessionID) ?? []
+      approved.set(existing.info.sessionID, remembered)
       for (const pattern of existing.info.always) {
-        approved.push({
+        remembered.push({
           permission: existing.info.permission,
           pattern,
           action: "allow",
@@ -153,7 +160,7 @@ const layer = Layer.effect(
       for (const [id, item] of pending.entries()) {
         if (item.info.sessionID !== existing.info.sessionID) continue
         const ok = item.info.patterns.every(
-          (pattern) => evaluate(item.info.permission, pattern, approved).action === "allow",
+          (pattern) => evaluate(item.info.permission, pattern, remembered).action === "allow",
         )
         if (!ok) continue
         pending.delete(id)

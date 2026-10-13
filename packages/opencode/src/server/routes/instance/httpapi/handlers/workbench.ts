@@ -23,9 +23,13 @@ import { WorkbenchEditorLsp } from "@/workbench/editor-lsp"
 import { Format } from "@/format"
 import { ReviewChanges } from "@/review/changes"
 import { SessionID } from "@/session/schema"
+import { Session } from "@/session/session"
+import { SessionAutoApprove } from "@/workbench/auto-approve"
+import { mapStorageNotFound } from "./session-errors"
 import { InstanceHttpApi } from "../api"
 import { ConflictError, ForbiddenError, InvalidRequestError, notFound } from "../errors"
 import {
+  AutoApprove,
   CheckPayload,
   FileQuery,
   FileWritePayload,
@@ -52,6 +56,7 @@ export const workbenchHandlers = HttpApiBuilder.group(
       const shares = yield* SessionShare.Service
       const formatter = yield* Format.Service
       const review = yield* ReviewChanges.Service
+      const sessions = yield* Session.Service
 
       const refuse = (failure: WorkbenchEditorFile.Failure) => {
         if (failure.kind === "missing") return notFound(failure.message)
@@ -199,6 +204,24 @@ export const workbenchHandlers = HttpApiBuilder.group(
         return { id: info.id }
       })
 
+      const autoApprove = Effect.fn("WorkbenchHttpApi.autoApprove")(function* (ctx: {
+        params: { sessionID: SessionID }
+      }) {
+        const info = yield* mapStorageNotFound(sessions.get(ctx.params.sessionID))
+        return { enabled: SessionAutoApprove.enabled(info.permission ?? []) }
+      })
+
+      // A person's switch: bridge tokens never reach this endpoint (BridgeToken.ROUTES), so no agent can turn it on.
+      const setAutoApprove = Effect.fn("WorkbenchHttpApi.setAutoApprove")(function* (ctx: {
+        params: { sessionID: SessionID }
+        payload: typeof AutoApprove.Type
+      }) {
+        const info = yield* mapStorageNotFound(sessions.get(ctx.params.sessionID))
+        const permission = SessionAutoApprove.apply(info.permission ?? [], ctx.payload.enabled)
+        yield* sessions.setPermission({ sessionID: info.id, permission })
+        return { enabled: SessionAutoApprove.enabled(permission) }
+      })
+
       const runs = Effect.fn("WorkbenchHttpApi.runs")(function* () {
         return yield* verify.runs()
       })
@@ -240,6 +263,8 @@ export const workbenchHandlers = HttpApiBuilder.group(
         .handle("lspFormat", lspFormat)
         .handle("file", file)
         .handle("writeFile", writeFile)
+        .handle("autoApprove", autoApprove)
+        .handle("setAutoApprove", setAutoApprove)
     }),
   // The doctor spawns probes through AppProcess, a stateless process runner the app graph does not expose.
 ).pipe(Layer.provide(LayerNode.compile(AppProcess.node)))

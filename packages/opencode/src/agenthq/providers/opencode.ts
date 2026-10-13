@@ -42,15 +42,15 @@ export const status: AgentHQ.ProviderStatus = {
 
 const OPTIONS: Extract<AgentHQ.AgentEvent, { type: "permission.requested" }>["options"] = [
   { id: "once", label: "Allow once", kind: "allow_once" },
-  { id: "always", label: "Always allow", kind: "allow_always" },
+  { id: "always", label: "Always allow in this session", kind: "allow_always" },
   { id: "reject", label: "Reject", kind: "reject_once" },
 ]
 
 const TOOL_STATE = { pending: "started", running: "running", completed: "completed", error: "error" } as const
 
-// Tools that only read; everything else (bash, edit/write/patch, task, MCP tools, verify, debug...)
-// asks the human even where the agent's rules say "allow".
-const READ_ONLY = ["read", "glob", "grep", "list", "lsp", "todoread", "todowrite", "skill", "webfetch", "websearch"]
+// Tools that only read (the list the main chat shares); everything else (bash, edit/write/patch, task, MCP tools,
+// verify, debug...) asks the human even where the agent's rules say "allow".
+const READ_ONLY: readonly string[] = Agent.READ_ONLY_TOOLS
 
 /**
  * Agent HQ never auto-approves execution or file mutation: every "allow" in the agent's rules becomes

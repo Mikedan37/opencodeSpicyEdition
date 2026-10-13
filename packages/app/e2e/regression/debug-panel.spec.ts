@@ -844,7 +844,7 @@ test("CON-07 a raw LLDB command waits for its ask under the command; a rejection
   await input.fill("`platform shell echo hi")
   await input.press("Enter")
   await expect(attempt).toContainText("`platform shell echo hi")
-  await expect(buttons).toHaveText(["Allow once", "Allow always", "Reject"])
+  await expect(buttons).toHaveText(["Allow once", "Always allow in this debug session", "Reject"])
   await expect(page.getByText("Permission required")).toHaveCount(0)
   await page.screenshot({ path: test.info().outputPath("con07-ask.png") })
 

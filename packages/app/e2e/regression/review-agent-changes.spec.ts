@@ -265,6 +265,8 @@ async function createProject(directory: string, modelURL: string) {
       formatter: false,
       lsp: false,
       share: "disabled",
+      // The main chat asks before edits; this spec reviews them, so its session's writes are allowed.
+      permission: { edit: "allow" },
       provider: {
         test: {
           name: "Test",

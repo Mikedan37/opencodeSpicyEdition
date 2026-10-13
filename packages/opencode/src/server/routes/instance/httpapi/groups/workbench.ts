@@ -53,6 +53,11 @@ export const FileText = Schema.Struct({
   hash: Schema.String.annotate({ description: "sha256 of the file's bytes: the baseHash of the next write" }),
 }).annotate({ identifier: "WorkbenchFileText" })
 
+// The main chat's per-session auto-approve switch (src/workbench/auto-approve.ts).
+export const AutoApprove = Schema.Struct({
+  enabled: Schema.Boolean.annotate({ description: "Edits and shell commands in this session run without asking" }),
+}).annotate({ identifier: "WorkbenchAutoApprove" })
+
 export const FileWritePayload = Schema.Struct({
   path: Schema.String.annotate({ description: "Absolute, or relative to the directory" }),
   content: Schema.String,
@@ -270,6 +275,32 @@ export const WorkbenchApi = HttpApi.make("workbench")
             summary: "Workbench MCP session",
             description:
               "A session titled Workbench MCP for the Workbench MCP bridge's agent tools (debug_*, tool_create, custom_*); their permission asks appear there. A bridge token always gets its one session, made on its first call.",
+          }),
+        ),
+        HttpApiEndpoint.get("autoApprove", `${root}/sessions/:sessionID/auto-approve`, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(AutoApprove, "Whether the session auto-approves edits and shell commands"),
+          error: ApiNotFoundError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.autoApprove.get",
+            summary: "Session auto-approve",
+            description: "Whether edits (edit, write, apply_patch) and bash run without asking in this session.",
+          }),
+        ),
+        HttpApiEndpoint.put("setAutoApprove", `${root}/sessions/:sessionID/auto-approve`, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: AutoApprove,
+          success: described(AutoApprove, "The session's switch after the change"),
+          error: ApiNotFoundError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.autoApprove.set",
+            summary: "Set session auto-approve",
+            description:
+              "Turns this session's switch on or off. On, edits (edit, write, apply_patch) and bash run without asking in this session; other sessions, subagents, MCP tools, edits outside the project and a user's asks for specific commands keep asking, and every deny still applies (plan mode stays read-only). Not available to Workbench bridge tokens.",
           }),
         ),
         HttpApiEndpoint.get("doctor", `${root}/doctor`, {

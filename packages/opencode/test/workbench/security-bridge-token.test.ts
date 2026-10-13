@@ -144,6 +144,9 @@ describe("workbench bridge token", () => {
           ["GET", "/workbench/search?query=x"],
           ["PUT", "/workbench/file", { path: "a.txt", content: "x", baseHash: "x" }],
           ["GET", "/workbench/runs"],
+          // An agent cannot turn on auto-approve, not even for the session it works in.
+          ["PUT", `/workbench/sessions/${own.body.id}/auto-approve`, { enabled: true }],
+          ["GET", `/workbench/sessions/${own.body.id}/auto-approve`],
           ["POST", "/workbench/tools", { name: "x", description: "x", source: "x" }],
           ["GET", "/session"],
           ["POST", "/session", { title: "mine" }],

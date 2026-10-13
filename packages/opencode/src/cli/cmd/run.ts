@@ -14,6 +14,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 // raw event streaming, `--continue` / `--session` for session resumption,
 // and `--fork` for forking before continuing.
 import type { Argv } from "yargs"
+import { Headless } from "@/workbench/headless" // spicy: what a rejected ask needed
 import path from "path"
 import { pathToFileURL } from "url"
 import { open } from "node:fs/promises"
@@ -808,10 +809,11 @@ export const RunCommand = effectCmd({
                   reply: "once",
                 })
               } else {
+                // spicy: say what needs approval and how to give it, not only that it was rejected
                 UI.println(
                   UI.Style.TEXT_WARNING_BOLD + "!",
                   UI.Style.TEXT_NORMAL +
-                    `permission requested: ${permission.permission} (${permission.patterns.join(", ")}); auto-rejecting`,
+                    Headless.needsApproval(permission, "rerun with --auto or allow it in opencode.json"),
                 )
                 await client.permission.reply({
                   requestID: permission.id,

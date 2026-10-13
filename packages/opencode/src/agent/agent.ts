@@ -32,6 +32,21 @@ import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 
+// spicy: tools that only read. The main chat (build, general) runs them without asking and asks before anything else;
+// Agent HQ never auto-approves a tool outside this list (agenthq/providers/opencode.ts).
+export const READ_ONLY_TOOLS = [
+  "read",
+  "glob",
+  "grep",
+  "list",
+  "lsp",
+  "todoread",
+  "todowrite",
+  "skill",
+  "webfetch",
+  "websearch",
+] as const
+
 export const Info = Schema.Struct({
   name: Schema.String,
   description: Schema.optional(Schema.String),
@@ -116,8 +131,8 @@ const layer = Layer.effect(
           ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
         } satisfies Record<string, "allow" | "ask" | "deny">
 
-        const defaults = Permission.fromConfig({
-          "*": "allow",
+        // spicy: the rules after "*", apart so the main chat's ask-first rules can sit between the two
+        const rules = Permission.fromConfig({
           doom_loop: "ask",
           external_directory: {
             "*": "ask",
@@ -142,6 +157,17 @@ const layer = Layer.effect(
             "*.env.example": "allow",
           },
         })
+        const defaults = Permission.merge(Permission.fromConfig({ "*": "allow" }), rules)
+        // spicy: the main chat (build, general) asks before it changes anything: every tool outside READ_ONLY_TOOLS asks
+        // (edit/write/apply_patch, bash, MCP tools, subagents...). The rules after it (verify.exec, debug.*, custom_*,
+        // .env reads, external_directory) keep their precedence, and the user's config, merged last, still wins.
+        const askFirst = Permission.merge(
+          Permission.fromConfig({
+            "*": "ask",
+            ...Object.fromEntries(READ_ONLY_TOOLS.map((tool) => [tool, "allow" as const])),
+          }),
+          rules,
+        )
 
         const user = Permission.fromConfig(cfg.permission ?? {})
 
@@ -151,7 +177,7 @@ const layer = Layer.effect(
             description: "The default agent. Executes tools based on configured permissions.",
             options: {},
             permission: Permission.merge(
-              defaults,
+              askFirst, // spicy: asks before edits, bash and MCP tools
               Permission.fromConfig({
                 question: "allow",
                 plan_enter: "allow",
@@ -170,6 +196,7 @@ const layer = Layer.effect(
               Permission.fromConfig({
                 question: "allow",
                 plan_exit: "allow",
+                bash: "ask", // spicy: plan mode asks before shell commands too; reads stay allowed
                 task: {
                   general: "deny",
                 },
@@ -191,7 +218,7 @@ const layer = Layer.effect(
             name: "general",
             description: `General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.`,
             permission: Permission.merge(
-              defaults,
+              askFirst, // spicy: asks before edits, bash and MCP tools
               Permission.fromConfig({
                 todowrite: "deny",
               }),
@@ -210,7 +237,7 @@ const layer = Layer.effect(
                 grep: "allow",
                 glob: "allow",
                 list: "allow",
-                bash: "allow",
+                bash: "ask", // spicy: plan mode starts explore without asking, so its commands ask
                 webfetch: "allow",
                 websearch: "allow",
                 read: "allow",

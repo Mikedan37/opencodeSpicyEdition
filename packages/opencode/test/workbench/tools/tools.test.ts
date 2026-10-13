@@ -129,12 +129,17 @@ describe("tool creator", () => {
         const marker = path.join(dir, "imported.txt")
         const session = (yield* user.post("/session", { title: "agent" })).body.id as string
 
-        // An agent drafts a tool (the agent route is what the MCP bridge calls; tool_create is the same tool).
-        const drafted = yield* user.post("/workbench/tools/agent", {
-          sessionID: session,
-          tool: "tool_create",
-          args: { name: "hello", description: "Greets people", source: GREETER(marker) },
-        })
+        // An agent drafts a tool (the agent route is what the MCP bridge calls; tool_create is the same tool). Writing
+        // the draft asks like an edit, and the main chat asks before edits.
+        const drafting = yield* user
+          .post("/workbench/tools/agent", {
+            sessionID: session,
+            tool: "tool_create",
+            args: { name: "hello", description: "Greets people", source: GREETER(marker) },
+          })
+          .pipe(Effect.forkChild)
+        expect((yield* user.answer("edit", "once")).sessionID).toBe(session)
+        const drafted = yield* Fiber.join(drafting)
         expect(drafted.status).toBe(200)
         expect(drafted.body.output).toContain("waiting for the human's approval")
         const [draft] = yield* user.tools()
@@ -255,11 +260,13 @@ describe("tool creator", () => {
           result.content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
 
         expect(yield* names()).toEqual(["workbench_problems", "workbench_check", "workbench_doctor", "tool_create"])
-        const created = yield* call("tool_create", {
+        const creating = yield* call("tool_create", {
           name: "greet",
           description: "Greets people",
           source: GREETER(path.join(dir, "imported.txt")),
-        })
+        }).pipe(Effect.forkChild)
+        yield* user.answer("edit", "once")
+        const created = yield* Fiber.join(creating)
         expect(text(created)).toContain("waiting for the human's approval")
         const [draft] = yield* user.tools()
         const owner = yield* user.request(`/session/${draft.createdBy.sessionID}`)

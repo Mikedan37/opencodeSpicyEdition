@@ -78,6 +78,8 @@ export type DebugAction = "continue" | "pause" | "next" | "stepIn" | "stepOut"
 // The IDE editor's file access (groups/workbench.ts `FileText` / `FileWritten`): exact text and the hash of its bytes.
 const FileText = Schema.Struct({ content: Schema.String, hash: Schema.String })
 const FileWritten = Schema.Struct({ hash: Schema.String })
+// The main chat's per-session switch (groups/workbench.ts `AutoApprove`): edits and bash run without asking there.
+const AutoApprove = Schema.Struct({ enabled: Schema.Boolean })
 
 // Project search (groups/workbench-search.ts `SearchResult`): matching lines by file, each file with the hash of its
 // bytes when searched (absent when the editor does not open it); `listed` of `total` matches were sent.
@@ -176,6 +178,7 @@ const decoders = {
   lspRename: Schema.decodeUnknownOption(Workbench.LspRename),
   lspFormat: Schema.decodeUnknownOption(Workbench.LspFormat),
   accepted: Schema.decodeUnknownOption(Schema.Boolean),
+  autoApprove: Schema.decodeUnknownOption(AutoApprove),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -233,6 +236,7 @@ export function createWorkbenchClient(input: {
   // Code intelligence (groups/workbench.ts `workbench.lsp.*`): a 0-based line and UTF-16 column in a project file.
   const lsp = (route: string, path: string, at: { line: number; character: number }) =>
     `/workbench/lsp/${route}?${new URLSearchParams({ path, line: String(at.line), character: String(at.character) })}`
+  const autoApprove = (sessionID: string) => `/workbench/sessions/${encodeURIComponent(sessionID)}/auto-approve`
 
   return {
     providers: () => decoded(decoders.providers, "GET", "/agenthq/providers"),
@@ -282,6 +286,11 @@ export function createWorkbenchClient(input: {
     removeTool: (name: string) => call("DELETE", tool(name)),
     runTool: (name: string, args: Record<string, unknown>) =>
       decoded(decoders.toolResult, "POST", `${tool(name)}/run`, { args }),
+    // Whether edits and bash run without asking in this opencode session; the server keeps the switch per session.
+    autoApprove: (sessionID: string) =>
+      decoded(decoders.autoApprove, "GET", autoApprove(sessionID)).then((value) => value.enabled),
+    setAutoApprove: (sessionID: string, enabled: boolean) =>
+      decoded(decoders.autoApprove, "PUT", autoApprove(sessionID), { enabled }).then((value) => value.enabled),
     runs: () => decoded(decoders.runs, "GET", "/workbench/runs"),
     run: (id: string) => decoded(decoders.run, "GET", `/workbench/runs/${encodeURIComponent(id)}`),
     check: (body: CheckInput = {}) => decoded(decoders.report, "POST", "/workbench/check", body),

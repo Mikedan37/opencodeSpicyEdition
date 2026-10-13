@@ -792,7 +792,7 @@ it.instance(
       yield* Fiber.join(fiber)
 
       const result = yield* ask({
-        sessionID: SessionID.make("session_test2"),
+        sessionID: SessionID.make("session_test"), // spicy: "always" approvals are per session (upstream: session_test2)
         permission: "bash",
         patterns: ["ls"],
         metadata: {},

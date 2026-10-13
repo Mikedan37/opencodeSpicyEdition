@@ -97,7 +97,11 @@ describe("opencode run (non-interactive subprocess)", () => {
         )
         yield* llm.fail("upstream provider exploded mid-stream")
         yield* llm.text("recovered")
-        const result = yield* opencode.run("trigger midstream error", { timeoutMs: 30_000 })
+        // spicy: the build agent asks before bash, and `opencode run` rejects asks; this test is about stream recovery
+        const result = yield* opencode.run("trigger midstream error", {
+          timeoutMs: 30_000,
+          permission: { bash: "allow" },
+        })
         expect(result.exitCode).toBe(0)
         expect(result.stdout).toBe("partial response\nrecovered\n")
         expect(result.stderr).not.toContain("upstream provider exploded mid-stream")
@@ -226,7 +230,8 @@ describe("opencode run (non-interactive subprocess)", () => {
         )
         yield* llm.fail("provider failed")
         yield* llm.text("recovered")
-        const result = yield* opencode.run("fail after output", { format: "json" })
+        // spicy: the build agent asks before bash, and `opencode run` rejects asks; this test is about stream recovery
+        const result = yield* opencode.run("fail after output", { format: "json", permission: { bash: "allow" } })
 
         const events = opencode.parseJsonEvents(result.stdout)
         expect(result.exitCode).toBe(0)
@@ -257,7 +262,8 @@ describe("opencode run (non-interactive subprocess)", () => {
         yield* llm.text("continued after rejection")
         const denied = yield* opencode.run("request permission", { permission: { bash: "ask" } })
         opencode.expectExit(denied, 0)
-        expect(denied.stderr).toContain("permission requested: bash")
+        // spicy: the line says what needs approval and how to give it (upstream: "permission requested: bash")
+        expect(denied.stderr).toContain("bash needs approval (rm -f denied-file); rerun with --auto")
         expect(denied.stdout).toBe("")
 
         yield* llm.reset
@@ -268,7 +274,7 @@ describe("opencode run (non-interactive subprocess)", () => {
           extraArgs: ["--dangerously-skip-permissions"],
         })
         opencode.expectExit(allowed, 0)
-        expect(allowed.stderr).not.toContain("permission requested: bash")
+        expect(allowed.stderr).not.toContain("needs approval") // spicy: the new rejection line
         expect(allowed.stdout).toContain("continued after approval")
 
         yield* llm.reset

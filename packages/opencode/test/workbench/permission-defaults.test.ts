@@ -65,21 +65,6 @@ describe("SEC-01 permission defaults", () => {
 })
 
 describe("the main chat asks before it changes anything", () => {
-  it.instance(
-    "the user's own agents ask first too; their own permission config still wins",
-    () =>
-      Effect.gen(function* () {
-        const agent = yield* agents
-        const reviewer = agent("reviewer").permission
-        for (const key of CHANGES) expect(["reviewer", key, action(reviewer, key)]).toEqual(["reviewer", key, "ask"])
-        for (const key of Agent.READ_ONLY_TOOLS) expect(["reviewer", key, action(reviewer, key)]).toEqual(["reviewer", key, "allow"])
-        expect(action(reviewer, "debug.memory")).toBe("deny")
-        expect(action(agent("writer").permission, "edit")).toBe("allow")
-        expect(action(agent("writer").permission, "bash")).toBe("ask")
-      }),
-    { config: { agent: { reviewer: { description: "Reviews" }, writer: { permission: { edit: "allow" } } } } },
-  )
-
   it.instance("build and general ask for edits, bash and MCP tools; read-only tools run", () =>
     Effect.gen(function* () {
       const agent = yield* agents

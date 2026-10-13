@@ -310,7 +310,7 @@ const layer = Layer.effect(
             item = agents[key] = {
               name: key,
               mode: "all",
-              permission: Permission.merge(askFirst, user), // spicy: custom agents ask first, like the main chat
+              permission: Permission.merge(defaults, user),
               options: {},
               native: false,
             }

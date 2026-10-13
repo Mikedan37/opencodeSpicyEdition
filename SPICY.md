@@ -53,4 +53,6 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 
 New files owned by the fork (no upstream conflict): `packages/schema/src/{workbench,agent-hq,review}.ts`, `packages/opencode/src/workbench/**`, `packages/opencode/src/agenthq/**`,
 `packages/opencode/src/review/**`, `packages/opencode/src/cli/cmd/workbench.ts`, `packages/app/src/workbench/**`, `packages/app/src/review/**`,
-`packages/app/src/agenthq/**`, `packages/desktop/scripts/spicy-*.ts`, `packages/desktop/src/main/bundled-cli.ts`, `docs/SPICY_IDE_*.md`, `docs/spicy/**`, `SPICY.md`.
+`packages/app/src/agenthq/**`, `packages/desktop/scripts/spicy-*.ts`, `packages/desktop/src/main/bundled-cli.ts`,
+`packages/ui/{bunfig.toml,test-preload.ts}` (ui test preload: JSX against solid's hyperscript runtime, as in `packages/app/happydom.ts`),
+`docs/SPICY_IDE_*.md`, `docs/spicy/**`, `SPICY.md`.

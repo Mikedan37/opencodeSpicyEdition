@@ -515,13 +515,9 @@ export const githubRun = Effect.fn("Cli.github.run")(function* (args: { event?: 
       const repoData = await fetchRepo()
       session = await runLocalEffect(
         sessionSvc.create({
-          permission: [
-            {
-              permission: "question",
-              action: "deny",
-              pattern: "*",
-            },
-          ],
+          // spicy: no questions, and edits and shell commands auto-approved (the CI works out of the box); what still
+          // asks is rejected with what needs approval (Headless.rejectAsks)
+          permission: Headless.ciPermission(),
         }),
       )
       await subscribeSessionEvents()

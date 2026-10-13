@@ -1,16 +1,25 @@
-import { describe, expect } from "bun:test"
+import { afterEach, describe, expect } from "bun:test"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Cause, Effect, Exit, Layer } from "effect"
 import path from "path"
+import { Agent } from "@/agent/agent"
+import { Auth } from "@/auth"
+import { Config } from "@/config/config"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { Plugin } from "@/plugin"
+import { Provider } from "@/provider/provider"
+import { Skill } from "@/skill"
+import { SessionAutoApprove } from "@/workbench/auto-approve"
 import { Permission } from "@/permission"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { InstanceStore } from "@/project/instance-store"
 import { SessionID } from "@/session/schema"
 import { Headless } from "@/workbench/headless"
+import { disposeAllInstances } from "../fixture/fixture"
 import { cliIt } from "../lib/cli-process"
 import { testEffect } from "../lib/effect"
 
@@ -72,5 +81,40 @@ describe("headless runs", () => {
       expect(reported).toEqual(["bash needs approval (npm publish); CI can't answer asks; allow it in opencode.json"])
       expect(yield* permission.list()).toEqual([])
     }),
+  )
+})
+
+const agentIt = testEffect(
+  LayerNode.compile(
+    LayerNode.group([Agent.node, Plugin.node, Provider.node, Auth.node, Config.node, Skill.node, RuntimeFlags.node]),
+  ),
+)
+
+describe("the GitHub agent's CI session", () => {
+  afterEach(() => disposeAllInstances())
+
+  agentIt.instance(
+    "edits and shell commands run; .git, MCP tools, subagents and other directories still ask; denies apply",
+    () =>
+      Effect.gen(function* () {
+        const build = (yield* Agent.Service.use((svc) => svc.defaultInfo())).permission
+        const ci = Headless.ciPermission()
+        const action = (key: string, pattern = "src/app.ts") =>
+          Permission.evaluate(
+            key,
+            pattern,
+            SessionAutoApprove.ruleset(build, ci, { permission: key, patterns: [pattern], metadata: {} }),
+          ).action
+        expect(action("edit")).toBe("allow")
+        expect(action("bash", "npm test")).toBe("allow")
+        expect(action("edit", ".git/config")).toBe("ask")
+        expect(action("github_create_issue")).toBe("ask")
+        expect(action("task", "general")).toBe("ask")
+        expect(action("external_directory", "/elsewhere/*")).toBe("ask")
+        expect(action("question")).toBe("deny")
+        expect(action("bash", "rm -rf build")).toBe("deny")
+        expect(action("debug.memory")).toBe("deny")
+      }),
+    { config: { permission: { bash: { "rm *": "deny" } } } },
   )
 })

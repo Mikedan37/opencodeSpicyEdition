@@ -544,7 +544,8 @@ try {
       if ((await read("a.txt")) !== A_EDITED) throw new Error("accepting a hunk changed a.txt")
       await renderer!.click('[data-component="review-hunk"] [data-action="reject"]')
       await until(async () => (await read("a.txt")) === A_REVIEWED, "a.txt to keep only the accepted hunk")
-      await renderer!.waitFor(`${stateOf("a.txt")} === "accepted"`, "a.txt reviewed")
+      // one hunk kept and one reverted: the file is partly kept (UX finding #9)
+      await renderer!.waitFor(`${stateOf("a.txt")} === "partial"`, "a.txt reviewed")
       await shot("review-a")
     })
     await step("b.txt: reject the file from the file view", async () => {

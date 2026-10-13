@@ -13,7 +13,9 @@
 // With FAKE_ACP_NO_LOAD set, it advertises no session/load, like AgentKit, and refuses one.
 // With FAKE_ACP_STATE set, like AgentKit it keeps a folder <FAKE_ACP_STATE>/<pid> while it runs and removes it a moment
 // after its input ends; a kill leaves it behind.
-import { AgentSideConnection, ndJsonStream, type Agent } from "@agentclientprotocol/sdk"
+// With FAKE_ACP_AUTH_REQUIRED set, like a Cursor that is not logged in, session/new answers auth_required; a call to
+// authenticate (which in Cursor opens a browser login) is recorded in <FAKE_ACP_RECORD>.authenticate.
+import { AgentSideConnection, ndJsonStream, RequestError, type Agent } from "@agentclientprotocol/sdk"
 import { mkdirSync, rmSync } from "fs"
 import path from "path"
 
@@ -50,6 +52,7 @@ new AgentSideConnection(
     return {
       initialize: async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: !noLoad } }),
       newSession: async (params) => {
+        if (process.env.FAKE_ACP_AUTH_REQUIRED) throw RequestError.authRequired()
         // Contract tests read what the client sent when they ask for it.
         if (process.env.FAKE_ACP_RECORD) await Bun.write(process.env.FAKE_ACP_RECORD, JSON.stringify(params))
         cwd = params.cwd
@@ -65,7 +68,10 @@ new AgentSideConnection(
         await say(params.sessionId, "old reply")
         return {}
       },
-      authenticate: async () => ({}),
+      authenticate: async () => {
+        if (process.env.FAKE_ACP_RECORD) await Bun.write(`${process.env.FAKE_ACP_RECORD}.authenticate`, "called")
+        return {}
+      },
       cancel: async () => cancelled?.(),
       prompt: async (params) => {
         const sessionId = params.sessionId

@@ -488,31 +488,42 @@ describe("agenthq", () => {
           await fs.chmod(path.join(bin, name), 0o755)
         })
       yield* script("claude", 'echo "2.1.296 (Claude Code)"')
+      // A cursor-agent from before the ACP mode answers `acp --help` with its top-level help.
       yield* script(
         "cursor-agent",
-        'if [ "$1" = "--version" ]; then echo 2025.09.12-4852336; else printf "Commands:\\n  agent  Start\\n"; fi',
+        'if [ "$1" = "--version" ]; then echo 2025.09.12-4852336; else printf "Usage: cursor-agent [options] [command] [prompt...]\\n"; fi',
       )
 
       const claude = yield* AgentDetect.status("claude-code", { env: { PATH: bin } })
       expect(claude).toMatchObject({ id: "claude-code", available: true, version: "2.1.296", auth: "unknown" })
       expect(claude.capabilities.permissionRequests).toBe(false)
-      const cursor = yield* AgentDetect.status("cursor", { env: { PATH: bin } })
+      const cursor = yield* (yield* AgentDetect.cursor({ PATH: bin })).status
       expect(cursor).toMatchObject({
         available: false,
         version: "2025.09.12-4852336",
-        reason: "Cursor's CLI has no ACP mode; Agent HQ needs approvals routed to you",
+        reason: "This cursor-agent (2025.09.12) has no ACP mode; update the Cursor CLI",
       })
       const codex = yield* AgentDetect.status("codex", { env: { PATH: bin } })
       expect(codex).toMatchObject({ available: false, reason: "codex not found on PATH" })
 
       yield* script(
         "cursor-agent",
-        'if [ "$1" = "--version" ]; then echo 2026.01.01; else printf "Commands:\\n  acp  Start ACP\\n"; fi',
+        'if [ "$1" = "--version" ]; then echo 2026.10.01-e373342; elif [ "$1" = "acp" ]; then echo "Start the Cursor Agent as an ACP (Agent Client Protocol) server"; fi',
       )
-      // With an ACP command, Cursor is driven through the ACP adapter and reports its capabilities.
+      // With its ACP subcommand, Cursor is driven through the ACP adapter and reports its capabilities.
       const acpCursor = yield* (yield* AgentDetect.cursor({ PATH: bin })).status
-      expect(acpCursor).toMatchObject({ available: true, version: "2026.01.01" })
+      expect(acpCursor).toMatchObject({ available: true, version: "2026.10.01-e373342" })
       expect(acpCursor.capabilities).toMatchObject({ streaming: true, permissionRequests: true, cancel: true })
+
+      // The manager below must never start this machine's own Cursor.
+      const savedCursor = process.env.OPENCODE_CURSOR_AGENT
+      process.env.OPENCODE_CURSOR_AGENT = path.join(bin, "absent")
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (savedCursor === undefined) delete process.env.OPENCODE_CURSOR_AGENT
+          else process.env.OPENCODE_CURSOR_AGENT = savedCursor
+        }),
+      )
 
       // Through the manager: opencode is always there, every unavailable provider says why, and
       // provider.updated is published once per change, not on every call.
@@ -532,8 +543,8 @@ describe("agenthq", () => {
       yield* sessions.providers()
       expect(seen.filter((event) => event.type === "agenthq.provider.updated")).toHaveLength(6)
 
-      // An unavailable provider fails with a typed error and leaves no session behind. (Cursor: no ACP mode in
-      // any cursor-agent so far, and not installed where these tests run.)
+      // An unavailable provider fails with a typed error and leaves no session behind. (Cursor: OPENCODE_CURSOR_AGENT
+      // points nowhere.)
       const registry = yield* AgentRegistry.Service
       const agent = yield* registry.create({
         name: "Cur",

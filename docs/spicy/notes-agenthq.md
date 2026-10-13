@@ -1300,3 +1300,44 @@ test fail.
 Results: `bun test test/agenthq test/workbench/{security-bridge-token,mcp,mcp-debug}.test.ts test/workbench/tools
 test/server/{auth,httpapi-instance-route-auth}.test.ts` 80 pass, 4 skip, 0 fail; `bun run test:httpapi` coverage,
 auth and effect each 270 pass, 0 fail, 0 missing; `bun run typecheck` clean.
+
+# Cursor through its ACP mode (`cursor-agent acp`)
+
+Cursor's CLI does have ACP: `acp` is a hidden subcommand, absent from the top-level help. In the 2026.10.01 build,
+`cursor-agent acp --help` prints "Start the Cursor Agent as an ACP (Agent Client Protocol) server"; the installed
+2025.09.12 answers `acp --help` with its top-level help.
+
+- Detection (`AgentDetect.cursor`): `OPENCODE_CURSOR_AGENT` (a path, alone when set), else `cursor-agent` on PATH;
+  never a bare `agent` (on this Mac `~/.local/bin/agent` is the ProjectBlaze AgentKit CLI). Available when
+  `cursor-agent acp --help` exits 0 and mentions ACP; otherwise "This cursor-agent (2025.09.12) has no ACP mode; update
+  the Cursor CLI". Probing runs only `--version` and `acp --help`; it does not check the login.
+- Launch: `cursor-agent acp` and nothing else (never `--force`, `--yolo`, `--auto-review`, `--approve-mcps` or
+  `--trust`), through the ACP adapter with its credential stripping, Workbench token and process-group handling. An
+  identity's `launch` replaces the command. `CURSOR_CONFIG_DIR` points at Agent HQ's own folder
+  (`<state>/agenthq/cursor`, made with `permissions: { allow: [], deny: [] }`), so the owner's Cursor allowlist and
+  MCP config are not used and "Allow always" is remembered there, not in `~/.cursor`. The login is in the keychain, not
+  in that folder (`cursor-agent status` gives the same answer with either folder).
+- Approvals: Cursor's docs say tools that need approval go through `session/request_permission` (allow-once,
+  allow-always, reject-once). Its code (the ACP decision provider) asks for every write, delete, read, shell command
+  and MCP call in its default "allowlist" approval mode, except what the allowlist already allows (by default
+  `Shell(ls)`). Run Everything needs `--force`/`--yolo`, Auto-review needs `--auto-review`; Agent HQ passes neither, and
+  the folder above starts with an empty allowlist, so Cursor asks before everything.
+- Login: Agent HQ never calls ACP `authenticate`. Cursor's handler for `cursor_login` opens a browser login when there
+  is no login, and the server already checks the login the same way at startup, so after an auth_required answer
+  authenticate would always start that browser flow. Instead `session/new`'s auth_required becomes "Cursor is not
+  logged in; run `cursor-agent login`" (`AcpProvider.make({ authRequired })`).
+
+Tests (`test/agenthq/cursor.test.ts`): a bare `agent` is ignored; an old cursor-agent says to update; a new one is
+available; `OPENCODE_CURSOR_AGENT` finds a build outside PATH and, pointing nowhere, is not replaced by PATH; a session
+starts with exactly `acp` as arguments and `CURSOR_CONFIG_DIR` at the folder with the empty allowlist; a Cursor that
+answers auth_required fails the start with the login message and is never sent `authenticate`. AHQ-07 now checks the
+old CLI's reason and keeps the manager away from this machine's own Cursor.
+
+Free real check (`SPICY_REAL_CURSOR=status`, `OPENCODE_CURSOR_AGENT` = the unpacked 2026.10.01-e373342 build, no
+prompt): available; `session/new` answered auth_required after 14.4 s, reported as "Cursor is not logged in; run
+`cursor-agent login`". `cursor-agent status` from that build says "Not logged in" with the owner's default config and
+with Agent HQ's folder alike, so the owner's Cursor login is not there for this CLI; nothing logged in. The owner's
+`~/.cursor/cli-config.json` was not touched; Cursor made an empty `~/.cursor/projects/<temp dir>` folder for the test
+project, which was removed.
+
+Results: `bun test --timeout 120000 test/agenthq` 50 pass, 5 skip (the opt-in real checks), 0 fail; typecheck clean.

@@ -200,7 +200,7 @@ function Line(props: { row: ConsoleRow; chip: boolean }) {
 function Input() {
   const debug = useDebug()
   const language = useLanguage()
-  let input!: HTMLInputElement
+  let input!: HTMLTextAreaElement
   let timer: ReturnType<typeof setTimeout> | undefined
   let asked = 0
   onCleanup(() => clearTimeout(timer))
@@ -212,21 +212,27 @@ function Input() {
     history: -1,
     draft: "",
     busy: false,
+    // Where the line the completions are for starts in the (multi-line) text.
+    base: 0,
   })
   const ready = () => debug.selected()?.state === "stopped"
   const completes = () => !!debug.selected()?.capabilities.includes("supportsCompletionsRequest")
   const close = () => setState({ items: [], active: 0 })
 
+  // Completions are for the line the cursor is on.
   const suggest = () => {
     clearTimeout(timer)
     const ask = ++asked
     if (!ready() || !completes() || !state.text.trim()) return close()
     const text = state.text
     const cursor = input.selectionStart ?? text.length
+    const base = text.lastIndexOf("\n", cursor - 1) + 1
+    const end = text.indexOf("\n", cursor)
+    const line = text.slice(base, end === -1 ? undefined : end)
     timer = setTimeout(
       () =>
-        debug.completions(text, cursor + 1).then(
-          (items) => ask === asked && setState({ items: items.slice(0, 50), active: 0 }),
+        debug.completions(line, cursor - base + 1).then(
+          (items) => ask === asked && setState({ items: items.slice(0, 50), active: 0, base }),
           () => ask === asked && close(),
         ),
       150,
@@ -238,7 +244,7 @@ function Input() {
     const range =
       item.start === undefined
         ? completionRange(state.text, cursor)
-        : { start: item.start, end: item.start + (item.length ?? 0) }
+        : { start: state.base + item.start, end: state.base + item.start + (item.length ?? 0) }
     const insert = item.text ?? item.label
     asked++
     setState({ text: state.text.slice(0, range.start) + insert + state.text.slice(range.end), items: [], active: 0 })
@@ -272,14 +278,17 @@ function Input() {
     if (state.history === -1) setState("draft", state.text)
     setState({ history: next === list.length ? -1 : next, text: next === list.length ? state.draft : list[next]! })
   }
+  // Enter submits and Shift+Enter starts a new line; Up and Down recall history only from the first and the last line,
+  // so they still move between the lines of a multi-line input.
   const keydown = (event: KeyboardEvent) => {
     const open = state.items.length > 0
+    const enter = event.key === "Enter" && !event.shiftKey && !event.isComposing
     if (open && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
       event.preventDefault()
       const step = event.key === "ArrowDown" ? 1 : -1
       return setState("active", (state.active + step + state.items.length) % state.items.length)
     }
-    if (open && (event.key === "Tab" || event.key === "Enter")) {
+    if (open && (event.key === "Tab" || enter)) {
       event.preventDefault()
       return accept(state.items[state.active]!)
     }
@@ -288,18 +297,21 @@ function Input() {
       event.stopPropagation()
       return close()
     }
-    if (event.key === "Enter") {
+    if (enter) {
       event.preventDefault()
       return submit()
     }
-    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    if (event.key === "Enter") return close()
+    const first = !state.text.slice(0, input.selectionStart ?? 0).includes("\n")
+    const last = !state.text.slice(input.selectionEnd ?? state.text.length).includes("\n")
+    if ((event.key === "ArrowUp" && first) || (event.key === "ArrowDown" && last)) {
       event.preventDefault()
       recall(event.key === "ArrowUp" ? -1 : 1)
     }
   }
 
   return (
-    <div class="relative flex h-9 shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-3">
+    <div class="relative flex min-h-9 shrink-0 items-start gap-2 border-t border-v2-border-border-muted px-3 py-2">
       <Show when={state.items.length}>
         <div
           id="debug-console-completions"
@@ -329,11 +341,13 @@ function Input() {
           </For>
         </div>
       </Show>
-      <span class="shrink-0 font-mono text-[12px] text-v2-text-text-faint">›</span>
-      <input
+      <span class="shrink-0 font-mono text-[12px] leading-5 text-v2-text-text-faint">›</span>
+      <textarea
         ref={input}
         data-slot="debug-console-input"
-        class="h-full min-w-0 flex-1 bg-transparent font-mono text-[12px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint disabled:cursor-not-allowed"
+        // Grows with its lines, up to 8.
+        rows={Math.min(8, state.text.split("\n").length)}
+        class="min-w-0 flex-1 resize-none bg-transparent font-mono text-[12px] leading-5 text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint disabled:cursor-not-allowed"
         aria-label={language.t("workbench.debug.console.input")}
         aria-autocomplete="list"
         aria-controls={state.items.length ? "debug-console-completions" : undefined}

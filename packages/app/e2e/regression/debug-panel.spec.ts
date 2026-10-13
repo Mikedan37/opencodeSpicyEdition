@@ -617,6 +617,38 @@ test("CON-03 Esc closes the completion list and keeps the typed text", async ({ 
   await expect(input).toBeFocused()
 })
 
+test("CON-03 Shift+Enter adds a line and Enter evaluates the whole input; Up and Down recall history from its ends", async ({
+  page,
+}) => {
+  const { mock, panel } = await openConsole(page, [row(5, "stdout", "program", "hello")])
+  const input = panel.locator('[data-slot="debug-console-input"]')
+  await input.click()
+  await page.keyboard.type("total = 1")
+  await page.keyboard.press("Shift+Enter")
+  await page.keyboard.type("total + 1")
+  await expect(input).toHaveValue("total = 1\ntotal + 1")
+  await expect(input).toHaveAttribute("rows", "2")
+  await page.keyboard.press("Enter")
+  await expect.poll(() => mock.evaluations.at(-1)).toEqual({ expression: "total = 1\ntotal + 1", frameID: 1 })
+  await expect(input).toHaveValue("")
+  await expect(input).toHaveAttribute("rows", "1")
+
+  // Up from the (only) line recalls the two-line entry; Up again only moves to its first line; Down twice goes back
+  // to the line being typed.
+  const caret = () => input.evaluate((el) => (el as HTMLTextAreaElement).selectionStart)
+  await page.keyboard.press("ArrowUp")
+  await expect(input).toHaveValue("total = 1\ntotal + 1")
+  await input.evaluate((el) => (el as HTMLTextAreaElement).setSelectionRange(15, 15))
+  await page.keyboard.press("ArrowUp")
+  await expect(input).toHaveValue("total = 1\ntotal + 1")
+  expect(await caret()).toBeLessThan(10)
+  await page.keyboard.press("ArrowDown")
+  await expect(input).toHaveValue("total = 1\ntotal + 1")
+  expect(await caret()).toBeGreaterThan(9)
+  await page.keyboard.press("ArrowDown")
+  await expect(input).toHaveValue("")
+})
+
 test("CON-05 an agent's evaluation is attributed to the agent", async ({ page }) => {
   const { mock, panel } = await openConsole(page, [row(5, "stdout", "program", "hello")])
   mock.emit(output(row(6, "eval", "agent", "len(xs)"), row(7, "result", "agent", "(0, 0)")))

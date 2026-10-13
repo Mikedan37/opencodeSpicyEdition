@@ -45,8 +45,15 @@ test("800×900: the tabs that do not fit are in », nothing is clipped, and the 
   await more.click()
   const menu = page.locator("[data-tabs-menu]")
   const labels = { problems: "Problems", checks: "Checks", debug: "Debug", agents: "Agents" }
-  const hidden = (Object.keys(labels) as (keyof typeof labels)[]).filter((id) => !visible.includes(id))
-  await expect(menu.locator("[data-surface]")).toHaveText(hidden.map((id) => labels[id]))
+  // The bar re-fits once the terminal's own tab renders, so compare the menu with the bar as it is now
+  const hidden = async () => {
+    const shown = await surfaces(page).evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-surface")))
+    return (Object.keys(labels) as (keyof typeof labels)[]).filter((id) => !shown.includes(id)).map((id) => labels[id])
+  }
+  await expect
+    .poll(async () => (await menu.locator("[data-surface]").allTextContents()).join() === (await hidden()).join())
+    .toBe(true)
+  await expect(menu.locator("[data-surface]")).toHaveText(await hidden())
   await menu.locator('[data-surface="agents"]').click()
   await expect(page.locator('[data-workbench-tab="agents"]')).toHaveAttribute("aria-selected", "true")
   await expect(panel(page)).toHaveAttribute("data-surface", "agents")

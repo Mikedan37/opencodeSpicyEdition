@@ -148,9 +148,10 @@ test("agent changes: hunks render inline, accept one, reject one, files on disk 
     await hunks.nth(0).locator('[data-action="reject"]').click()
     await expect(hunks).toHaveCount(0)
     await expect(page.locator('[data-component="review-decided-hunk"][data-state="rejected"]')).toHaveCount(1)
+    // One hunk kept and one reverted: the file is partly kept, not accepted.
     await expect(changeset.locator('[data-component="review-file-row"][data-path="a.txt"]')).toHaveAttribute(
       "data-state",
-      "accepted",
+      "partial",
     )
     expect(await read("a.txt")).toBe(TEN.replace("two\n", "TWO\n"))
     await shot("3-a-reviewed")

@@ -1065,9 +1065,9 @@ SHELL_SESSIONS_DISABLE=1`): 163/163. The first run had one failure, `tools.spec.
   pane closed), 78.4 vs 79.5 s (pane closed), 87.5 vs 88.8 s (pane open), ranges overlapping; the machine's
   run-to-run spread is about ±7%. A run with the turns' undo switched off moved one scenario each way. Nothing here
   is attributable to the change; the timeline only gains a ↶ per finished turn, and nothing new runs per delta.
-- `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 42 at the start, 43 at the end: two macOS
-  `triald` `proactive_event_tracker` diagnostics; no crash of bun, Chromium, Python or the app. No lldb, no
-  Electron; no server, debugpy or temp project left behind.
+- `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 42 at the start, 44 at the end, all macOS system
+  diagnostics (two `triald` `proactive_event_tracker` files, one `SFA-local.json` file); no crash report of bun,
+  Chromium, Python or the app. No lldb, no Electron; no server, debugpy or temp project left behind.
 - The desktop smoke needs no selector change: it answers Agent HQ's permission rows and only waits for
   `session-prompt-dock`. The main chat's selectors for any future script: the card `[data-component="approval-card"]`,
   `[data-action="approval-allow|approval-always|approval-deny|approval-always-menu"]`, the menu's

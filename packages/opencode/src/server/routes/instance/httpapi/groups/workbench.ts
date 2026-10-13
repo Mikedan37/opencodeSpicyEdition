@@ -3,6 +3,7 @@ import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { SessionID } from "@/session/schema"
 import { Doctor } from "@/workbench/doctor"
+import { WorkbenchApprovals } from "@/workbench/approvals"
 import { ApiNotFoundError, ConflictError, ForbiddenError, InvalidRequestError } from "../errors"
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
@@ -53,10 +54,18 @@ export const FileText = Schema.Struct({
   hash: Schema.String.annotate({ description: "sha256 of the file's bytes: the baseHash of the next write" }),
 }).annotate({ identifier: "WorkbenchFileText" })
 
-// The main chat's per-session auto-approve switch (src/workbench/auto-approve.ts).
+// The main chat's per-session auto-approve switches (src/workbench/auto-approve.ts).
 export const AutoApprove = Schema.Struct({
-  enabled: Schema.Boolean.annotate({ description: "Edits and shell commands in this session run without asking" }),
+  edits: Schema.Boolean.annotate({
+    description: "Edits (edit, write, apply_patch) in this session run without asking, except under .git/",
+  }),
+  commands: Schema.Boolean.annotate({ description: "Shell commands in this session run without asking" }),
 }).annotate({ identifier: "WorkbenchAutoApprove" })
+
+// "Always allow in this project" (src/workbench/approvals.ts): allow rules saved from permission asks.
+export const Approvals = Schema.Struct({
+  rules: Schema.Array(WorkbenchApprovals.Rule),
+}).annotate({ identifier: "WorkbenchApprovals" })
 
 export const FileWritePayload = Schema.Struct({
   path: Schema.String.annotate({ description: "Absolute, or relative to the directory" }),
@@ -286,21 +295,57 @@ export const WorkbenchApi = HttpApi.make("workbench")
           OpenApi.annotations({
             identifier: "workbench.autoApprove.get",
             summary: "Session auto-approve",
-            description: "Whether edits (edit, write, apply_patch) and bash run without asking in this session.",
+            description:
+              "Whether edits (edit, write, apply_patch) and shell commands run without asking in this session.",
           }),
         ),
         HttpApiEndpoint.put("setAutoApprove", `${root}/sessions/:sessionID/auto-approve`, {
           params: { sessionID: SessionID },
           query: WorkspaceRoutingQuery,
           payload: AutoApprove,
-          success: described(AutoApprove, "The session's switch after the change"),
+          success: described(AutoApprove, "The session's switches after the change"),
           error: ApiNotFoundError,
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "workbench.autoApprove.set",
             summary: "Set session auto-approve",
             description:
-              "Turns this session's switch on or off. On, edits (edit, write, apply_patch) and bash run without asking in this session; other sessions, subagents, MCP tools, edits outside the project and a user's asks for specific commands keep asking, and every deny still applies (plan mode stays read-only). Not available to Workbench bridge tokens.",
+              "Sets this session's two switches. With edits on, edits (edit, write, apply_patch) run without asking except under .git/; with commands on, shell commands do. Other sessions, subagents, MCP tools, edits outside the project and a user's rules for specific files or commands keep applying, and every deny still applies (plan mode stays read-only). Not available to Workbench bridge tokens.",
+          }),
+        ),
+        HttpApiEndpoint.post("saveApproval", `${root}/permissions/:requestID/save`, {
+          params: { requestID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Approvals, "The project's saved rules, the new ones included"),
+          error: [ApiNotFoundError, InvalidRequestError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.approvals.save",
+            summary: "Always allow in this project",
+            description:
+              'Answers a pending permission request with "always" and saves its always-patterns, under its permission, for this project: every session of the project, subagents included, then skips that ask. Saved rules never lift a deny, and never approve edits under .git/. 404 when the request is not pending; 400 when it has no always-patterns. Not available to Workbench bridge tokens.',
+          }),
+        ),
+        HttpApiEndpoint.get("approvals", `${root}/approvals`, {
+          query: WorkspaceRoutingQuery,
+          success: described(Approvals, "The project's saved rules"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.approvals.list",
+            summary: "Saved approvals",
+            description: 'The allow rules saved for this project with "Always allow in this project".',
+          }),
+        ),
+        HttpApiEndpoint.delete("removeApproval", `${root}/approvals`, {
+          query: WorkspaceRoutingQuery,
+          payload: WorkbenchApprovals.Rule,
+          success: described(Approvals, "The project's remaining saved rules"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.approvals.remove",
+            summary: "Remove a saved approval",
+            description:
+              "Removes one saved rule; the next matching request asks again. Not available to Workbench bridge tokens.",
           }),
         ),
         HttpApiEndpoint.get("doctor", `${root}/doctor`, {

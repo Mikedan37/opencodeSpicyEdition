@@ -25,6 +25,7 @@ import { ReviewChanges } from "@/review/changes"
 import { SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionAutoApprove } from "@/workbench/auto-approve"
+import { WorkbenchApprovals } from "@/workbench/approvals"
 import { mapStorageNotFound } from "./session-errors"
 import { InstanceHttpApi } from "../api"
 import { ConflictError, ForbiddenError, InvalidRequestError, notFound } from "../errors"
@@ -57,6 +58,8 @@ export const workbenchHandlers = HttpApiBuilder.group(
       const formatter = yield* Format.Service
       const review = yield* ReviewChanges.Service
       const sessions = yield* Session.Service
+      const permissions = yield* Permission.Service
+      const approvals = yield* WorkbenchApprovals.Service
 
       const refuse = (failure: WorkbenchEditorFile.Failure) => {
         if (failure.kind === "missing") return notFound(failure.message)
@@ -208,7 +211,7 @@ export const workbenchHandlers = HttpApiBuilder.group(
         params: { sessionID: SessionID }
       }) {
         const info = yield* mapStorageNotFound(sessions.get(ctx.params.sessionID))
-        return { enabled: SessionAutoApprove.enabled(info.permission ?? []) }
+        return SessionAutoApprove.state(info.permission ?? [])
       })
 
       // A person's switch: bridge tokens never reach this endpoint (BridgeToken.ROUTES), so no agent can turn it on.
@@ -217,9 +220,38 @@ export const workbenchHandlers = HttpApiBuilder.group(
         payload: typeof AutoApprove.Type
       }) {
         const info = yield* mapStorageNotFound(sessions.get(ctx.params.sessionID))
-        const permission = SessionAutoApprove.apply(info.permission ?? [], ctx.payload.enabled)
+        const permission = SessionAutoApprove.apply(info.permission ?? [], ctx.payload)
         yield* sessions.setPermission({ sessionID: info.id, permission })
-        return { enabled: SessionAutoApprove.enabled(permission) }
+        return SessionAutoApprove.state(permission)
+      })
+
+      // "Always allow in this project": a person's answer, so bridge tokens never reach it (BridgeToken.ROUTES).
+      const saveApproval = Effect.fn("WorkbenchHttpApi.saveApproval")(function* (ctx: {
+        params: { requestID: string }
+      }) {
+        const request = (yield* permissions.list()).find((item) => item.id === ctx.params.requestID)
+        if (!request) return yield* notFound(`No pending permission request ${ctx.params.requestID}`)
+        if (!request.always.length)
+          return yield* new InvalidRequestError({ message: "This request has nothing to always allow" })
+        const rules = yield* approvals.save(
+          request.always.map((pattern) => ({ permission: request.permission, pattern: pattern.slice(0, 2000) })),
+        )
+        yield* permissions
+          .reply({ requestID: request.id, reply: "always" })
+          .pipe(
+            Effect.catchTag("Permission.NotFoundError", () => notFound(`No pending permission request ${request.id}`)),
+          )
+        return { rules }
+      })
+
+      const listApprovals = Effect.fn("WorkbenchHttpApi.approvals")(function* () {
+        return { rules: yield* approvals.list() }
+      })
+
+      const removeApproval = Effect.fn("WorkbenchHttpApi.removeApproval")(function* (ctx: {
+        payload: WorkbenchApprovals.Rule
+      }) {
+        return { rules: yield* approvals.remove(ctx.payload) }
       })
 
       const runs = Effect.fn("WorkbenchHttpApi.runs")(function* () {
@@ -265,6 +297,9 @@ export const workbenchHandlers = HttpApiBuilder.group(
         .handle("writeFile", writeFile)
         .handle("autoApprove", autoApprove)
         .handle("setAutoApprove", setAutoApprove)
+        .handle("saveApproval", saveApproval)
+        .handle("approvals", listApprovals)
+        .handle("removeApproval", removeApproval)
     }),
   // The doctor spawns probes through AppProcess, a stateless process runner the app graph does not expose.
 ).pipe(Layer.provide(LayerNode.compile(AppProcess.node)))

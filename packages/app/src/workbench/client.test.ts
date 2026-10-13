@@ -66,15 +66,34 @@ describe("workbench client", () => {
     expect(await kind(broken.api.agents())).toBe("failed: provider crashed")
   })
 
-  test("the session's auto-approve switch is read and set on its own route", async () => {
-    const { api, calls } = client((_, init) => json({ enabled: init?.method === "PUT" }))
-    expect(await api.autoApprove("ses/1")).toBe(false)
-    expect(await api.setAutoApprove("ses/1", true)).toBe(true)
+  test("the session's auto-approve switches are read and set on their own route", async () => {
+    const { api, calls } = client((_, init) =>
+      json(init?.method === "PUT" ? JSON.parse(String(init.body)) : { edits: false, commands: false }),
+    )
+    expect(await api.getAutoApprove("ses/1")).toEqual({ edits: false, commands: false })
+    expect(await api.setAutoApprove("ses/1", { edits: true, commands: false })).toEqual({
+      edits: true,
+      commands: false,
+    })
     expect(calls.map((call) => [call.init?.method, call.url.pathname])).toEqual([
       ["GET", "/workbench/sessions/ses%2F1/auto-approve"],
       ["PUT", "/workbench/sessions/ses%2F1/auto-approve"],
     ])
-    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ enabled: true })
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ edits: true, commands: false })
+  })
+
+  test("saved approvals are listed, saved from a pending request and removed", async () => {
+    const rule = { permission: "bash", pattern: "git status *" }
+    const { api, calls } = client(() => json({ rules: [rule] }))
+    expect(await api.listApprovals()).toEqual([rule])
+    expect(await api.saveApproval("per/1")).toEqual([rule])
+    expect(await api.removeApproval(rule)).toEqual([rule])
+    expect(calls.map((call) => [call.init?.method, call.url.pathname])).toEqual([
+      ["GET", "/workbench/approvals"],
+      ["POST", "/workbench/permissions/per%2F1/save"],
+      ["DELETE", "/workbench/approvals"],
+    ])
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual(rule)
   })
 
   test("replies that do not match the contract are errors, not data", async () => {

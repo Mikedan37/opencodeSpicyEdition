@@ -35,7 +35,13 @@ function Chip(props: { sessionID: string }) {
     fetch: platform.fetch,
   })
   // undefined while loading, and on a server without the switch: the chip stays hidden.
-  const [enabled, { mutate }] = createResource(() => client.autoApprove(props.sessionID).catch(() => undefined))
+  // ponytail: one chip for both switches until the UI's own controls replace it.
+  const [enabled, { mutate }] = createResource(() =>
+    client
+      .getAutoApprove(props.sessionID)
+      .then((value) => value.edits && value.commands)
+      .catch(() => undefined),
+  )
 
   const confirm = () =>
     new Promise<boolean>((resolve) => {
@@ -69,12 +75,14 @@ function Chip(props: { sessionID: string }) {
   const toggle = async () => {
     const next = !enabled()
     if (next && !(await confirm())) return
-    await client.setAutoApprove(props.sessionID, next).then(mutate, (error: unknown) =>
-      showToast({
-        variant: "error",
-        title: language.t("workbench.autoApprove.failed"),
-        description: errorText(error),
-      }),
+    await client.setAutoApprove(props.sessionID, { edits: next, commands: next }).then(
+      (value) => mutate(value.edits && value.commands),
+      (error: unknown) =>
+        showToast({
+          variant: "error",
+          title: language.t("workbench.autoApprove.failed"),
+          description: errorText(error),
+        }),
     )
   }
 

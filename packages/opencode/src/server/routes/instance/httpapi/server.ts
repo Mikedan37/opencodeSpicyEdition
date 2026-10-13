@@ -61,6 +61,7 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Npm } from "@opencode-ai/core/npm"
 import { PermissionSaved } from "@opencode-ai/core/permission/saved"
+import { WorkbenchApprovals } from "@/workbench/approvals" // spicy: saved approvals
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProjectCopy } from "@opencode-ai/core/project/copy"
 import { PtyTicket } from "@opencode-ai/core/pty/ticket"
@@ -296,6 +297,7 @@ const app = LayerNode.group([
   WorkbenchProblems.node, // spicy: Workbench services
   DebugToolNode, // spicy: Workbench debug and investigation routes
   WorkbenchTools.node, // spicy: tool creator service
+  WorkbenchApprovals.node, // spicy: "Always allow in this project" rules
   GitPanel.node, // spicy: git panel service
   ReviewChanges.node, // spicy: review service
   WorkbenchVerify.node, // spicy: Workbench services

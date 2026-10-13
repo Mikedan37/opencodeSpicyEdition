@@ -625,3 +625,59 @@ busy; both real-server specs bind the app's default server port).
   Ctrl+S with the focus on the tab saves. Negative controls: without the guard the dialog never comes; without the
   command no save happens. e2e set 33/33. Desktop `unsaved.test.ts` 3/3 (decision, test hook, prompt), desktop tests
   70/70, typecheck clean. No Electron launched.
+
+## Wave 8: the Tools tab (tool creator UI)
+
+### What exists
+
+- **Tools tab** in the Workbench bottom panel, after Activity (`workbench/tools-panel.tsx`, lazy). The badge counts
+  drafts waiting for review.
+- **List**, grouped Drafts (needs your review), Enabled, Disabled, Invalid, each newest change first; a row shows the
+  name, description, author ("You", or the Agent HQ agent whose session drafted it, else the opencode agent's name)
+  and age.
+- **Detail**: `custom_<name>`, status, author, age and file; the arguments table; the source in a read-only CodeMirror
+  view with the editor's theme and languages (`workbench/code-view.tsx`; the look and the language loaders moved from
+  `editor-view.tsx` to `workbench/codemirror.ts`, so both share one lazy chunk).
+  - Drafts: Approve sends the `hash` of the source on screen; a 409 shows "The code changed since you looked; review
+    again." and loads the list again, so the detail shows the code as it is now. Reject.
+  - Enabled: Disable, Delete (asks first), and a Test run form from `inputSchema`: text, number and integer inputs,
+    checkboxes, selects for enums, JSON for anything else; empty optional fields are left out; it shows the result's
+    title and `output`, or the server's error.
+  - Disabled: Enable (with the hash, same 409 handling), Delete. Invalid: the `reason`, Delete.
+- **New tool**: name, description and the source in an editable CodeMirror view, prefilled with a commented template
+  of the `tool()` API from `@opencode-ai/plugin` with one zod arg; it posts a draft, selected for review like any
+  other. (For drafts the server lists the description read from the source; the field is its fallback.)
+- **Live**: `workbench.tool.updated` upserts the tool and refetches the list (debounced), which alone carries an enabled
+  tool's `inputSchema` (kept from the list until then); `workbench.tool.removed` drops it. The list loads with the
+  Workbench provider, for the badge.
+- **Agent HQ**: a completed `tool_create` call (built in, or `mcp__…__tool_create` through the bridge) shows "Drafted
+  tool <name> — review in Tools"; the link selects the draft and opens the Tools tab. The name comes from the call's
+  title (`custom_<name>`) or its output.
+
+### Files
+
+Fork: `workbench/{tools,tools.test,tools-panel,code-view,codemirror,editor-view,client,panel,en}`,
+`agenthq/agents-panel.tsx`, `e2e/regression/tools.spec.ts`, `e2e/utils/opencode-server.ts` (real server with the
+port wait, the scripted model and a project config, now also used by `editor-save.spec.ts`). No upstream-owned file
+changed in wave 8.
+
+### Wave 8 tests and verification
+
+- `tools.test.ts` 8: grouping and order; approve sends the reviewed hash, a 409 marks the tool stale and reloads, the
+  next approve sends the new hash and clears the notice; one action per tool at a time; reject, delete and removed
+  events drop the tool and its selection; an update keeps the loaded `inputSchema` of the same file and refetches;
+  the user's draft is selected and the test run sends its args; the form's fields from a schema (string, integer,
+  number, boolean, string and numeric enums, array and anyOf as JSON) and its args (numbers and enums converted,
+  JSON parsed, empty optional fields left out, required, number, integer and JSON errors); `draftedTool` for the
+  built-in and the bridge's tool_create. App unit tests 805: 804 pass, 1 known ICU failure; `test-browser` 44/44;
+  typecheck clean.
+- `tools.spec.ts` (real server, scripted model, `@opencode-ai/plugin` linked into the project's `.opencode` so nothing
+  installs): a draft posted through the route appears live in Drafts with the badge; approve enables it; the
+  generated form runs it (`* hello Ada *` twice); disable; delete asks, then the tool is gone. A draft rewritten on
+  disk after the user looked (no event) is refused with the message and the new source; approving that works. New
+  tool saves a draft by "You" that approves. An Agent HQ agent's `tool_create` (its edit ask answered) shows the
+  "Drafted tool word_count — review in Tools" line, and the link opens Tools on the draft, authored by Ada. 1/1.
+- e2e set with the debug, editor, review, activity, Agent HQ, terminal and file-browser specs: 34/34
+  (`--workers=2`, the three real-server specs included). Screenshots: scratchpad `wave8-shots/`.
+- Build: CodeMirror core is one lazy chunk (`codemirror-*.js`, 341.6 KB) shared by `editor-view` (39.5 KB) and
+  `tools-panel` (18.4 KB).

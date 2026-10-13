@@ -342,6 +342,32 @@ describe("agenthq", () => {
     }),
   )
 
+  it.live("AHQ-17 an opencode edit asks with the file's diff, relative to the project", () =>
+    Effect.gen(function* () {
+      const { llm, dir } = yield* project
+      const sessions = yield* AgentSessions.Service
+      const agent = yield* createAgent(dir)
+      const started = yield* sessions.start(agent.id)
+      yield* llm.push(
+        reply().tool("write", { filePath: path.join(dir, "notes", "plan.txt"), content: "first\nsecond\n" }),
+      )
+      yield* llm.push(reply().text("done").stop())
+      yield* sessions.send(started.id, "write the plan")
+      const request = yield* waitHistory(
+        started.id,
+        (history) => ofType(history, "permission.requested")[0],
+        "permission was never requested",
+      )
+      expect(request.preview).toMatchObject({ kind: "edit", path: path.join("notes", "plan.txt") })
+      const diff = request.preview?.kind === "edit" ? request.preview.diff : ""
+      expect(diff).toContain("+first")
+      expect(diff).toContain("+second")
+      expect(diff).not.toContain(dir)
+      yield* sessions.respond(started.id, request.requestID, "reject")
+      yield* turnCompleted(started.id)
+    }),
+  )
+
   it.live("AHQ-04 a permission request surfaces and nothing proceeds until the human answers", () =>
     Effect.gen(function* () {
       const { llm, dir } = yield* project
@@ -360,6 +386,7 @@ describe("agenthq", () => {
       )
       expect(request.tool).toBe("bash")
       expect(request.title).toContain("echo agenthq-permission")
+      expect(request.preview).toEqual({ kind: "command", command: "echo agenthq-permission", cwd: dir })
       expect(request.options.map((option) => option.kind)).toEqual(["allow_once", "allow_always", "reject_once"])
 
       // Hold still: the tool must not run and the model must not be called again while unanswered.
@@ -907,12 +934,24 @@ describe("agenthq", () => {
         status: "needs_approval",
         pendingPermissions: 1,
       })
+      expect(request.preview).toEqual({ kind: "other", summary: "Delete everything" })
       yield* sessions.respond(started.id, request.requestID, "yes")
       const answered = yield* turnCompleted(started.id, 3)
       expect(ofType(answered, "permission.resolved")).toEqual([
         { type: "permission.resolved", requestID: request.requestID, outcome: "allowed" },
       ])
       expect(ofType(answered, "message").at(-1)?.text).toBe("answer: yes")
+
+      // A command to run: its line and where it runs, from the request's raw input.
+      yield* sessions.send(started.id, "run")
+      const run = yield* waitHistory(
+        started.id,
+        (history) => ofType(history, "permission.requested").find((item) => item.requestID !== request.requestID),
+        "the command was never asked about",
+      )
+      expect(run.preview).toEqual({ kind: "command", command: "npm test", cwd: path.join(dir, "pkg") })
+      yield* sessions.respond(started.id, run.requestID, "no")
+      yield* turnCompleted(started.id, 4)
 
       // Cancel: the agent keeps talking after it, and none of that is recorded.
       yield* sessions.send(started.id, "hang")
@@ -976,6 +1015,8 @@ describe("agenthq", () => {
         "the change was never proposed",
       )
       expect(proposal).toMatchObject({ title: "Apply the fix", tool: "edit" })
+      expect(proposal.preview).toMatchObject({ kind: "edit", path: "src/fixed.txt" })
+      expect(proposal.preview?.kind === "edit" && proposal.preview.diff).toContain("+fixed")
       expect(proposal.options.map((option) => [option.id, option.kind])).toEqual([
         ["apply", "allow_once"],
         ["skip", "reject_once"],

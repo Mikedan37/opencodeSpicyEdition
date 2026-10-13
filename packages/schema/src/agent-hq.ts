@@ -121,6 +121,23 @@ export const PermissionOption = Schema.Struct({
   kind: Schema.Literals(["allow_once", "allow_always", "reject_once", "reject_always"]),
 })
 
+/**
+ * What a permission request is about, for the human to read before answering: an edit as a unified diff of one file
+ * (relative to the project; several files are listed comma-separated), a command and where it runs, or one line.
+ * Diffs are capped; `truncated` says one was cut.
+ */
+export const PermissionPreview = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("edit"),
+    path: Schema.String,
+    diff: Schema.String,
+    truncated: optional(Schema.Boolean),
+  }),
+  Schema.Struct({ kind: Schema.Literal("command"), command: Schema.String, cwd: optional(Schema.String) }),
+  Schema.Struct({ kind: Schema.Literal("other"), summary: Schema.String }),
+]).annotate({ identifier: "AgentHQPermissionPreview" })
+export type PermissionPreview = typeof PermissionPreview.Type
+
 // Normalized events every adapter emits. Provider-specific detail goes in
 // optional fields rather than new event types.
 export const AgentEvent = Schema.Union([
@@ -146,7 +163,8 @@ export const AgentEvent = Schema.Union([
     requestID: Schema.String,
     title: Schema.String,
     tool: optional(Schema.String),
-    details: optional(Schema.String),
+    details: optional(Schema.String), // the provider's own request data as JSON, capped; `preview` is what to show
+    preview: optional(PermissionPreview),
     options: Schema.Array(PermissionOption),
   }),
   Schema.Struct({

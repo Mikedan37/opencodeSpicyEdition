@@ -4,7 +4,8 @@
 //   "late"  → a message and a finished tool, then after its answer a late chunk and tool update for them
 //   "crash" → writes to stderr and exits with code 3
 //   "hang"  → says "working", waits for session/cancel, then (out of protocol) says more and ends cancelled
-//   "change" → like AgentKit: proposes a change (apply / skip); on apply writes src/fixed.txt in the session's cwd and
+//   "run"   → asks to execute `npm test` in <cwd>/pkg (rawInput command and cwd) and reports the answer
+//   "change" → like AgentKit: proposes a change (apply / skip), with its diff; on apply writes src/fixed.txt in the session's cwd and
 //              reports it as a diff with an absolute path and oldText null, then asks about an edit outside the
 //              approved places (keep / undo)
 //   other   → echoes the text
@@ -123,7 +124,12 @@ new AgentSideConnection(
         if (text === "change") {
           const proposal = await client.requestPermission({
             sessionId,
-            toolCall: { toolCallId: "t-apply", title: "Apply the fix", kind: "edit" },
+            toolCall: {
+              toolCallId: "t-apply",
+              title: "Apply the fix",
+              kind: "edit",
+              content: [{ type: "diff", path: `${cwd}/src/fixed.txt`, oldText: null, newText: "fixed\n" }],
+            },
             options: [
               { optionId: "apply", name: "Apply", kind: "allow_once" },
               { optionId: "skip", name: "Skip", kind: "reject_once" },
@@ -189,6 +195,26 @@ new AgentSideConnection(
               update: { sessionUpdate: "tool_call_update", toolCallId: "t9", status: "in_progress" },
             })
           }, 30)
+          return { stopReason: "end_turn" }
+        }
+        if (text === "run") {
+          const answer = await client.requestPermission({
+            sessionId,
+            toolCall: {
+              toolCallId: "t-run",
+              title: "`npm test`",
+              kind: "execute",
+              rawInput: { command: ["npm", "test"], cwd: `${cwd}/pkg` },
+            },
+            options: [
+              { optionId: "yes", name: "Allow", kind: "allow_once" },
+              { optionId: "no", name: "Reject", kind: "reject_once" },
+            ],
+          })
+          await say(
+            sessionId,
+            answer.outcome.outcome === "selected" ? `run: ${answer.outcome.optionId}` : "run: cancelled",
+          )
           return { stopReason: "end_turn" }
         }
         if (text === "ask") {

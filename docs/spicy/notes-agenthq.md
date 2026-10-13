@@ -1365,3 +1365,33 @@ merged (`HEAD^2` is the head), worktree and branch gone; after a crash at each p
 left; merged with the worktree removed; recorded but not merged; merged by an approval without the record) a new
 server lifetime finishes or undoes each, and a task whose branch has nothing of its own stays in review. Without the
 uninterruptible step the first test fails.
+
+## #3 Structured permission previews
+
+Approval cards printed `JSON.stringify(metadata).slice(0, 2000)`; temp paths ate the budget and diffs were cut off as
+escaped strings. `permission.requested` now also carries `preview` (`AgentHQ.PermissionPreview`, additive; `details`
+stays):
+
+- `{ kind: "edit", path, diff, truncated? }`: a unified diff, file headers relative to the project, capped at 32,000
+  characters (`truncated: true` when cut). Several files: their paths comma-separated and their diffs one after
+  another.
+- `{ kind: "command", command, cwd? }`.
+- `{ kind: "other", summary }`: one line, at most 500 characters.
+
+Built in `src/agenthq/preview.ts` and filled by every adapter:
+
+- opencode: `edit` asks (write, edit, apply_patch) bring the tool's own diff, whose absolute headers become
+  project-relative; `bash` asks show the tool call's full command line (the ask's patterns are only its parsed
+  commands) and the session's directory; anything else its title.
+- ACP (Codex, Cursor, AgentKit, custom agents): the request's `diff` content becomes the diff; an `execute` call shows
+  `rawInput.command` (an array is joined) and `rawInput.cwd`, else its title without backticks and the session's
+  directory; anything else its title and text.
+- Claude Code: Edit and MultiEdit are applied to the file as it is now to make the diff (the strings alone when the
+  file cannot be read or the text is not in it), Write diffs against the current file (empty when new), Bash shows
+  its command and the session's directory.
+
+Tests: opencode's bash ask previews the command and directory (AHQ-04) and a write previews `notes/plan.txt` with no
+temp path in the diff (AHQ-17); ACP previews "Delete everything", `npm test` in `<cwd>/pkg` from raw input, and an
+AgentKit-style proposal's diff of `src/fixed.txt` (AHQ-15, AHQ-16); Claude Code previews an Edit of a real file as
+`-one +two` with context, a new file whole, and a Bash command (`claude-code.test.ts`); `preview.test.ts` checks that
+only a leading root leaves the headers and that a long diff is cut and flagged.

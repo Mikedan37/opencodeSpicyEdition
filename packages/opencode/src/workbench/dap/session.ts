@@ -7,6 +7,7 @@ import { Process } from "@/util/process"
 import { DapClient, DebugError } from "./client"
 import { DebugConsole } from "./console"
 import { DebugControl, type Actor } from "./control"
+import { DebugEnv } from "./env"
 import { DebugSnapshot } from "./snapshot"
 import { DapTransport } from "./transport"
 
@@ -304,7 +305,7 @@ export function make(options: Options) {
       stdout: "pipe",
       stderr: "pipe",
       cwd: connection.cwd ?? options.directory,
-      env: connection.env,
+      env: DebugEnv.child(connection.env), // without the opencode server's credentials
     })
     if (child.pid) record(child.pid, connection.command.join(" "))
     child.stderr?.on("data", (chunk: Buffer) => {

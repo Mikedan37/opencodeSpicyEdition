@@ -9,6 +9,7 @@ import os from "os"
 import path from "path"
 import { Option, Schema } from "effect"
 import { Process } from "@/util/process"
+import { DebugEnv } from "../env"
 
 export type Resolved = {
   readonly python: string
@@ -166,10 +167,11 @@ export async function bundles(home = os.homedir()) {
 }
 
 async function probe(python: string, env?: Record<string, string>) {
+  // The project's own Python (its venv's site hooks run): no server credentials either.
   const out = await Process.text([python, "-c", PROBE], {
     nothrow: true,
     abort: AbortSignal.timeout(5_000),
-    env,
+    env: DebugEnv.child(env),
   }).catch(() => undefined)
   if (!out || out.code !== 0) return undefined
   return Option.getOrUndefined(decodeProbe(out.text.trim().split("\n").at(-1) ?? ""))

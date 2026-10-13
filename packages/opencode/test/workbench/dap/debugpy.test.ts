@@ -372,3 +372,79 @@ class AverageTest(unittest.TestCase):
     60_000,
   )
 })
+
+// The opencode server's credentials never reach a debugged program; everything else does. Both ways a program starts:
+// spawned by the adapter (internal console) and in an opencode PTY (integrated terminal).
+const ENV = `import os
+print("password", os.environ.get("OPENCODE_SERVER_PASSWORD"))
+print("username", os.environ.get("OPENCODE_SERVER_USERNAME"))
+print("ordinary", os.environ.get("SPICY_DEBUG_ORDINARY"))
+`
+
+describe("debugpy (real): environment", () => {
+  real(
+    name("SECURITY the server's credentials are not passed to the debugged program; ordinary variables are"),
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* write("env.py", ENV)
+        yield* Effect.promise(() =>
+          Bun.write(
+            path.join(directory, ".vscode", "launch.json"),
+            JSON.stringify({
+              configurations: [
+                {
+                  name: "terminal",
+                  type: "python",
+                  request: "launch",
+                  program: "env.py",
+                  console: "integratedTerminal",
+                },
+              ],
+            }),
+          ),
+        )
+        const saved = {
+          password: process.env.OPENCODE_SERVER_PASSWORD,
+          username: process.env.OPENCODE_SERVER_USERNAME,
+        }
+        // Set only around the launches; nothing in this file talks to an opencode server.
+        process.env.OPENCODE_SERVER_PASSWORD = "spicy-probe-password"
+        process.env.OPENCODE_SERVER_USERNAME = "spicy-probe-user"
+        process.env.SPICY_DEBUG_ORDINARY = "visible"
+        const printed = (input: { program?: string; configuration?: string }) =>
+          Effect.gen(function* () {
+            const debug = yield* WorkbenchDebug.Service
+            const { session } = yield* debug.start(yield* debug.prepare(input), agent)
+            return yield* pollWithTimeout(
+              Effect.sync(() => {
+                const text = session
+                  .output()
+                  .filter((row) => row.kind === "stdout")
+                  .map((row) => row.text)
+                  .join("")
+                return text.includes("ordinary") ? text : undefined
+              }),
+              "the program printed nothing",
+            )
+          })
+        try {
+          for (const input of [{ program: "env.py" }, { configuration: "terminal" }]) {
+            const text = yield* printed(input)
+            expect(text).toContain("password None")
+            expect(text).toContain("username None")
+            expect(text).toContain("ordinary visible")
+            expect(text).not.toContain("spicy-probe")
+          }
+        } finally {
+          for (const [key, value] of [
+            ["OPENCODE_SERVER_PASSWORD", saved.password],
+            ["OPENCODE_SERVER_USERNAME", saved.username],
+            ["SPICY_DEBUG_ORDINARY", undefined],
+          ] as const)
+            if (value === undefined) delete process.env[key]
+            else process.env[key] = value
+        }
+      }),
+    60_000,
+  )
+})

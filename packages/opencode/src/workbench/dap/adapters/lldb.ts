@@ -5,6 +5,7 @@ import { Option, Schema } from "effect"
 import { which } from "@opencode-ai/core/util/which"
 import { Filesystem } from "@/util/filesystem"
 import { Process } from "@/util/process"
+import { DebugEnv } from "../env"
 
 export const DEVELOPER_MODE_OFF = "Developer Mode off — run sudo DevToolsSecurity -enable"
 
@@ -95,6 +96,7 @@ export async function testBinary(build: {
 }): Promise<{ program: string; notes: string[] } | { error: string }> {
   const out = await Process.run([...build.command], {
     cwd: build.cwd,
+    env: DebugEnv.child(), // build scripts are project code: no server credentials
     nothrow: true,
     abort: AbortSignal.timeout(300_000),
   }).catch((error: unknown) => ({ code: 1, stdout: Buffer.from(""), stderr: Buffer.from(String(error)) }))

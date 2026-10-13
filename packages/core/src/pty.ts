@@ -80,7 +80,9 @@ export class ExitedError extends Schema.TaggedErrorClass<ExitedError>()("Pty.Exi
 export interface Interface {
   readonly list: () => Effect.Effect<Info[]>
   readonly get: (id: PtyID) => Effect.Effect<Info, NotFoundError>
-  readonly create: (input: CreateInput) => Effect.Effect<Info>
+  // spicy: `omit` names variables of this process the program must not inherit (the debugger keeps the opencode
+  // server's credentials out of debugged programs).
+  readonly create: (input: CreateInput, options?: { readonly omit?: readonly string[] }) => Effect.Effect<Info>
   readonly update: (id: PtyID, input: UpdateInput) => Effect.Effect<Info, NotFoundError>
   readonly remove: (id: PtyID) => Effect.Effect<void, NotFoundError>
   readonly write: (id: PtyID, data: string) => Effect.Effect<void, NotFoundError>
@@ -162,7 +164,10 @@ const layer = Layer.effect(
       return (yield* requireSession(id)).info
     })
 
-    const create = Effect.fn("Pty.create")(function* (input: CreateInput) {
+    const create = Effect.fn("Pty.create")(function* (
+      input: CreateInput,
+      options?: { readonly omit?: readonly string[] }, // spicy: see Interface.create
+    ) {
       const id = PtyID.ascending()
       const command = input.command || Shell.preferred(Config.latest(yield* config.entries(), "shell"))
       const args = Shell.login(command) ? [...(input.args ?? []), "-l"] : [...(input.args ?? [])]
@@ -173,6 +178,7 @@ const layer = Layer.effect(
         TERM: "xterm-256color",
         OPENCODE_TERMINAL: "1",
       } as Record<string, string>
+      for (const key of options?.omit ?? []) delete env[key] // spicy: see Interface.create
       if (process.platform === "win32") {
         env.LC_ALL = "C.UTF-8"
         env.LC_CTYPE = "C.UTF-8"

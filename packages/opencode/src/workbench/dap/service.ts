@@ -14,6 +14,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Debugpy } from "./adapters/debugpy"
 import { Lldb } from "./adapters/lldb"
 import { DebugError, type DapClient } from "./client"
+import { DebugEnv } from "./env"
 import { DebugLaunch } from "./launch"
 import { DebugSession } from "./session"
 
@@ -153,13 +154,17 @@ const layer = Layer.effect(
         Effect.gen(function* () {
           if (!command[0]) return yield* Effect.die(new Error("runInTerminal without a command"))
           const pty = yield* Pty.Service
-          const info = yield* pty.create({
-            command: command[0],
-            args: command.slice(1),
-            cwd: typeof args.cwd === "string" && args.cwd ? args.cwd : directory,
-            env,
-            title: typeof args.title === "string" ? args.title : "Debug",
-          })
+          const info = yield* pty.create(
+            {
+              command: command[0],
+              args: command.slice(1),
+              cwd: typeof args.cwd === "string" && args.cwd ? args.cwd : directory,
+              env,
+              title: typeof args.title === "string" ? args.title : "Debug",
+            },
+            // The debugged program never gets the opencode server's credentials.
+            { omit: DebugEnv.credentials() },
+          )
           const attachment = yield* pty.attach(info.id, { onData: output, onEnd: () => {} })
           attachment.activate()
           return { processId: info.pid, ptyID: info.id }

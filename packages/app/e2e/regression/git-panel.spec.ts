@@ -271,7 +271,10 @@ test("git panel at 1280x800 with the terminal open: pending agent hunks keep the
   const api = (route: string, init?: RequestInit) =>
     fetch(`${server.url}${route}?directory=${encodeURIComponent(project)}`, init)
   try {
-    const session = (await (await api("/session", json({}))).json()) as { id: string }
+    // The main chat asks before edits; this spec is about the agent's pending hunks, so its session allows edits.
+    const session = (await (
+      await api("/session", json({ permission: [{ permission: "edit", pattern: "*", action: "allow" }] }))
+    ).json()) as { id: string }
     // The review panel and the terminal open, as the desktop app's window has them.
     await page.addInitScript(() => {
       localStorage.setItem(

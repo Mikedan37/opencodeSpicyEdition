@@ -1112,3 +1112,52 @@ Results: `bun test --timeout 120000 test/agenthq` 47 pass, 4 skip (the opt-in re
 typecheck` clean.
 
 No upstream-owned files were edited in wave 11.
+
+# Wave 12: AgentKit 0.15.0, the full real run with no env var
+
+OpenCode Native 0.15.0 (commit 6e73547) is installed by copy at `~/Applications/OpenCode Native.app`: owned by the
+user, mode 755 for the app, `Contents/MacOS` and its binaries, no extended attributes, `Contents/MacOS` holds
+`agentkit-bridge`, `AgentDaemon` and `OpenCodeNative`. `SPICY_REAL_AGENTKIT=1` ran with `OPENCODE_AGENTKIT_BRIDGE`
+unset, `--local-only` only.
+
+New checks in the real run:
+
+- a: the env var is unset; the bridge is `~/Applications/OpenCode Native.app/Contents/MacOS/agentkit-bridge`; the same
+  discovery, watched (spy on every path it resolves or stats, a finder that records whether it is asked), finds it by
+  the Applications lookup without asking LaunchServices and touches nothing in a protected folder (it touched only the
+  two Applications candidates, the home folder and the installed app).
+- f: every private daemon seen is the app's own `Contents/MacOS/AgentDaemon` (none from `~/Developer/ProjectBlaze`).
+- g: SIGKILL the bridge mid-session (idle, after the restart's answer), then start a new session for the same agent.
+  The killed bridge's `agentkit-acp-<pid>/` stays after the kill and is gone after the new session starts (AgentKit's
+  sweep). Its private daemon and `/tmp/ocn-acp-<pid>.sock` must be gone within 20 seconds; the test then stops
+  whatever the crash left, so f checks the rest on its own.
+- The test only counts and kills bridges that descend from its own process, since other sessions may run the same app.
+
+Run of 2026-10-12 21:40 (65 s): all 20 earlier checks, all 11 state checks (no SwiftPM lock files left), the four a
+checks and the bundled-daemon check pass. Of the five g checks, three pass and two fail: the dead agent's private
+daemon (pid 49193) was still running 20 seconds after the new session started, and its socket was still there.
+
+| Step                               | Result                                                                                                              | Latency                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| a. status, initialize, session/new | available 0.1.0 from `~/Applications`; LaunchServices not asked; nothing protected touched                          | session start 1.37 s                 |
+| c. declined proposal               | all pass                                                                                                            | proposal 0.43 s                      |
+| d. cancel with a proposal pending  | all pass                                                                                                            |                                      |
+| b. fix applied and accepted        | all pass (review: only `Sources/Math/Math.swift`, 2 hunks; `swift build` passes)                                    | proposal 0.36 s, apply to end 24.6 s |
+| e. server restart                  | all pass (initialize 2, session/new 2, session/prompt 4, session/cancel 1)                                          | answer 1.16 s                        |
+| g. SIGKILL, new session            | folder kept until the new session, then swept: pass. Daemon and socket gone: **fail**                               | new session 0.76 s                   |
+| f. cleanup                         | no process or socket left, state folders gone, nothing in `$TMPDIR` or `/tmp`, no lock files, daemons bundled: pass |                                      |
+
+An earlier run the same evening (21:37, before g stopped the orphan itself) passed the same checks and reported the
+orphaned daemon under f instead (process 41079 and `ocn-acp-41073.sock` left after the identity was removed).
+
+## For the AgentKit bridge (b1), after 0.15.0
+
+A free probe (initialize and session/new, then SIGKILL the bridge) shows why: the private daemon runs in a process
+group of its own (bridge 46287 in group 46287, daemon 46320 in group 46320), so killing the bridge's group never
+reaches it; it was alive 5 seconds after the kill with its socket, and SIGTERM stopped it and removed the socket. The
+sweep removes the dead agent's folder (its `daemon.lock` with it) while that daemon keeps running. Either the daemon
+should exit when its bridge dies, or the sweep should stop a dead agent's daemon and remove `/tmp/ocn-acp-<pid>.sock`
+before removing the folder. Agent HQ cannot do it: it only knows the bridge's process group.
+
+Nothing under `~/Documents/Codex`, the OpenCode Native repo or the installed app changed. The owner's launchd daemon
+(now `~/Applications/OpenCode Native.app/Contents/MacOS/AgentDaemon`, pid 36132) was left alone.

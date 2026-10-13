@@ -553,12 +553,22 @@ describe("agenthq agentkit (real, opt-in)", () => {
               },
               ...tree(kid),
             ])
+        // Only this test's bridges (its server spawns them through the shim): others may run the same app.
+        const parents = (pid: number): number[] => {
+          const parent = Number(
+            Bun.spawnSync(["ps", "-o", "ppid=", "-p", String(pid)])
+              .stdout.toString()
+              .trim(),
+          )
+          return parent > 1 ? [parent, ...parents(parent)] : []
+        }
         const bridges = () =>
           Bun.spawnSync(["pgrep", "-f", `${bridge} acp --local-only`])
             .stdout.toString()
             .split("\n")
             .filter(Boolean)
             .map(Number)
+            .filter((pid) => parents(pid).includes(process.pid))
         const alive = (pid: number) => Bun.spawnSync(["kill", "-0", String(pid)]).exitCode === 0
         const sockets = () =>
           Effect.promise(() =>
@@ -638,6 +648,40 @@ describe("agenthq agentkit (real, opt-in)", () => {
         }
         expect(status).toMatchObject({ available: true })
         expect(existsSync(bridge)).toBe(true)
+        // The same discovery, watched: every path it resolves or stats, and whether it asks LaunchServices at all.
+        const touched: string[] = []
+        let indexAsked = false
+        const watched = yield* (yield* AgentDetect.agentkit({
+          PATH: "",
+          finder: Effect.sync(() => {
+            indexAsked = true
+            return [] as string[]
+          }),
+          files: {
+            realpath: (file: string) => (touched.push(file), realpathSync(file)),
+            stat: (file: string) => (touched.push(file), statSync(file)),
+          },
+        })).status
+        report.discovery = { touched: [...new Set(touched)], indexAsked }
+        const installed = path.join(os.homedir(), "Applications", "OpenCode Native.app", "Contents", "MacOS")
+        check("a (0.15): OPENCODE_AGENTKIT_BRIDGE is not set", !process.env.OPENCODE_AGENTKIT_BRIDGE, undefined)
+        check(
+          "a (0.15): the bridge is ~/Applications/OpenCode Native.app's",
+          bridge === path.join(installed, "agentkit-bridge"),
+          bridge,
+        )
+        check(
+          "a (0.15): found by the Applications lookup, LaunchServices not asked",
+          !indexAsked && watched.capabilities.notes?.[0] === `Bridge: ${bridge}`,
+          report.discovery,
+        )
+        check(
+          "a (0.15): nothing in Documents or another protected folder touched",
+          !touched.some((file) =>
+            AgentDetect.PROTECTED_FOLDERS.some((name) => file.startsWith(path.join(os.homedir(), name) + "/")),
+          ),
+          report.discovery,
+        )
         yield* Effect.promise(async () => {
           await fs.writeFile(
             shim,
@@ -880,10 +924,61 @@ describe("agenthq agentkit (real, opt-in)", () => {
             questionEnd,
           )
           check("e (new): no .blaze in the project", !blaze(), undefined)
+
+          // ---- g. A crash: SIGKILL the bridge mid-session. Its folder stays (nothing runs on SIGKILL) until the next
+          // local-only session starts and sweeps the folders of dead agents. Its private daemon runs in a process group
+          // of its own, so only AgentKit can stop it.
+          remember()
+          const victim = bridges()[0]
+          const crashed = path.join(os.tmpdir(), `agentkit-acp-${victim}`)
+          const socket = `/tmp/ocn-acp-${victim}.sock`
+          const orphans = victim ? [...new Set([...tree(victim).map((item) => item.pid), ...holders(victim)])] : []
+          const crash: Record<string, unknown> = { pid: victim, daemons: orphans, before: existsSync(crashed) }
+          report.crash = crash
+          if (victim) process.kill(victim, "SIGKILL")
+          yield* pollWithTimeout(
+            Effect.sync(() => (victim && alive(victim) ? undefined : true)),
+            "the killed bridge is still running",
+            "10 seconds",
+          ).pipe(Effect.ignore)
+          crash.afterKill = existsSync(crashed)
+          const next = yield* time("sessionAfterCrash", post(`/agenthq/agents/${agentID}/sessions`, {}))
+          remember()
+          // The sweep, and anything else that ends the dead agent's daemon, gets 20 seconds.
+          yield* pollWithTimeout(
+            Effect.sync(() => (existsSync(crashed) || orphans.some(alive) || existsSync(socket) ? undefined : true)),
+            "the dead agent's state",
+            "20 seconds",
+          ).pipe(Effect.ignore)
+          crash.folderLeft = existsSync(crashed)
+          crash.daemonsLeft = orphans.filter(alive)
+          crash.socketLeft = existsSync(socket)
+          check(
+            "g (0.15): the killed bridge's folder stays until a new session starts",
+            crash.before === true && crash.afterKill === true,
+            crash,
+          )
+          check("g (0.15): a new session starts after the crash", next.status === 200, next.body)
+          check("g (0.15): the new session swept the dead agent's agentkit-acp-<pid>/", !crash.folderLeft, crash)
+          check("g (0.15): the dead agent's private daemon is gone", orphans.length > 0 && !orphans.some(alive), crash)
+          check("g (0.15): the dead agent's /tmp/ocn-acp-<pid>.sock is gone", !crash.socketLeft, crash)
+          // Stop what the crash left (ours), so that f checks the rest on its own.
+          for (const pid of orphans.filter(alive)) process.kill(pid, "SIGTERM")
         }
 
         // ---- f. Removing the identity ends the bridge's whole process group: nothing of ours is left.
         remember()
+        const daemons = [...seen.values()].filter((command) => /AgentDaemon/.test(command))
+        report.daemons = [...new Set(daemons)]
+        check(
+          "f (0.15): the private daemons are the app's own Contents/MacOS/AgentDaemon",
+          daemons.length > 0 &&
+            daemons.every(
+              (command) =>
+                command.startsWith(path.join(path.dirname(bridge), "AgentDaemon")) && !command.includes("ProjectBlaze"),
+            ),
+          report.daemons,
+        )
         expect((yield* call(`/agenthq/agents/${agentID}`, { method: "DELETE" })).status).toBe(200)
         const cleanup = yield* pollWithTimeout(
           left.pipe(Effect.map((rest) => (rest.processes.length || rest.sockets.length ? undefined : rest))),

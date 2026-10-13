@@ -9,6 +9,7 @@ import { WorkbenchDebug } from "../../../src/workbench/dap/service"
 import { DebugSession } from "../../../src/workbench/dap/session"
 import { DebugSnapshot } from "../../../src/workbench/dap/snapshot"
 import { disposeAllInstances, TestInstance } from "../../fixture/fixture"
+import { debugpy } from "../fixture/dap-profiles"
 import { pollWithTimeout, testEffect } from "../../lib/effect"
 
 const it = testEffect(LayerNode.compile(WorkbenchDebug.node))
@@ -49,6 +50,20 @@ const alive = (pid: number) => {
 }
 
 describe("debugpy (real)", () => {
+  real(
+    name("DAP-02 the real debugpy reports the captured capability profile"),
+    () =>
+      Effect.gen(function* () {
+        yield* write("one.py", "x = 1\nprint(x)\n")
+        const debug = yield* WorkbenchDebug.Service
+        const spec = yield* debug.prepare({ program: "one.py", breakpoints: [{ file: "one.py", line: 2 }] })
+        const { session, result } = yield* debug.start(spec, agent)
+        expect(result.outcome).toBe("stopped")
+        expect(session.info().capabilities.toSorted()).toEqual(debugpy.capabilities.toSorted())
+      }),
+    60_000,
+  )
+
   real(
     name("DAP-05/06, CON-02/04: conditional breakpoint, evaluate, completions, exception, output"),
     () =>

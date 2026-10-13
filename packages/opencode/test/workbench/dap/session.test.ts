@@ -469,3 +469,32 @@ describe("control ownership", () => {
     ),
   )
 })
+
+describe("CON-07 LLDB command mode", () => {
+  it.live("the agent's command-escape evaluations are refused before anything is sent; a human's reach lldb-dap", () =>
+    Effect.gen(function* () {
+      const log = path.join(yield* Effect.promise(tmp), "lldb.jsonl")
+      yield* using({ profile: "lldb-dap", log, stops: [stop(3)] }, (input) =>
+        Effect.gen(function* () {
+          yield* input.session.start
+          for (const expression of ["`platform shell touch /tmp/pwned", "  `script import os"]) {
+            const error = yield* input.session.evaluate({ expression }, agent).pipe(Effect.flip)
+            expect(error.kind).toBe("unsupported")
+            expect(error.message).toBe("LLDB command mode is not available to the agent")
+          }
+          // A plain expression is still the agent's to evaluate.
+          expect(yield* input.session.evaluate({ expression: "n" }, agent)).toMatchObject({ text: "<n>" })
+          yield* input.session.evaluate({ expression: "`version" }, human)
+        }),
+      )
+      const sent = (yield* Effect.promise(() => logged(log))) as {
+        command?: string
+        arguments?: { expression?: string }
+      }[]
+      expect(sent.filter((entry) => entry.command === "evaluate").map((entry) => entry.arguments?.expression)).toEqual([
+        "n",
+        "`version",
+      ])
+    }),
+  )
+})

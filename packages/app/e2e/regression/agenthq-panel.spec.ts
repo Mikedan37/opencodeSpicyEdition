@@ -231,6 +231,47 @@ test("agents of other projects stay live; a completion nobody viewed stays flagg
   await expect(card.locator("[data-attention]")).toHaveCount(0)
 })
 
+// UI-01: a large problem list stays a bounded window of rows; search and scrolling keep up.
+test("UI-01 5,000 problems stay virtualized while searching and scrolling", async ({ page }) => {
+  await setup(page)
+  const many = Array.from({ length: 5_000 }, (_, index) => ({
+    ...problem(`p_${index}`, index % 2 ? "warning" : "error", index % 100),
+    file: `${directory}/src/file${String(Math.floor(index / 100)).padStart(2, "0")}.ts`,
+    message: `problem ${index}`,
+  }))
+  // Registered after setup's route, so it answers first.
+  await page.route(`${server}/workbench/problems*`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify({ problems: many, counts: counts(2_500, 2_500), producers: [] }),
+    }),
+  )
+
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="problems"]').click()
+  const panel = page.locator('[data-component="workbench-problems"]')
+  const rows = panel.locator('[data-row="problem"], [data-row="file"]')
+  await expect(panel.locator('[data-row="file"]').first()).toContainText("file00.ts")
+  expect(await rows.count()).toBeGreaterThan(0)
+  expect(await rows.count()).toBeLessThan(200)
+
+  const search = panel.getByRole("textbox", { name: "Filter problems" })
+  const started = Date.now()
+  await search.fill("problem 4999")
+  await expect(panel.locator('[data-row="problem"]')).toHaveCount(1)
+  expect(Date.now() - started).toBeLessThan(2_000)
+
+  await search.fill("")
+  await expect(panel.locator('[data-row="file"]').first()).toContainText("file00.ts")
+  await panel.getByRole("region", { name: "Problems" }).evaluate((el) => (el.scrollTop = el.scrollHeight))
+  await expect(panel.locator('[data-row="problem"]').last()).toContainText("problem 4999")
+  expect(await rows.count()).toBeLessThan(200)
+})
+
 function agent(id: string, name: string, projectDirectory: string) {
   return {
     id,

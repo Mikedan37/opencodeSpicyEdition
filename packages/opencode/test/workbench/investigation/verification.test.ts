@@ -12,6 +12,8 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { which } from "@opencode-ai/core/util/which"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { Effect, Layer, Stream } from "effect"
 import { Agent } from "@/agent/agent"
@@ -47,6 +49,7 @@ import { Skill } from "@/skill"
 import { Snapshot } from "@/snapshot"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
+import { Debugpy } from "@/workbench/dap/adapters/debugpy"
 import { WorkbenchInvestigation } from "@/workbench/investigation/investigation"
 import { WorkbenchCheckers } from "@/workbench/verify/checkers"
 import { WorkbenchGate } from "@/workbench/verify/gate"
@@ -159,6 +162,10 @@ const build = (checkers?: WorkbenchCheckers.Info[]) =>
 const it = build([marker, markerTest])
 const real = build()
 const goReal = which("go") ? real.instance : real.instance.skip
+const debugpyMissing = await Debugpy.resolve({ directory: process.cwd() }).then((found) =>
+  "error" in found ? found.error : which("pytest") ? undefined : "pytest not found",
+)
+const pythonReal = debugpyMissing ? real.instance.skip : real.instance
 
 const providerConfig = (url: string): Partial<ConfigV1.Info> => ({
   provider: {
@@ -325,5 +332,137 @@ describe("verification feeds investigations", () => {
         expect(record.attempts[0].errorFingerprints[0]).toContain("main.go")
       }),
     60_000,
+  )
+
+  it.instance("INV-03 after a compaction the investigation is still on record and the agent re-reads it", () =>
+    Effect.gen(function* () {
+      const { llm, prompt, session, investigations, investigation } = yield* start()
+      const tools = (messages: SessionV1.WithParts[]) =>
+        messages.flatMap((message) =>
+          message.parts.flatMap((part) =>
+            part.type === "tool" && part.tool === "debug" && part.state.status === "completed"
+              ? [part.state.output]
+              : [],
+          ),
+        )
+      // Before the compaction the agent writes down a hypothesis.
+      yield* llm.tool("debug", { action: "note", text: "an empty list divides by zero" })
+      yield* llm.text("noted")
+      yield* prompt.loop({ sessionID: session.id })
+      expect(tools(yield* MessageV2.filterCompactedEffect(session.id))).toEqual([
+        `investigation ${investigation.id} diagnosing · 1 notes (inferred, not evidence)`,
+      ])
+
+      const compaction = yield* SessionCompaction.Service
+      yield* compaction.create({
+        sessionID: session.id,
+        agent: "build",
+        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+        auto: false,
+      })
+      yield* llm.text("summary: debugging the average")
+      yield* prompt.loop({ sessionID: session.id })
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "where are we?" }],
+      })
+      yield* llm.tool("debug", { action: "status" })
+      yield* llm.text("still debugging")
+      yield* prompt.loop({ sessionID: session.id })
+
+      // The compaction dropped the earlier turn from what the model sees; the status comes from the store.
+      expect(tools(yield* MessageV2.filterCompactedEffect(session.id))).toEqual([
+        `no debug sessions\ninvestigation ${investigation.id} diagnosing: the check fails · 1 evidence · 1 notes`,
+      ])
+      const full = yield* investigations.full(investigation.id)
+      expect(full.investigation.status).toBe("diagnosing")
+      expect(full.evidence.map((item) => [item.kind, item.class])).toEqual([["exception", "observed"]])
+      expect(full.investigation.notes.map((note) => note.text)).toEqual(["an empty list divides by zero"])
+    }),
+  )
+
+  // E2E-01 without the UI: a scripted model, the real debugpy and real checkers (ruff, mypy, pytest).
+  pythonReal(
+    `E2E-01 [debugpy, pytest] failing test -> debugger stop -> patch -> verification -> resolved${
+      debugpyMissing ? ` [skipped: ${debugpyMissing}]` : ""
+    }`,
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        const llm = yield* TestLLMServer
+        yield* Effect.promise(() =>
+          write(dir, {
+            "opencode.json": JSON.stringify(providerConfig(llm.url)),
+            "avg.py": "def average(xs: list[int]) -> float:\n    return sum(xs) / len(xs)\n",
+            "test_avg.py": [
+              "import unittest",
+              "",
+              "from avg import average",
+              "",
+              "",
+              "class AverageTest(unittest.TestCase):",
+              "    def test_empty(self) -> None:",
+              "        self.assertEqual(average([]), 0)",
+              "",
+              "    def test_two(self) -> None:",
+              "        self.assertEqual(average([10, 20]), 15)",
+              "",
+            ].join("\n"),
+          }),
+        )
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({
+          title: "e2e-01",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "test_empty fails; find out why and fix it" }],
+        })
+        yield* llm.tool("debug", { action: "start", preset: "python-test", program: "test_avg.py" })
+        yield* llm.tool("debug", { action: "stop" })
+        yield* llm.tool("write", {
+          filePath: "avg.py",
+          content: "def average(xs: list[int]) -> float:\n    return sum(xs) / len(xs) if xs else 0\n",
+        })
+        yield* llm.tool("check", { files: ["avg.py"], tests: true })
+        yield* llm.text("fixed: an empty list averages to 0")
+
+        yield* prompt.loop({ sessionID: session.id })
+        const messages = yield* MessageV2.filterCompactedEffect(session.id)
+        const outputs = messages.flatMap((message) =>
+          message.parts.flatMap((part) =>
+            part.type === "tool" && part.state.status === "completed" ? [[part.tool, part.state.output]] : [],
+          ),
+        )
+        // The stop came from the real debugger, in the function under test.
+        expect(outputs[0]?.[0]).toBe("debug")
+        expect(outputs[0]?.[1]).toContain("ZeroDivisionError")
+        expect(outputs[0]?.[1]).toContain("average")
+        expect(repairs(messages)).toHaveLength(0)
+        expect(yield* llm.pending).toBe(0)
+
+        const investigations = yield* WorkbenchInvestigation.Service
+        const summary = (yield* investigations.list()).find((item) => item.sessionID === session.id)
+        const full = yield* investigations.full(summary!.id)
+        expect(full.investigation.status).toBe("resolved")
+        expect(full.investigation.checkpoints.at(-1)?.reason).toBe(
+          "the reproduction and the checks passed after the last patch",
+        )
+        expect(full.evidence[0]).toMatchObject({ kind: "exception", class: "observed" })
+        const verified = full.evidence.filter((item) => item.class === "verified").map((item) => item.kind)
+        expect(verified).toEqual(["check-run", "repro-run"])
+        expect(full.evidence.some((item) => item.kind === "patch")).toBe(true)
+        expect(full.report).toContain("Verified")
+        // Nothing the debugger started is left running.
+        for (const item of full.investigation.processes) expect(() => process.kill(item.pid, 0)).toThrow()
+      }),
+    120_000,
   )
 })

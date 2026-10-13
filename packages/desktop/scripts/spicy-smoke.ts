@@ -534,6 +534,17 @@ try {
       for (const file of ["a.txt", "b.txt"])
         await renderer!.waitFor(`${stateOf(file)} === "pending"`, `${file} pending`)
     })
+    await step("git bar: one line that says to review first while hunks are pending", async () => {
+      await renderer!.waitFor(
+        `${textOf('[data-component="git-commit-area"][data-state="collapsed"] [data-slot="git-unreviewed"]')} === "Review agent changes first"`,
+        "the collapsed git bar",
+      )
+      const bar = await renderer!.evaluate<{ height: number; disabled: boolean }>(`(() => {
+        const bar = document.querySelector('[data-component="git-commit-area"]')
+        return { height: bar.getBoundingClientRect().height, disabled: bar.querySelector('[data-action="git-expand"]').disabled }
+      })()`)
+      if (bar.height > 40 || !bar.disabled) throw new Error(`bar ${JSON.stringify(bar)}`)
+    })
     await step("a.txt: accept one hunk, reject the other", async () => {
       await renderer!.click('[data-component="review-file-row"][data-path="a.txt"]')
       await renderer!.waitFor(`${count('[data-component="review-hunk"]')} === 2`, "two hunks")
@@ -572,6 +583,25 @@ try {
         if (counts.length !== 1 || counts[0].pending !== 0 || counts[0].accepted !== 1 || counts[0].rejected !== 2)
           throw new Error(JSON.stringify(counts))
         return `a.txt keeps TWO only, b.txt as committed; ${JSON.stringify(counts[0])}`
+      },
+      (value) => value,
+    )
+    await step(
+      "git bar: Commit… opens the commit area once the review is done, within 40% of the panel",
+      async () => {
+        const area = '[data-component="git-commit-area"]'
+        await renderer!.click(`${area} [data-action="git-expand"]`)
+        await renderer!.waitFor(exists(`${area}[data-state="expanded"]`), "the commit area")
+        const share = await renderer!.evaluate<number>(`(() => {
+          const area = document.querySelector('${area}')
+          return area.getBoundingClientRect().height / area.parentElement.getBoundingClientRect().height
+        })()`)
+        if (share > 0.41) throw new Error(`the commit area takes ${Math.round(share * 100)}% of the panel`)
+        await shot("git-commit-area")
+        // Back to the bar for the steps that follow.
+        await renderer!.click(`${area} [data-action="git-collapse"]`)
+        await renderer!.waitFor(exists(`${area}[data-state="collapsed"]`), "the bar again")
+        return `${Math.round(share * 100)}% of the panel`
       },
       (value) => value,
     )

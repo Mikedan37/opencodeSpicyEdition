@@ -37,6 +37,21 @@ describe("launch specs", () => {
     )
   })
 
+  test("SEC-04 environment variables are expanded only through an explicit ${env:NAME}", () => {
+    process.env.OPENCODE_LAUNCH_CANARY = "canary-secret"
+    const resolved = DebugLaunch.substitute(
+      { program: "${workspaceFolder}/a.py", args: ["$OPENCODE_LAUNCH_CANARY", "%OPENCODE_LAUNCH_CANARY%"] },
+      { workspaceFolder: "/repo" },
+    )
+    expect(resolved).toEqual({ program: "/repo/a.py", args: ["$OPENCODE_LAUNCH_CANARY", "%OPENCODE_LAUNCH_CANARY%"] })
+    expect(JSON.stringify(resolved)).not.toContain("canary-secret")
+    // A bare ${NAME} is not an environment lookup: it is refused, not expanded.
+    expect(DebugLaunch.substitute({ args: ["${OPENCODE_LAUNCH_CANARY}"] }, {})).toBe(
+      "unsupported variable ${OPENCODE_LAUNCH_CANARY}",
+    )
+    expect(DebugLaunch.substitute({ args: ["${env:OPENCODE_LAUNCH_CANARY}"] }, {})).toEqual({ args: ["canary-secret"] })
+  })
+
   test("plain programs pick the adapter by type", async () => {
     const directory = await project()
     const py = await ok(

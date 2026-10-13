@@ -482,6 +482,97 @@ test("a stop brings its file forward over the Review tab but leaves the Debug ta
   await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
 })
 
+// UI-05: run keys work like an IDE's, also while the prompt has the focus.
+test("UI-05 F5 fires while typing in the prompt", async ({ page }) => {
+  await setup(page)
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  const input = page.locator('[data-component="prompt-input"]').first()
+  await input.click()
+  await page.keyboard.type("check this")
+  await expect(input).toContainText("check this")
+
+  await page.keyboard.press("F5")
+  await expect(page.locator('[data-component="debug-start-dialog"]')).toBeVisible()
+  await expect(input).toContainText("check this")
+})
+
+// UI-02: a problem opens its file at the problem's line, also far down a long file.
+test("UI-02 clicking a problem opens its file at that line", async ({ page }) => {
+  const mock = await setup(page)
+  const long = Array.from({ length: 200 }, (_, index) => `line_${index + 1} = ${index + 1}`).join("\n") + "\n"
+  // Registered after setup's route, so it answers first.
+  await page.route(`${server}/workbench/file*`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify({ content: long, hash: "h-long" }),
+    }),
+  )
+  mock.problems = [
+    {
+      id: "p_150",
+      file: `${directory}/app.py`,
+      range: { start: { line: 149, character: 0 }, end: { line: 149, character: 8 } },
+      severity: "error",
+      message: "planted at 150",
+      source: { kind: "typecheck", tool: "mypy", producer: "check:mypy:/work" },
+      observedAt: 1,
+      stale: false,
+    },
+  ]
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="problems"]').click()
+  await page.locator('[data-component="workbench-problems"] [data-problem="p_150"]').click()
+
+  const panel = page.locator("#review-panel")
+  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
+  const editor = panel.locator('[data-component="workbench-editor"][data-path="app.py"]')
+  await expect(editor.locator(".cm-lineNumbers .cm-gutterElement", { hasText: /^150$/ })).toBeInViewport()
+})
+
+// UI-03: the editor only renders the lines near the viewport; a breakpoint must come back with its line.
+test("UI-03 a breakpoint is still shown after scrolling away and back", async ({ page }) => {
+  const mock = await setup(page)
+  mock.sessions = [session()]
+  const long = Array.from({ length: 200 }, (_, index) => `line_${index + 1} = ${index + 1}`).join("\n") + "\n"
+  await page.route(`${server}/workbench/file*`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify({ content: long, hash: "h-long" }),
+    }),
+  )
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  mock.emit(updated({ state: "stopped", stop: stopAt(1) }))
+  const editor = page.locator('#review-panel [data-component="workbench-editor"][data-path="app.py"]')
+  await expect(editor.locator('.cm-line[data-spicy-exec][data-line="4"]')).toHaveCount(1)
+  await page.keyboard.press("F9")
+  const dot = editor.locator('[data-spicy-breakpoint][data-line="4"]')
+  await expect(dot).toHaveCount(1)
+
+  // Whichever ancestor actually scrolls the editor.
+  const scroll = (top: boolean) =>
+    editor.locator(".cm-content").evaluate((el, top) => {
+      const scroller = (node: HTMLElement | null): HTMLElement | null =>
+        !node || node.scrollHeight > node.clientHeight + 1 ? node : scroller(node.parentElement)
+      const target = scroller(el)
+      if (target) target.scrollTop = top ? 0 : target.scrollHeight
+    }, top)
+  await scroll(false)
+  await expect(editor.locator(".cm-lineNumbers .cm-gutterElement", { hasText: /^200$/ })).toBeInViewport()
+  // Line 4 left the DOM, so coming back re-renders it.
+  await expect(dot).toHaveCount(0)
+  await scroll(true)
+  await expect(dot).toHaveCount(1)
+  await expect(dot).toBeInViewport()
+})
+
 async function openConsole(page: Page, backlog: Record<string, unknown>[]) {
   const mock = await setup(page)
   mock.sessions = [session({ state: "stopped", stop: stopAt(1) })]

@@ -340,13 +340,22 @@ const layer = Layer.effect(
           action: "resume",
           message: `${session.info.provider} sessions cannot be resumed`,
         })
-      session.handle = yield* provider.resumeSession({
+      const handle = yield* provider.resumeSession({
         agent: session.agent,
         providerSessionID: session.info.providerSessionID,
         emit: emitter(session),
         workbench: yield* AgentWorkbench.server(session.agent.workingDirectory ?? session.agent.projectDirectory),
       })
-      return session.handle
+      session.handle = handle
+      // A provider that could not resume started a new session of its own; later reattaches use that one.
+      if (handle.providerSessionID !== session.info.providerSessionID)
+        yield* writes.withLock(session.info.id)(
+          Effect.gen(function* () {
+            session.info = { ...session.info, providerSessionID: handle.providerSessionID, updatedAt: Date.now() }
+            yield* save(session)
+          }),
+        )
+      return handle
     })
 
     const records = Effect.fnUntraced(function* () {

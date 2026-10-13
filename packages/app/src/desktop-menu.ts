@@ -1,4 +1,5 @@
 import type { DesktopNativeKey } from "./i18n/desktop-native"
+import { dict as workbenchEn } from "./workbench/en" // spicy: the IDE's View menu entries (fork copy, English only)
 
 export type DesktopMenuPlatform = "macos" | "windows"
 
@@ -44,9 +45,12 @@ export type DesktopMenuRole =
   | "zoomIn"
   | "zoomOut"
 
+// spicy: fork labels come from the fork's copy, which the native bundle does not carry
+export type WorkbenchMenuKey = keyof typeof workbenchEn
+
 export type DesktopMenuItem = {
   type: "item"
-  labelKey?: DesktopNativeKey
+  labelKey?: DesktopNativeKey | WorkbenchMenuKey
   command?: string
   action?: DesktopMenuAction
   role?: DesktopMenuRole
@@ -191,6 +195,19 @@ export const DESKTOP_MENU: DesktopMenu[] = [
         accelerator: { macos: "Ctrl+`" },
       },
       { type: "item", labelKey: "desktop.menu.toggleFileTree", command: "fileTree.toggle" },
+      // spicy: the IDE's tabs and actions (the commands workbench/panel.tsx registers)
+      { type: "separator" },
+      { type: "item", labelKey: "workbench.command.agents", command: "workbench.agents" },
+      { type: "item", labelKey: "workbench.command.problems", command: "workbench.problems" },
+      { type: "item", labelKey: "workbench.command.output", command: "workbench.output" },
+      { type: "item", labelKey: "workbench.command.debug", command: "workbench.debug" },
+      { type: "item", labelKey: "workbench.command.run", command: "workbench.run" },
+      { type: "item", labelKey: "workbench.command.activity", command: "workbench.activity" },
+      { type: "item", labelKey: "workbench.command.tools", command: "workbench.tools" },
+      { type: "item", labelKey: "workbench.command.check", command: "workbench.check" },
+      { type: "item", labelKey: "workbench.command.newAgent", command: "workbench.agent.new" },
+      { type: "item", labelKey: "workbench.command.newTask", command: "workbench.task.new" },
+      { type: "item", labelKey: "workbench.command.newTool", command: "workbench.tool.new" },
       { type: "separator" },
       { type: "item", labelKey: "desktop.menu.reload", action: "view.reload", role: "reload" },
       {
@@ -299,4 +316,12 @@ export const DESKTOP_MENU: DesktopMenu[] = [
 
 export function desktopMenuVisible(item: { platforms?: DesktopMenuPlatform[] }, platform: DesktopMenuPlatform) {
   return !item.platforms || item.platforms.includes(platform)
+}
+
+// spicy: a menu label: the desktop bundle's translation, or the fork's English copy for the IDE's entries
+export function desktopMenuLabel(
+  key: DesktopNativeKey | WorkbenchMenuKey,
+  translate: (key: DesktopNativeKey) => string,
+) {
+  return key in workbenchEn ? workbenchEn[key as WorkbenchMenuKey] : translate(key as DesktopNativeKey)
 }

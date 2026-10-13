@@ -34,6 +34,8 @@ export function createToolsState(client: Client, delay = 250) {
     status: "idle" as "idle" | "loading" | "ready" | "unavailable" | "failed",
     error: undefined as string | undefined,
     selected: undefined as string | undefined,
+    // The New tool form is open (its button, or the palette's New tool).
+    creating: false,
     // The action in flight per tool, so its buttons wait.
     busy: {} as Record<string, string | undefined>,
     // "stale": an approve or enable was refused because the code changed after the user looked at it.
@@ -130,6 +132,7 @@ export function createToolsState(client: Client, delay = 250) {
     // Drafts waiting for the user's review (the tab's badge).
     waiting: () => state.list.filter((tool) => tool.status === "draft").length,
     select: (name: string | undefined) => setState("selected", name),
+    setCreating: (creating: boolean) => setState("creating", creating),
     // workbench.tool.updated / removed
     update(tool: Tool) {
       upsert(tool)

@@ -29,11 +29,16 @@ function localeDirection(locale: Locale): Direction {
 
 type RawDictionary = typeof en & typeof uiEn & typeof workbenchEn // spicy: fork copy
 type Dictionary = i18n.Flatten<RawDictionary>
+// spicy: the fork's count copy (workbench/en.ts `<key>.one` / `<key>.other`) pluralizes through the same call
+type WorkbenchPluralKey = {
+  [K in keyof typeof workbenchEn]: K extends `${infer Base}.other` ? Base : never
+}[keyof typeof workbenchEn]
 type PluralKey =
   | UiI18nPluralKey
   | "session.question.pending"
   | "session.followupDock.summary"
   | "session.revertDock.summary"
+  | WorkbenchPluralKey
 type Source = { dict: Record<string, string> }
 
 function cookie(locale: Locale) {

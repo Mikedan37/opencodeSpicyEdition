@@ -104,6 +104,7 @@ import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
 import { createSessionOwnership } from "./session/session-ownership"
 import { createSessionLineage } from "./session/session-lineage"
 import { WorkbenchProviders } from "@/workbench/panel" // spicy: Workbench + Agent HQ (see SPICY.md)
+import { WorkbenchIntro, WorkbenchStatusStrip } from "@/workbench/status-strip" // spicy: the IDE's status strip
 import { ReviewChangesPanel, ReviewProvider, useReview } from "@/review/context" // spicy: agent changes review
 
 type FollowupItem = FollowupDraft & { id: string }
@@ -2143,6 +2144,8 @@ export default function Page() {
         </Switch>
       </div>
 
+      {/* spicy: one-time "Your IDE" card in an empty session */}
+      <WorkbenchIntro empty={!params.id || (messagesReady() && visibleUserMessages().length === 0)} />
       <Show when={(params.id || !newSessionDesign()) && !mobileChanges()}>
         {(_) => {
           const controller = createSessionComposerRegionController({
@@ -2401,6 +2404,8 @@ export default function Page() {
       <Show when={!newSessionDesign()}>
         <TerminalPanel />
       </Show>
+      {/* spicy: the IDE's status strip, visible whether the panel is open or not */}
+      <WorkbenchStatusStrip />
     </SessionRouteFrame>
   )
 }

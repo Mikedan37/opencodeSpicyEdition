@@ -6,9 +6,7 @@ import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { useLanguage } from "@/context/language"
-import { showToast } from "@/utils/toast"
 import { ansiLines, fileRefs, resolvePath, type AnsiStyle } from "./ansi"
-import { errorText, WorkbenchRequestError } from "./client"
 import { useFileLineOpener } from "./open-file"
 import { useWorkbench } from "./panel"
 import { isFinished, needsDetail, type RunEntry } from "./runs"
@@ -53,20 +51,8 @@ export default function OutputPanel() {
     onCleanup(() => clearInterval(timer))
   })
 
-  const check = () =>
-    // The whole project as one folder unit; the server checks up to 200 of its source files (gitignore-aware).
-    runs.check({ unit: workbench.directory }).catch((error: unknown) =>
-      showToast({
-        variant: "error",
-        title: language.t("workbench.output.failed"),
-        description:
-          error instanceof WorkbenchRequestError && error.kind === "unavailable"
-            ? language.t("workbench.output.unavailable")
-            : errorText(error),
-      }),
-    )
   const runChecks = () => (
-    <ButtonV2 size="small" variant="neutral" disabled={runs.state.checking} onClick={() => void check()}>
+    <ButtonV2 size="small" variant="neutral" disabled={runs.state.checking} onClick={() => void workbench.runChecks()}>
       <Show when={runs.state.checking}>
         <LoaderV2 width={12} height={12} />
       </Show>

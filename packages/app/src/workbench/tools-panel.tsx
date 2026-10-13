@@ -80,7 +80,8 @@ export default function ToolsPanel() {
   const workbench = useWorkbench()
   const language = useLanguage()
   const tools = workbench.tools
-  const [creating, setCreating] = createSignal(false)
+  const creating = () => tools.state.creating
+  const setCreating = tools.setCreating
   const current = createMemo(() => tools.find(tools.state.selected) ?? tools.groups()[0]?.tools[0])
 
   return (

@@ -1156,7 +1156,7 @@ export default function Page() {
   }
 
   useComposerCommands()
-  useSessionCommands({
+  const sessionCommands = useSessionCommands({
     navigateMessageByOffset,
     setActiveMessage,
     focusInput,
@@ -1948,7 +1948,12 @@ export default function Page() {
     download()
   }
 
-  const actions = { revert, openAttachment }
+  // spicy: undo (the turns' ↶) goes through the session commands' undo, with its interrupt and prompt restore
+  const actions = {
+    revert,
+    openAttachment,
+    undo: (input: { messageID: string }) => sessionCommands.undoTo(input.messageID),
+  }
 
   createEffect(() => {
     const sessionID = params.id

@@ -32,7 +32,8 @@ function fileName(patch: string) {
 }
 
 // A unified diff drawn with the timeline's diff view, file by file; names inside `root` are shown relative to it.
-export function PatchView(props: { diff: string; class?: string; root?: string }) {
+// `names={false}` leaves the file names out (the approval card's title already names its one file).
+export function PatchView(props: { diff: string; class?: string; root?: string; names?: boolean }) {
   const fileComponent = useFileComponent()
   const name = (file: string) => (props.root ? shortPath(props.root, file) : file)
   return (
@@ -40,7 +41,7 @@ export function PatchView(props: { diff: string; class?: string; root?: string }
       <For each={splitPatch(props.diff)}>
         {(entry) => (
           <div data-patch-file={entry.file} class="min-w-0">
-            <Show when={entry.file}>
+            <Show when={entry.file && props.names !== false}>
               <div class="truncate pb-0.5 font-mono text-[11px] text-v2-text-text-muted" title={entry.file}>
                 {name(entry.file)}
               </div>

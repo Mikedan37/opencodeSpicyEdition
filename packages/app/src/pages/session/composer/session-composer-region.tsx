@@ -1,7 +1,7 @@
 import { Show, type JSX } from "solid-js"
 import { useLanguage } from "@/context/language"
 import { useSettings } from "@/context/settings"
-import { SessionPermissionDock } from "@/pages/session/composer/session-permission-dock"
+import { ApprovalDock } from "@/workbench/approval-card" // spicy: the approval card replaces the permission dock
 import { SessionQuestionDock } from "@/pages/session/composer/session-question-dock"
 import { SessionFollowupDock } from "@/pages/session/composer/session-followup-dock"
 import { SessionRevertDock } from "@/pages/session/composer/session-revert-dock"
@@ -32,7 +32,8 @@ export function SessionComposerRegion(props: {
     >
       <div
         classList={{
-          "w-full px-3 pointer-events-auto": true,
+          // spicy: relative, for the approval card that leaves over the composer
+          "relative w-full px-3 pointer-events-auto": true,
           "md:max-w-200 md:mx-auto 2xl:max-w-[1000px]": controller.centered(),
         }}
       >
@@ -44,20 +45,17 @@ export function SessionComposerRegion(props: {
           )}
         </Show>
 
-        <Show when={controller.state.permissionRequest()} keyed>
-          {(request) => (
-            <div>
-              <SessionPermissionDock
-                request={request}
-                responding={controller.state.permissionResponding()}
-                onDecide={(response) => {
-                  controller.onResponseSubmit()
-                  controller.state.decide(response)
-                }}
-              />
-            </div>
-          )}
-        </Show>
+        {/* spicy: the approval card (workbench/approval-card.tsx) in place of the permission dock */}
+        <ApprovalDock
+          request={controller.state.permissionRequest()}
+          queue={controller.state.permissionQueue()}
+          responding={controller.state.permissionResponding()}
+          onRespond={controller.onResponseSubmit}
+          onDecide={(response) => {
+            controller.onResponseSubmit()
+            controller.state.decide(response)
+          }}
+        />
 
         <Show when={controller.showComposer()}>
           <Show when={controller.dock()}>

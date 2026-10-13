@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { PermissionRequest, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
 import { todoDockAtBoundary, todoState } from "./session-composer-state"
-import { sessionPermissionRequest, sessionQuestionRequest } from "./session-request-tree"
+import { sessionPermissionRequest, sessionPermissionRequests, sessionQuestionRequest } from "./session-request-tree"
 
 const session = (input: { id: string; parentID?: string }) =>
   ({
@@ -77,6 +77,32 @@ describe("sessionPermissionRequest", () => {
     }
 
     expect(sessionPermissionRequest(sessions, permissions, "root", () => false)).toBeUndefined()
+  })
+})
+
+// spicy: the approval card's queue
+describe("sessionPermissionRequests", () => {
+  test("lists the tree's pending requests in the dock's order, filtered", () => {
+    const sessions = [session({ id: "root" }), session({ id: "child", parentID: "root" }), session({ id: "other" })]
+    const permissions = {
+      child: [permission("perm-child", "child")],
+      root: [permission("perm-root", "root"), permission("perm-root-2", "root")],
+      other: [permission("perm-other", "other")],
+    }
+    const ids = (list: PermissionRequest[]) => list.map((item) => item.id)
+    expect(ids(sessionPermissionRequests(sessions, permissions, "root"))).toEqual([
+      "perm-root",
+      "perm-root-2",
+      "perm-child",
+    ])
+    expect(sessionPermissionRequests(sessions, permissions, "root")[0]).toBe(
+      sessionPermissionRequest(sessions, permissions, "root")!,
+    )
+    expect(ids(sessionPermissionRequests(sessions, permissions, "root", (item) => item.id !== "perm-root"))).toEqual([
+      "perm-root-2",
+      "perm-child",
+    ])
+    expect(sessionPermissionRequests(sessions, permissions, undefined)).toEqual([])
   })
 })
 

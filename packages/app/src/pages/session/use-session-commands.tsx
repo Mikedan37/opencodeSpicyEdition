@@ -331,18 +331,17 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     })
   }
 
-  const undo = async () => {
+  // spicy: undo back to before any user message (the turns' ↶ buttons), not only the last one (/undo)
+  const undoTo = async (messageID: string) => {
     const sessionID = params.id
     if (!sessionID) return
     const owner = sessionOwnership.capture()
     const session = sdk().api.session
     const directory = sdk().directory
     const promptSession = prompt.capture()
-    const revert = info()?.revert?.messageID
     const messages = userMessages()
-    const boundary = revert ? messages.findIndex((message) => message.id === revert) : messages.length
-    if (boundary < 0) return
-    const message = messages[boundary - 1]
+    const index = messages.findIndex((message) => message.id === messageID)
+    const message = messages[index]
     if (!message) return
     const parts = sync().data.part[message.id]
 
@@ -357,8 +356,17 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       updatePrompt: (promptSession) => {
         if (parts) promptSession.set(extractPromptFromParts(parts, { directory }))
       },
-      updateViewport: () => setActiveMessage(messages[boundary - 2]),
+      updateViewport: () => setActiveMessage(messages[index - 1]),
     })
+  }
+
+  const undo = async () => {
+    const revert = info()?.revert?.messageID
+    const messages = userMessages()
+    const boundary = revert ? messages.findIndex((message) => message.id === revert) : messages.length
+    if (boundary < 0) return
+    const message = messages[boundary - 1]
+    if (message) await undoTo(message.id)
   }
 
   const redo = async () => {
@@ -654,4 +662,6 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     ...mcpCmds(),
     ...permissionsCmds(),
   ])
+
+  return { undoTo } // spicy: for the turns' ↶ buttons
 }

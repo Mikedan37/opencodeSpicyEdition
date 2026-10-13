@@ -954,3 +954,126 @@ e2e/performance/playwright.config.ts timeline/`.)
   when the tab reopens on those views).
 - Screenshots: scratchpad `ux2/` (the bar at 800 px before; `shots-after/`: the 800 px bar and its menu, the Agents
   views, Expand, the Debug switch, and each place in light and dark).
+
+## UX wave 3: approvals (the card, the composer's mode, Settings → Permissions, undo per turn)
+
+The owner's "make them elegant and short and simple and animated nicely". From `spicy-ide` 4a3a949e6; merged
+`spicy-validate` 4a553cea3 (the approvals API and its client functions) and `spicy-ide` 37a490f30 (the finished
+backend: saved rules reach `Permission.ask`, read-only commands run unasked, `.git/` edits always ask;
+`docs/spicy/notes-permissions.md`).
+
+### What changed
+
+- **The approval card** (`workbench/approval-card.tsx`, words in `workbench/approval.ts`) replaces the permission
+  dock in the composer region:
+  - one line: a short verb and the thing in monospace: "Run `bun test`", "Edit `src/app.ts` +2 more", "Read `.env`",
+    "Start `explore`", "Access `/tmp`" (a folder's glob reads as the folder), "Use `github_create_issue`" (MCP and
+    custom tools ask with their own name), "Fetch", "Search", "Debug", "Evaluate", "Repeat" (doom loop). A shell
+    ask shows its whole command (not its parsed pieces); a command over 60 characters or several lines is shown in
+    full under the title, and the title names its programs ("Run `cd, bun test`");
+  - under it: an edit's diff (`PatchView`, file names only when there are several), a long command, a subagent's
+    task, or the command behind an outside-folder ask. "+N more" opens the rest of the list (for edits the diff
+    already shows every file, so it is plain text);
+  - **Deny · Always: … ▾ · Allow**. Allow (the primary) answers once. Always says what it covers, from the
+    request's always-patterns ("Always: bun test …", "Always: all edits", "Always: webfetch"), and answers
+    `always` for this session; its ▾ menu has This session and This project ("Saved in Settings → Permissions"),
+    which calls `saveApproval` (the server saves the rule and answers `always`). A request with nothing to always
+    allow shows Deny and Allow only;
+  - "2 of 3" while requests queue (`approvalQueue` counts the run since the queue was last empty;
+    `sessionPermissionRequests` lists the session tree's pending requests in the dock's order);
+  - the card's group takes the focus when the composer it replaced had it (focus fell to the page), never a
+    button, so typing answers nothing.
+- **Motion** (`workbench/approval.css`, all under 200 ms, `cubic-bezier(0.22, 1, 0.36, 1)`): the card rises 8 px and
+  fades in (180 ms); the next queued request slides in from the side (160 ms); the last one leaves quicker (120 ms),
+  out of the layout and over the composer that takes its place (`solid-presence` keeps it until its animation ends;
+  the region's column is `relative`), so nothing below jumps. Reduced motion keeps the fades only.
+- **The composer's approval mode** (`ApprovalModePill` in `workbench/auto-approve.tsx`, in place of the chip): Ask
+  (shield: "Asks before edits and commands"), Auto edits (pencil: "Edits apply; you review after. Commands ask.") and
+  Auto (bolt: "Edits and commands run. Your denies still apply."), the session's `{ edits, commands }` switches
+  (`APPROVAL_MODES` / `approvalMode`; commands without edits, which only the raw API sets, shows as Auto). Its menu is
+  Kobalte's: radio items with their descriptions as `aria-describedby`, arrows, Enter, Escape. Auto takes a second
+  pick, inline: the first only arms it ("Select again to turn on Auto", amber); closing the menu disarms it. The
+  tint follows the mode (neutral, the info blue, the warning amber, 200 ms), the label fades in and its width springs
+  (`useSpring`, measured from an invisible `::after` copy; the first measurement and reduced motion snap), and a
+  live region says "Approvals: Auto edits". Hidden on the new-session page and on a server without the route.
+- **Settings → Permissions** (`workbench/settings-approvals.tsx`): "Allowed in this project", one row per saved rule:
+  Command / Edit / Tool, the rule in words ("bun test …", "all edits", "webfetch", "skill release"), and × to remove
+  it; the row folds away (rows 1fr → 0fr and a fade, 180 ms) before the server's list replaces it. One-line empty
+  state; "Open a project to see what it allows." without a project.
+- **Undo per turn**: ↶ in a finished turn's action row (next to Copy), always shown on the latest turn and on hover
+  or focus on earlier ones; "Undo this turn" / "Undo back to here". It is `useSessionCommands`' `undoTo` (interrupt a
+  running turn, stage the revert, put the turn's prompt back in the composer), which `/undo` now calls too. The
+  revert dock stays the redo; no new toast.
+- **Agents views' badge**: one number each: what waits (amber) when something does, else a muted count.
+
+### Files
+
+Fork: `workbench/{approval,approval.test,approval-card,approval.css,auto-approve,settings-approvals,patch-view,en}`,
+`agenthq/tasks-panel`; e2e `approval-card.spec.ts` (new, mocked), `main-chat-permissions.spec.ts` (rewritten: 5
+real-server tests), `tools.spec.ts`, `activity-panel.spec.ts` and `ide-tabs.spec.ts` (the badges).
+
+Upstream-owned files changed (each marked `// spicy:`):
+
+- `pages/session/composer/session-composer-region.tsx`: `ApprovalDock` in place of `SessionPermissionDock`; the
+  column is `relative`;
+- `pages/session/composer/session-composer-state.ts` (+ its test): `permissionQueue`;
+- `pages/session/composer/session-request-tree.ts`: the tree walk shared as `sessionTreeIDs`;
+  `sessionPermissionRequests`;
+- `pages/session/composer/session-permission-dock.tsx`: back to upstream's text (no longer rendered), so the fork's
+  "Always allow in this session" key is gone;
+- `components/prompt-input-v2.tsx`: the mode pill in place of the chip;
+- `components/settings-v2/dialog-settings-v2.tsx`: the Permissions tab;
+- `pages/session.tsx`, `pages/session/use-session-commands.tsx`, `pages/session/timeline/message-timeline.tsx`,
+  `packages/session-ui/src/components/message-part.{tsx,css}`: undo per turn (`UserActions.undo`, `TurnUndo`,
+  `data-action="turn-undo"`, `data-latest`);
+- e2e `session-request-docks.spec.ts`: its permission test follows the card.
+
+Strings: `workbench.approval.*`, `workbench.approvals.*`, `workbench.mode.*`, `workbench.undo.*` added;
+`workbench.permission.allowSession` and `workbench.autoApprove.*` removed.
+
+### UX wave 3 tests and verification
+
+- Unit: app `test:unit` 864 pass, 0 fail (new `workbench/approval.test.ts`: titles, details, rules in words, the
+  queue's "2 of 3", the modes and back; `sessionPermissionRequests` in the composer state test); `test-browser`
+  44/44; typecheck clean; Prettier clean on the changed files.
+- E2E, the whole `e2e/regression` folder (`--workers=2`, under `env -u TERM_SESSION_ID -u TERM_PROGRAM
+SHELL_SESSIONS_DISABLE=1`): 163/163. The first run had one failure, `tools.spec.ts` expecting an empty badge once
+  nothing waits (it is the muted count now; updated). New or rewritten:
+  - `approval-card.spec.ts` (mocked server): the card's words, "1 of 3" → "3 of 3" as replies arrive, "Always: bun
+    test …" / "Always: all edits", the diff, the focus on the card (typing answers nothing), Allow → `once`, Always →
+    `always`, Always ▾ This project → `POST /workbench/permissions/:id/save` (no reply of its own), the card leaving
+    and the composer back; Deny → `reject` and no count for a lone request; the mode pill: descriptions as
+    accessible descriptions, Enter opens on Ask, arrows, Enter picks Auto edits (a PUT of edits on, commands off;
+    "Approvals: Auto edits" announced), Auto armed by the first pick and disarmed by Escape, applied by the second,
+    back to Ask without a confirm;
+  - `main-chat-permissions.spec.ts` (real server, scripted model, 5 tests): an edit asks and lands only after Allow;
+    Always (session) lets the next `printf` run; Auto edits lets an edit through while `printf` asks, Auto runs both,
+    a new session asks; This project saves `bash touch *`, Settings → Permissions lists it and × removes it (server
+    list empty); a rule saved in one session lets the next session's `touch` run without a card (it failed before
+    `spicy-ide` 37a490f30 connected saved rules to `Permission.ask`, and passes since); a turn's ↶ puts `a.txt`
+    back to the previous turn's content on disk and the turn's prompt back in the composer;
+  - `session-request-docks.spec.ts`: the permission test follows the card ("+1 more" opens the rest; Deny and Allow
+    only when nothing can be always allowed).
+- axe-core 4.11.4 (scratch spec, mocked server): the card (a long command, an edit of two files), its Always menu,
+  the pill in each mode, the mode menu with Auto armed, Settings → Permissions with rules and empty; light and dark;
+  1280 and 800 px: 0 violations in the new UI. The Settings dialog has the same 3 upstream nodes on every tab (the
+  dialog has no name; the footer's version text contrast).
+- Benchmarks (`e2e/performance`, `timeline/`, serial): 21 scenarios before (4a3a949e6, in the morning) and after, 19
+  passed both times; the same 2 fail at the baseline. Navigation, tab switching and the review pane: same or faster.
+  Streaming: the v1 run was faster, the three v2 runs 3–8% slower than the morning's, so the pre-task commit ran
+  again from a scratch worktree, alternating with this branch (two runs each, same hour): 83.7 vs 82.0 s (diffs,
+  pane closed), 78.4 vs 79.5 s (pane closed), 87.5 vs 88.8 s (pane open), ranges overlapping; the machine's
+  run-to-run spread is about ±7%. A run with the turns' undo switched off moved one scenario each way. Nothing here
+  is attributable to the change; the timeline only gains a ↶ per finished turn, and nothing new runs per delta.
+- `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 42 at the start, 44 at the end, all macOS system
+  diagnostics (two `triald` `proactive_event_tracker` files, one `SFA-local.json` file); no crash report of bun,
+  Chromium, Python or the app. No lldb, no Electron; no server, debugpy or temp project left behind.
+- The desktop smoke needs no selector change: it answers Agent HQ's permission rows and only waits for
+  `session-prompt-dock`. The main chat's selectors for any future script: the card `[data-component="approval-card"]`,
+  `[data-action="approval-allow|approval-always|approval-deny|approval-always-menu"]`, the menu's
+  `[data-approval-menu] [data-choice="session|project"]`; the pill `[data-action="prompt-approval-mode"]` with
+  `data-mode="ask|edits|auto"`, its menu `[data-approval-modes] [data-mode=…]` (Auto takes two picks); the undo
+  `[data-action="turn-undo"]`.
+- Screenshots: scratchpad `ux3/` (`axe-shots-1280/` and `axe-shots-800/`, light and dark; `real/` from the real
+  server: Auto edits with a command asking, the turns' undo, Settings → Permissions; `frames/` and `sheet-{in,next,out}.png`:
+  the card's motion at a tenth of its speed).

@@ -955,6 +955,19 @@ export function MessageTimeline(props: {
     return end - message.time.created
   }
 
+  // spicy: a finished turn's ↶ undoes it back to before its user message; the latest turn always shows it
+  const turnUndo = (userMessageID: string) => {
+    const undo = props.actions?.undo
+    const id = sessionID()
+    if (!undo || !id || workingTurn(userMessageID)) return
+    const latest = props.userMessages.at(-1)?.id === userMessageID
+    return {
+      latest,
+      label: language.t(latest ? "workbench.undo.turn" : "workbench.undo.back"),
+      onUndo: () => void undo({ sessionID: id, messageID: userMessageID }),
+    }
+  }
+
   const assistantCopyPartID = (userMessageID: string) => {
     if (workingTurn(userMessageID)) return null
     const messages = assistantMessagesByParent().get(userMessageID) ?? emptyAssistantMessages
@@ -1025,6 +1038,7 @@ export function MessageTimeline(props: {
                 message={message()}
                 showAssistantCopyPartID={assistantCopyPartID(row().userMessageID)}
                 turnDurationMs={turnDurationMs(row().userMessageID)}
+                turnUndo={turnUndo(row().userMessageID)}
                 useV2Actions={settings.general.newLayoutDesigns()}
                 defaultOpen={defaultOpen()}
                 toolOpen={toolOpen[part().id] ?? defaultOpen()}

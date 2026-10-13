@@ -178,8 +178,13 @@ export type SessionAction = (input: { sessionID: string; messageID: string }) =>
 export type UserActions = {
   fork?: SessionAction
   revert?: SessionAction
+  // spicy: undo back to before a turn's user message (the turn's ↶ button)
+  undo?: SessionAction
   openAttachment?: (file: FilePart) => void
 }
+
+// spicy: a finished turn's ↶ in its action row (always shown on the latest turn)
+export type TurnUndo = { latest: boolean; label: string; onUndo: () => void }
 
 export type UserMessageComment = {
   path: string
@@ -203,6 +208,7 @@ export interface MessagePartProps {
   showAssistantCopyPartID?: string | null
   turnDurationMs?: number
   useV2Actions?: boolean
+  turnUndo?: TurnUndo // spicy
 }
 
 function MessageActionButton(
@@ -210,6 +216,7 @@ function MessageActionButton(
     icon: "check" | "copy" | "reset"
     label: JSX.Element
     useV2?: boolean
+    action?: string // spicy: data-action
   },
 ) {
   const icon = () => (props.icon === "copy" ? "outline-copy" : props.icon)
@@ -222,6 +229,7 @@ function MessageActionButton(
             icon={props.icon}
             size="normal"
             variant="ghost"
+            data-action={props.action}
             disabled={props.disabled}
             onMouseDown={props.onMouseDown}
             onClick={props.onClick}
@@ -235,6 +243,7 @@ function MessageActionButton(
           icon={<IconV2 name={icon()} size="small" />}
           size="normal"
           variant="ghost-muted"
+          data-action={props.action}
           disabled={props.disabled}
           onMouseDown={props.onMouseDown}
           onClick={props.onClick}
@@ -1482,6 +1491,7 @@ export function Part(props: MessagePartProps) {
         showAssistantCopyPartID={props.showAssistantCopyPartID}
         turnDurationMs={props.turnDurationMs}
         useV2Actions={props.useV2Actions}
+        turnUndo={props.turnUndo}
       />
     </Show>
   )
@@ -1769,7 +1779,11 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
           <PacedMarkdown text={text()} cacheKey={part().id} streaming={streaming()} />
         </div>
         <Show when={showCopy()}>
-          <div data-slot="text-part-copy-wrapper" data-interrupted={interrupted() ? "" : undefined}>
+          <div
+            data-slot="text-part-copy-wrapper"
+            data-interrupted={interrupted() ? "" : undefined}
+            data-latest={props.turnUndo?.latest ? "" : undefined}
+          >
             <MessageActionButton
               icon={copied() ? "check" : "copy"}
               label={copied() ? i18n.t("ui.message.copied") : i18n.t("ui.message.copyResponse")}
@@ -1778,6 +1792,23 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
               onClick={handleCopy}
               aria-label={copied() ? i18n.t("ui.message.copied") : i18n.t("ui.message.copyResponse")}
             />
+            {/* spicy: undo this turn (always shown on the latest turn) */}
+            <Show when={props.turnUndo}>
+              {(undo) => (
+                <MessageActionButton
+                  icon="reset"
+                  action="turn-undo"
+                  label={undo().label}
+                  useV2={props.useV2Actions}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    undo().onUndo()
+                  }}
+                  aria-label={undo().label}
+                />
+              )}
+            </Show>
             <Show when={meta()}>
               <span data-slot="text-part-meta" class="text-12-regular text-text-weak cursor-default">
                 {meta()}

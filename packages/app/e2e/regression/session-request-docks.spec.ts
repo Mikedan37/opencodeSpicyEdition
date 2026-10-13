@@ -90,15 +90,19 @@ test("shows a pending permission dock", async ({ page }) => {
   await page.goto(`/${base64Encode(directory)}/session/${sessionID}`)
   await expectSessionTitle(page, title)
 
-  const permission = page.locator('[data-component="dock-prompt"][data-kind="permission"]')
+  // spicy: the approval card (workbench/approval-card.tsx): one line, "+1 more" opens the rest; with nothing to
+  // always allow it offers Deny and Allow only
+  const permission = page.locator('[data-component="approval-card"]')
   await expect(permission).toBeVisible()
   await expect(permission.getByText("git status")).toBeVisible()
+  await expect(permission.getByText("git diff")).toHaveCount(0)
+  await permission.getByRole("button", { name: "+1 more" }).click()
   await expect(permission.getByText("git diff")).toBeVisible()
-  await expect(permission.locator('[data-slot="permission-footer-actions"] button')).toHaveCount(3)
+  await expect(permission.locator("[data-action^='approval-']:not([data-action='approval-more'])")).toHaveCount(2)
   await expect(page.locator('[data-component="session-composer"]')).toHaveCount(0)
 
   const reply = page.waitForRequest((request) => request.method() === "POST")
-  await permission.getByRole("button", { name: "Allow once" }).click()
+  await permission.getByRole("button", { name: "Allow", exact: true }).click()
   const request = await reply
   expect(new URL(request.url()).pathname).toBe(`/api/session/${sessionID}/permission/permission-request/reply`)
   expect(request.postDataJSON()).toEqual({ reply: "once" })

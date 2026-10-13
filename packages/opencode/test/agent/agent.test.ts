@@ -87,7 +87,7 @@ it.instance("plan agent denies the general subagent by default", () =>
     expect(plan).toBeDefined()
     expect(Permission.evaluate("task", "general", plan!.permission).action).toBe("deny")
     expect(Permission.evaluate("task", "explore", plan!.permission).action).toBe("allow")
-    expect(Permission.evaluate("task", "custom", plan!.permission).action).toBe("allow")
+    expect(Permission.evaluate("task", "custom", plan!.permission).action).toBe("ask") // spicy: plan mode asks first
   }),
 )
 

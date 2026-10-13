@@ -21,6 +21,8 @@ import { AppProcess } from "@opencode-ai/core/process"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Cause, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
+import { realpathSync } from "fs"
+import path from "path"
 import { AgentProvider } from "../provider"
 
 const PREVIEW_LIMIT = 2_000
@@ -33,7 +35,9 @@ export const capabilities: AgentHQ.ProviderCapabilities = {
   resume: false,
   models: false,
   mcpTools: true,
-  notes: ["Resumes only when the agent advertises session/resume or session/load"],
+  notes: [
+    "Resumes with session/resume or session/load when the agent has them; otherwise it continues in a new session and says so",
+  ],
 }
 
 export interface Launch {
@@ -97,7 +101,7 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
       return text ? `\n${text}` : ""
     }
 
-    const state = new ClientState(emit)
+    const state = new ClientState(emit, cwd)
     const connection = new ClientSideConnection(
       () => state.client,
       ndJsonStream(
@@ -247,12 +251,15 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
         )
       return handle(opened, sessionId)
     }
-    yield* opened.close
-    return yield* new AgentProvider.UnsupportedError({
-      provider: input.id,
-      action: "resume",
-      message: "This ACP agent advertises neither session/resume nor session/load",
+    // Neither: the agent cannot pick the conversation up again, so it goes on in a new session, and says so.
+    const created = yield* opened
+      .call("session/new", () => opened.connection.newSession({ cwd: opened.cwd, mcpServers: mcp(session.workbench) }))
+      .pipe(Effect.tapError(() => opened.close))
+    opened.state.emit({
+      type: "error",
+      message: "This agent cannot restore a conversation, so it continues in a new session without the earlier context",
     })
+    return handle(opened, created.sessionId)
   })
 
   return { id: input.id, status: input.status, createSession, resumeSession } satisfies AgentProvider.Interface
@@ -284,7 +291,34 @@ class ClientState {
   private block: string | undefined
   private requests = 0
 
-  constructor(readonly emit: AgentProvider.Emit) {}
+  // The session's directory, as given and resolved: a changed file inside it is reported relative to it.
+  private readonly roots: readonly string[]
+
+  constructor(
+    readonly emit: AgentProvider.Emit,
+    cwd: string,
+  ) {
+    this.roots = [
+      cwd,
+      ...(() => {
+        try {
+          return [realpathSync(cwd)]
+        } catch {
+          return []
+        }
+      })(),
+    ]
+  }
+
+  /** A changed file inside the session's directory, relative to it, as the project and its review see it. */
+  private relative(file: string) {
+    if (!path.isAbsolute(file)) return file
+    for (const root of this.roots) {
+      const inside = path.relative(root, file)
+      if (inside && !inside.startsWith("..") && !path.isAbsolute(inside)) return inside
+    }
+    return file
+  }
 
   readonly client: Client = {
     sessionUpdate: async (notification) => this.update(notification),
@@ -345,7 +379,7 @@ class ClientState {
         this.tools.set(update.toolCallId, { tool, title, state: state ?? known?.state })
         update.content
           ?.flatMap((item) => (item.type === "diff" ? [item.path] : []))
-          .forEach((file) => this.emit({ type: "file.changed", path: file }))
+          .forEach((file) => this.emit({ type: "file.changed", path: this.relative(file) }))
         if (!state || state === known?.state) return
         const output =
           state === "completed" || state === "error" ? preview(update.content, update.rawOutput) : undefined

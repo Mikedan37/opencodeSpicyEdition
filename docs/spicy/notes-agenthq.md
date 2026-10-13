@@ -827,3 +827,86 @@ Results (from `packages/opencode`):
 editor's dependencies. The new `ProviderID` value needs no app change, since the app keeps no per-provider tables.
 
 No upstream-owned files were edited in wave 6.
+
+# Wave 7: AgentKit's real ACP mode (agentkit-bridge 0.1.0, OpenCode Native 0.14.1)
+
+## Detection and launch
+
+- Bridge lookup: the identity's `launch` (its args, or `acp`); otherwise `OPENCODE_AGENTKIT_BRIDGE` (when set, nothing
+  else is searched, so a wrong path says "not found"), then `agentkit-bridge` on PATH, then
+  `/Applications/OpenCode Native.app/Contents/MacOS/agentkit-bridge` and the same under `~/Applications`. No build
+  path is hardcoded; the real tests point at the build through the env var.
+- Probe: `agentkit-bridge --help` prints its usage on stderr with exit 64 ("usage: agentkit-bridge app-server | mcp |
+  acp [--local-only] | autopilot <project> --state <dir> | --version"). The provider is available when that usage
+  lists `acp`; the exit code does not matter. `acp --help` is not supported (exit 64, same usage), and `--version`
+  (exit 0, "agentkit-bridge 0.1.0") gives the version. Neither starts a session or a daemon.
+
+## Adapter changes (every ACP agent)
+
+- An agent without `session/resume` or `session/load` (AgentKit: `loadSession: false`) is not asked to load anything.
+  A reattach starts a new agent session and records an `error`: "This agent cannot restore a conversation, so it
+  continues in a new session without the earlier context". The manager stores the new `providerSessionID`.
+- Diff paths inside the session's directory become `file.changed` paths relative to it. The directory is compared as
+  given and resolved, since AgentKit reports `/private/var/...` for `/var/...`. `oldText: null` (a new file) is
+  valid ACP and needs nothing special. Review then lists the file.
+- A second permission request in the same turn (AgentKit's "outside" keep / undo) is surfaced and answered like any
+  other (AHQ-16, scripted).
+
+## Real validation (`SPICY_REAL_AGENTKIT=status|1`, always `--local-only`, $0)
+
+`OPENCODE_AGENTKIT_BRIDGE=<bridge> SPICY_REAL_AGENTKIT=1 [SPICY_REAL_AGENTKIT_LOGS=<dir>] bun test --timeout 1800000
+test/agenthq/agentkit.test.ts -t "REAL:"`. A shim in front of the bridge always adds `--local-only` and logs the
+JSON-RPC exchange both ways. The run is driven only through the HTTP API of a password-protected listener, in a
+temp git repo holding a Swift package whose only file does not build. AgentKit plans and verifies with
+`swift build`; a JavaScript project made it plan Swift edits (see b1 below). Every check is recorded and the run
+goes on.
+
+Run of 2026-10-12 17:35 (qwen2.5-coder:14b on local Ollama): 18 of 20 checks pass.
+
+| Step                                                             | Result                                                                                                                                                                                                | Latency                             |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| a. status, initialize, session/new with the Workbench MCP server | pass: available 0.1.0; `loadSession: false`, `authMethods: []`, no image/audio/embedded context; session `agentkit-<UUID>`; the bridge starts a private `AgentDaemon` and `/tmp/ocn-acp-<pid>.sock`   | session start 0.66 s                |
+| c. declined proposal                                             | proposal (apply / skip), `end_turn`, the Swift file untouched: pass. Nothing else changed: **fail**, AgentKit created `.blaze/routing_telemetry.jsonl` in the project, which review lists as a change | proposal 0.5 s                      |
+| d. cancel with a proposal pending                                | `cancelled`, nothing recorded after it, no stray edits: pass. The client answered the pending request `{"outcome":"cancelled"}` and sent `session/cancel`; the prompt ended `stopReason: "cancelled"` |                                     |
+| b. fix applied, reviewed, accepted                               | proposal; apply tool call completed; `file.changed` `Sources/Math/Math.swift` (relative); review lists it (2 hunks); accept; `swift build` passes: all pass                                           | proposal 0.3 s, apply to end 16.2 s |
+| e. IDE server restart                                            | no `session/load` (methods: initialize 2, session/new 2, session/prompt 4, session/cancel 1); the notice recorded; the question answered: pass                                                        | answer 1.2 s                        |
+| f. cleanup                                                       | no bridge or private daemon process, no socket left after the restart or the identity's removal: pass                                                                                                 |                                     |
+
+The quirk (a question answered with a proposal) did not occur in this run; the test records it and declines when it
+does. Nothing under `~/Documents/Codex` changed. The standing `AgentDaemon` (`/tmp/blaze_agent.sock`, running since
+01:58) is not ours and was left alone.
+
+## For the AgentKit bridge (b1)
+
+1. AgentKit writes its state into the project being edited: `<project>/.blaze/` gets `agentkit.db`,
+   `.agentkit.db.lock`, `agentkit.meta`, `agentkit.salt`, `agentkit.wal`, `execution_telemetry.jsonl`,
+   `routing_telemetry.jsonl` and `runtime/tool-schema.json`. Even a declined change leaves
+   `.blaze/routing_telemetry.jsonl`, for example
+   `{"schema_version":1,"type":"routing",...,"intent":"executableStrong","outcome":"gated:implicit_execution_blocked","duration_ms":6}`.
+   Review sees all of it as the agent's changes, and "Accept all" takes it into the project. It should live outside
+   the project, under the bridge's or daemon's own state, not least the salt.
+2. On a project that is not Swift, the local-only planner plans Swift. For a JavaScript file, after `apply` it ran
+   "Building project to verify changes..." and the step "Add missing import statement for Swift standard library",
+   which failed with "error: Could not find Package.swift in this directory or any of its parent directories". The
+   turn ended `end_turn` with the edit tool calls `failed` and nothing changed. Exchange (session/new and the prompt):
+   `{"method":"session/prompt","params":{"prompt":[{"type":"text","text":"fix the build error in src/math.js"}]}}` →
+   `tool_call_update {"toolCallId":"step-2-…","status":"failed","content":[…"Add missing import statement for Swift
+standard library.\nStep failed: error: Could not find Package.swift…"]}` → `{"result":{"stopReason":"end_turn"}}`.
+3. `--local-only` starts `~/Developer/ProjectBlaze/AgentDaemon/.build/release/AgentDaemon`, a development build
+   outside the app bundle.
+4. Cosmetic: for the Swift fix, the plan said "Add return types for `add` and `sub` functions" while the edit closed
+   the missing brace.
+
+## Tests (wave 7)
+
+| Test                                                                  | What it proves                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `agentkit.test.ts` detection                                          | Usage-based probe: available (version from `--version`), "no ACP mode yet" for a bridge whose usage has no `acp`, "not found"; lookup order env var → PATH → `OpenCode Native.app`, and an explicit env var that points nowhere is not replaced                                                                                                  |
+| AHQ-16 (scripted ACP agent without session/load behind a fake bridge) | apply / skip proposal, then the "outside" keep / undo request, both surfaced and answered; an absolute diff path with `oldText: null` becomes `file.changed` `src/fixed.txt` and review lists the file; after a crash, the reattach starts a new agent session (never `session/load`), records the notice and stores the new provider session id |
+| `agentkit.test.ts` real (`SPICY_REAL_AGENTKIT=status` / `1`)          | As above                                                                                                                                                                                                                                                                                                                                         |
+
+Results (from `packages/opencode`): `bun test --timeout 120000 test/agenthq` 42 pass, 3 skip (the opt-in real Claude,
+Codex and AgentKit checks), 0 fail; `bun test --timeout 30000 test/server test/session` 722 pass, 9 skip, 1 todo,
+0 fail; `bun run typecheck` clean. `packages/app` typecheck is clean after `bun install --frozen-lockfile --offline`.
+
+No upstream-owned files were edited in wave 7.

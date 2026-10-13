@@ -4,9 +4,13 @@
 //   "late"  → a message and a finished tool, then after its answer a late chunk and tool update for them
 //   "crash" → writes to stderr and exits with code 3
 //   "hang"  → says "working", waits for session/cancel, then (out of protocol) says more and ends cancelled
+//   "change" → like AgentKit: proposes a change (apply / skip); on apply writes src/fixed.txt in the session's cwd and
+//              reports it as a diff with an absolute path and oldText null, then asks about an edit outside the
+//              approved places (keep / undo)
 //   other   → echoes the text
 // session/load replays one old exchange, which the client must not record again.
 // With FAKE_ACP_RECORD set, session/new writes its params (cwd, mcpServers) to that file.
+// With FAKE_ACP_NO_LOAD set, it advertises no session/load, like AgentKit, and refuses one.
 import { AgentSideConnection, ndJsonStream, type Agent } from "@agentclientprotocol/sdk"
 
 const output = new WritableStream<Uint8Array>({
@@ -22,6 +26,9 @@ const input = new ReadableStream<Uint8Array>({
 
 // Resolves the prompt that "hang" holds open.
 let cancelled: (() => void) | undefined
+const noLoad = !!process.env.FAKE_ACP_NO_LOAD
+let cwd = process.cwd()
+let sessions = 0
 
 new AgentSideConnection(
   (client): Agent => {
@@ -31,13 +38,16 @@ new AgentSideConnection(
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
       })
     return {
-      initialize: async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: true } }),
+      initialize: async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: !noLoad } }),
       newSession: async (params) => {
         // Contract tests read what the client sent when they ask for it.
         if (process.env.FAKE_ACP_RECORD) await Bun.write(process.env.FAKE_ACP_RECORD, JSON.stringify(params))
-        return { sessionId: "fake-session" }
+        cwd = params.cwd
+        // Without session/load every process starts sessions of its own.
+        return { sessionId: noLoad ? `fake-session-${process.pid}-${++sessions}` : "fake-session" }
       },
       loadSession: async (params) => {
+        if (noLoad) throw new Error("session/load is not supported")
         await client.sessionUpdate({
           sessionId: params.sessionId,
           update: { sessionUpdate: "user_message_chunk", content: { type: "text", text: "old question" } },
@@ -92,6 +102,45 @@ new AgentSideConnection(
               ],
             },
           })
+          return { stopReason: "end_turn" }
+        }
+        if (text === "change") {
+          const proposal = await client.requestPermission({
+            sessionId,
+            toolCall: { toolCallId: "t-apply", title: "Apply the fix", kind: "edit" },
+            options: [
+              { optionId: "apply", name: "Apply", kind: "allow_once" },
+              { optionId: "skip", name: "Skip", kind: "reject_once" },
+            ],
+          })
+          if (proposal.outcome.outcome === "cancelled") return { stopReason: "cancelled" }
+          if (proposal.outcome.optionId !== "apply") {
+            await say(sessionId, "skipped")
+            return { stopReason: "end_turn" }
+          }
+          const file = `${cwd}/src/fixed.txt`
+          await Bun.write(file, "fixed\n")
+          await client.sessionUpdate({
+            sessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: "t-apply",
+              status: "completed",
+              content: [{ type: "diff", path: file, oldText: null, newText: "fixed\n" }],
+            },
+          })
+          const outside = await client.requestPermission({
+            sessionId,
+            toolCall: { toolCallId: "t-outside", title: "An edit outside the approved files", kind: "edit" },
+            options: [
+              { optionId: "keep", name: "Keep", kind: "allow_once" },
+              { optionId: "undo", name: "Undo", kind: "reject_once" },
+            ],
+          })
+          await say(
+            sessionId,
+            outside.outcome.outcome === "selected" ? `outside: ${outside.outcome.optionId}` : "outside: cancelled",
+          )
           return { stopReason: "end_turn" }
         }
         if (text === "hang") {

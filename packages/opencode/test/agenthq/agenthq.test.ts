@@ -18,6 +18,7 @@ import { AgentSessions } from "../../src/agenthq/session"
 import { AgentStore } from "../../src/agenthq/store"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Permission } from "../../src/permission"
+import { ReviewChanges } from "../../src/review/changes"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
 import { SessionID } from "../../src/session/schema"
@@ -35,6 +36,7 @@ const nodes = LayerNode.group([
   AgentRegistry.node,
   AgentSessions.node,
   AgentStore.node,
+  ReviewChanges.node,
   SessionProjector.node,
   SessionStatus.node,
   InstanceStore.node,
@@ -915,6 +917,92 @@ describe("agenthq", () => {
       expect(cancelled).toBeGreaterThan(-1)
       expect(after.slice(cancelled + 1).map((item) => item.event.type)).toEqual([])
       expect(JSON.stringify(after)).not.toContain("after the cancel")
+    }),
+  )
+
+  it.live("AHQ-16 AgentKit's change flow and an agent without session/load (scripted)", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      // A stand-in for agentkit-bridge 0.1.0: no session/load, changes proposed before they are written.
+      const bridge = path.join(dir, "..", `agentkit-bridge-${path.basename(dir)}`)
+      yield* Effect.promise(async () => {
+        await fs.writeFile(
+          bridge,
+          [
+            "#!/bin/sh",
+            '[ "$1" = "acp" ] || exit 2',
+            "export FAKE_ACP_NO_LOAD=1",
+            `exec '${process.execPath}' '${path.join(import.meta.dir, "../fixture/agenthq/fake-acp-agent.ts")}'`,
+          ].join("\n"),
+        )
+        await fs.chmod(bridge, 0o755)
+      })
+      yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(bridge, { force: true })))
+      const registry = yield* AgentRegistry.Service
+      const sessions = yield* AgentSessions.Service
+      const agent = yield* registry.create({
+        name: "Kit",
+        avatar: { kind: "initials", value: "K" },
+        provider: "agentkit",
+        projectDirectory: dir,
+        launch: { command: bridge, args: [] },
+      })
+      const started = yield* sessions.start(agent.id)
+      const first = started.providerSessionID
+
+      // The proposal waits for the human; after apply, the edit outside the approved places asks again.
+      yield* sessions.send(started.id, "change")
+      const proposal = yield* waitHistory(
+        started.id,
+        (history) => ofType(history, "permission.requested")[0],
+        "the change was never proposed",
+      )
+      expect(proposal).toMatchObject({ title: "Apply the fix", tool: "edit" })
+      expect(proposal.options.map((option) => [option.id, option.kind])).toEqual([
+        ["apply", "allow_once"],
+        ["skip", "reject_once"],
+      ])
+      yield* sessions.respond(started.id, proposal.requestID, "apply")
+      const outside = yield* waitHistory(
+        started.id,
+        (history) => ofType(history, "permission.requested")[1],
+        "the outside edit never asked",
+      )
+      expect(outside.options.map((option) => option.id)).toEqual(["keep", "undo"])
+      expect((yield* sessions.get(started.id)).session).toMatchObject({
+        status: "needs_approval",
+        pendingPermissions: 1,
+      })
+      yield* sessions.respond(started.id, outside.requestID, "keep")
+      const changed = yield* turnCompleted(started.id)
+      // The absolute diff path (oldText null: a new file) arrives relative to the project, and review lists it.
+      expect(ofType(changed, "file.changed")).toEqual([{ type: "file.changed", path: "src/fixed.txt" }])
+      expect(ofType(changed, "permission.resolved").map((event) => event.outcome)).toEqual(["allowed", "allowed"])
+      expect(ofType(changed, "message").at(-1)?.text).toBe("outside: keep")
+      const store = yield* InstanceStore.Service
+      const changesets = yield* store.provide(
+        { directory: dir },
+        ReviewChanges.Service.use((review) => review.list()),
+      )
+      const changeset = changesets.find((item) => item.owner.id === started.id)
+      expect(changeset?.files.map((file) => file.path)).toEqual(["src/fixed.txt"])
+
+      // Without session/load, reattaching starts a new agent session and records that the history stayed behind.
+      yield* sessions.send(started.id, "crash")
+      yield* waitHistory(
+        started.id,
+        (_, session) => (session.status === "disconnected" ? true : undefined),
+        "the crash was never reported",
+      )
+      yield* sessions.send(started.id, "hello")
+      const resumed = yield* turnCompleted(started.id, 2)
+      expect(ofType(resumed, "error").at(-1)?.message).toBe(
+        "This agent cannot restore a conversation, so it continues in a new session without the earlier context",
+      )
+      expect(ofType(resumed, "message").at(-1)?.text).toBe("echo: hello")
+      const after = (yield* sessions.get(started.id)).session.providerSessionID
+      expect(after).toMatch(/^fake-session-/)
+      expect(after).not.toBe(first)
     }),
   )
 

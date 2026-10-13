@@ -1161,3 +1161,42 @@ before removing the folder. Agent HQ cannot do it: it only knows the bridge's pr
 
 Nothing under `~/Documents/Codex`, the OpenCode Native repo or the installed app changed. The owner's launchd daemon
 (now `~/Applications/OpenCode Native.app/Contents/MacOS/AgentDaemon`, pid 36132) was left alone.
+
+# Wave 13: AgentKit 0.15.1, crash cleanup
+
+OpenCode Native 0.15.1 (commit 2fd2290, installed by copy at `~/Applications`, owned by the user, mode 755, no
+extended attributes) gives each private daemon a watcher, `agentkit-bridge watch <bridge pid> <daemon pid> <socket>
+<state>`. The watcher is a child of the bridge in a process group of its own; it sees the bridge exit (kqueue), stops
+the daemon and removes the socket and the state folder. The next local-only session's sweep also stops a dead
+agent's daemon (found by its socket) before removing the folder.
+
+Step g of the real run now has two crashes, after the restart's answer:
+
+- g1: SIGKILL the bridge. Its daemon, watcher, socket and folder must all be gone within 15 seconds, with no new
+  session.
+- g2: start a new session, wait until its bridge runs a daemon and a watcher, SIGKILL the bridge and the watcher.
+  Three seconds later the daemon, socket and folder must still be there (nothing else stops them); after the next
+  session starts, all must be gone within 20 seconds.
+
+The test identifies the daemon and the watcher among the killed bridge's own children, so it only counts and kills
+processes descended from itself.
+
+Run of 2026-10-12 21:50 (48 s, `OPENCODE_AGENTKIT_BRIDGE` unset, `--local-only`): all 42 checks pass (the 4 discovery
+checks, the 20 earlier checks, the 11 state checks, the 6 crash checks and the bundled-daemon check).
+
+| Step                               | Result                                                                                                                   | Latency                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| a. status, initialize, session/new | from `~/Applications` by the Applications lookup, LaunchServices not asked, nothing protected touched                    | session start 0.75 s                                        |
+| c. declined proposal               | pass                                                                                                                     | proposal 0.42 s                                             |
+| d. cancel with a proposal pending  | pass                                                                                                                     |                                                             |
+| b. fix applied and accepted        | pass (review: only `Sources/Math/Math.swift`, 2 hunks; `swift build` passes)                                             | proposal 0.36 s, apply to end 23.7 s                        |
+| e. server restart                  | pass (initialize 2, session/new 2, session/prompt 4, session/cancel 1)                                                   | answer 1.10 s                                               |
+| g1. SIGKILL the bridge             | daemon, watcher, socket and folder gone with no new session: pass                                                        | 0.12 s after the kill                                       |
+| g2. SIGKILL bridge and watcher     | daemon, socket and folder kept, then swept by the next session: pass                                                     | new sessions 0.77 s and 1.27 s; gone as the second returned |
+| f. cleanup                         | no process or socket left, state folders gone, nothing left in `$TMPDIR` or `/tmp`, no lock files, daemons bundled: pass |                                                             |
+
+A free probe before the run (initialize and session/new only) showed the same: after SIGKILL of the bridge all was
+gone in 212 ms; with bridge and watcher killed the daemon stayed until the next session started, then all was gone.
+
+Nothing under `~/Documents/Codex`, the OpenCode Native repo or the installed app changed. The SwiftPM lock files in
+`$TMPDIR` named `agentkit-acp-2sajeo_2` (17:05) and `agentkit-acp-j90bi3uk` (21:46) are not from this session's runs.

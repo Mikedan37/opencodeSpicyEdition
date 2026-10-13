@@ -925,45 +925,105 @@ describe("agenthq agentkit (real, opt-in)", () => {
           )
           check("e (new): no .blaze in the project", !blaze(), undefined)
 
-          // ---- g. A crash: SIGKILL the bridge mid-session. Its folder stays (nothing runs on SIGKILL) until the next
-          // local-only session starts and sweeps the folders of dead agents. Its private daemon runs in a process group
-          // of its own, so only AgentKit can stop it.
+          // ---- g. Crashes. A bridge starts its private daemon and a watcher (`agentkit-bridge watch <bridge pid> ...`),
+          // each in a process group of its own. g1: SIGKILL the bridge; the watcher stops the daemon and removes the
+          // socket and the state folder, with no new session. g2: SIGKILL a bridge and its watcher; the daemon and its
+          // state stay until the next local-only session sweeps them.
+          const crashOf = (pid: number | undefined) => {
+            const kids = pid ? tree(pid) : []
+            const daemons = [
+              ...new Set([
+                ...kids.filter((item) => /AgentDaemon/.test(item.command)).map((item) => item.pid),
+                ...(pid ? holders(pid) : []),
+              ]),
+            ]
+            const watchers = kids.filter((item) => /agentkit-bridge watch /.test(item.command)).map((item) => item.pid)
+            const folder = path.join(os.tmpdir(), `agentkit-acp-${pid}`)
+            const socket = `/tmp/ocn-acp-${pid}.sock`
+            const left = () => ({
+              daemons: daemons.filter(alive),
+              watchers: watchers.filter(alive),
+              socket: existsSync(socket),
+              folder: existsSync(folder),
+            })
+            const gone = () => {
+              const now = left()
+              return !now.daemons.length && !now.watchers.length && !now.socket && !now.folder
+            }
+            return { pid, daemons, watchers, before: left(), left, gone }
+          }
+          const goneWithin = (crash: ReturnType<typeof crashOf>, seconds: number) =>
+            Effect.gen(function* () {
+              const from = Date.now()
+              const done = yield* pollWithTimeout(
+                Effect.sync(() => (crash.gone() ? true : undefined)),
+                "the dead agent's state",
+                `${seconds} seconds`,
+              ).pipe(Effect.orElseSucceed(() => false))
+              return { gone: done, ms: Date.now() - from, left: crash.left() }
+            })
+          const started = (crash: ReturnType<typeof crashOf>) =>
+            crash.daemons.length > 0 &&
+            crash.watchers.length === 1 &&
+            Object.values(crash.before).every((value) => (Array.isArray(value) ? value.length > 0 : value))
+
+          // g1: the bridge alone.
           remember()
-          const victim = bridges()[0]
-          const crashed = path.join(os.tmpdir(), `agentkit-acp-${victim}`)
-          const socket = `/tmp/ocn-acp-${victim}.sock`
-          const orphans = victim ? [...new Set([...tree(victim).map((item) => item.pid), ...holders(victim)])] : []
-          const crash: Record<string, unknown> = { pid: victim, daemons: orphans, before: existsSync(crashed) }
-          report.crash = crash
-          if (victim) process.kill(victim, "SIGKILL")
-          yield* pollWithTimeout(
-            Effect.sync(() => (victim && alive(victim) ? undefined : true)),
-            "the killed bridge is still running",
-            "10 seconds",
-          ).pipe(Effect.ignore)
-          crash.afterKill = existsSync(crashed)
-          const next = yield* time("sessionAfterCrash", post(`/agenthq/agents/${agentID}/sessions`, {}))
-          remember()
-          // The sweep, and anything else that ends the dead agent's daemon, gets 20 seconds.
-          yield* pollWithTimeout(
-            Effect.sync(() => (existsSync(crashed) || orphans.some(alive) || existsSync(socket) ? undefined : true)),
-            "the dead agent's state",
-            "20 seconds",
-          ).pipe(Effect.ignore)
-          crash.folderLeft = existsSync(crashed)
-          crash.daemonsLeft = orphans.filter(alive)
-          crash.socketLeft = existsSync(socket)
+          const first = crashOf(bridges()[0])
+          if (first.pid) process.kill(first.pid, "SIGKILL")
+          const firstAfter = yield* goneWithin(first, 15)
+          report.crash = { pid: first.pid, daemons: first.daemons, watchers: first.watchers, ...firstAfter }
+          check("g1 (0.15.1): the bridge had its private daemon and one watcher", started(first), first.before)
           check(
-            "g (0.15): the killed bridge's folder stays until a new session starts",
-            crash.before === true && crash.afterKill === true,
-            crash,
+            "g1 (0.15.1): after SIGKILL of the bridge its daemon, watcher, socket and folder are gone, no new session",
+            firstAfter.gone,
+            firstAfter,
           )
-          check("g (0.15): a new session starts after the crash", next.status === 200, next.body)
-          check("g (0.15): the new session swept the dead agent's agentkit-acp-<pid>/", !crash.folderLeft, crash)
-          check("g (0.15): the dead agent's private daemon is gone", orphans.length > 0 && !orphans.some(alive), crash)
-          check("g (0.15): the dead agent's /tmp/ocn-acp-<pid>.sock is gone", !crash.socketLeft, crash)
-          // Stop what the crash left (ours), so that f checks the rest on its own.
-          for (const pid of orphans.filter(alive)) process.kill(pid, "SIGTERM")
+
+          // g2: the bridge of a new session and its watcher, once both it and its daemon run.
+          const second = yield* time("sessionAfterCrash", post(`/agenthq/agents/${agentID}/sessions`, {}))
+          const ready = yield* pollWithTimeout(
+            Effect.sync(() =>
+              bridges().find((pid) => {
+                const kids = tree(pid).map((item) => item.command)
+                return (
+                  pid !== first.pid &&
+                  kids.some((command) => /AgentDaemon/.test(command)) &&
+                  kids.some((command) => /agentkit-bridge watch /.test(command))
+                )
+              }),
+            ),
+            "the new session's bridge never ran its daemon and watcher",
+            "15 seconds",
+          ).pipe(Effect.orElseSucceed(() => undefined))
+          remember()
+          const victim = crashOf(ready)
+          if (victim.pid) process.kill(victim.pid, "SIGKILL")
+          for (const pid of victim.watchers) process.kill(pid, "SIGKILL")
+          yield* Effect.sleep("3 seconds")
+          const orphaned = victim.left()
+          const third = yield* time("sessionAfterOrphan", post(`/agenthq/agents/${agentID}/sessions`, {}))
+          remember()
+          const swept = yield* goneWithin(victim, 20)
+          report.orphan = { pid: victim.pid, daemons: victim.daemons, watchers: victim.watchers, orphaned, ...swept }
+          check("g2 (0.15.1): new sessions start after the crashes", second.status === 200 && third.status === 200, [
+            second.status,
+            third.status,
+          ])
+          check("g2 (0.15.1): the second bridge had its private daemon and one watcher", started(victim), victim.before)
+          check(
+            "g2 (0.15.1): with bridge and watcher killed, the daemon, socket and folder stay until a new session",
+            orphaned.daemons.length > 0 && orphaned.socket && orphaned.folder,
+            orphaned,
+          )
+          check(
+            "g2 (0.15.1): the next session's sweep stops the orphaned daemon and removes its socket and folder",
+            swept.gone,
+            swept,
+          )
+          // Stop whatever the crashes left (ours), so that f checks the rest on its own.
+          for (const pid of [...first.daemons, ...first.watchers, ...victim.daemons].filter(alive))
+            process.kill(pid, "SIGTERM")
         }
 
         // ---- f. Removing the identity ends the bridge's whole process group: nothing of ours is left.

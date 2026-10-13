@@ -653,11 +653,11 @@ export const dict = {
   "workbench.git.pr": "Create PR",
   "workbench.git.unreviewed.one": "{{count}} agent change not reviewed yet",
   "workbench.git.unreviewed.other": "{{count}} agent changes not reviewed yet",
-  "workbench.git.unreviewed.review": "Review",
-  "workbench.git.unreviewed.title": "Commit before reviewing agent changes?",
-  "workbench.git.unreviewed.description":
-    "The Agent changes review still has hunks you have not accepted or rejected. The commit takes the files as they are on disk now.",
-  "workbench.git.unreviewed.commit": "Commit anyway",
+  "workbench.git.reviewFirst": "Review agent changes first",
+  "workbench.git.changeCount.one": "{{count}} change",
+  "workbench.git.changeCount.other": "{{count}} changes",
+  "workbench.git.expand": "Commit…",
+  "workbench.git.collapse": "Hide the commit area",
   "workbench.git.push.title": "Push {{branch}}",
   "workbench.git.push.upstream": "Push {{branch}} to {{upstream}}.",
   "workbench.git.push.publish":

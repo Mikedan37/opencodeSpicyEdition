@@ -35,6 +35,7 @@ type PluralKey =
   | "session.followupDock.summary"
   | "session.revertDock.summary"
   | "workbench.git.unreviewed" // spicy: git panel
+  | "workbench.git.changeCount" // spicy: git panel
 type Source = { dict: Record<string, string> }
 
 function cookie(locale: Locale) {

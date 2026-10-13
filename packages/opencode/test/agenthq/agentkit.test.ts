@@ -14,6 +14,7 @@ import { $ } from "bun"
 import { Effect } from "effect"
 import { existsSync } from "fs"
 import fs from "fs/promises"
+import os from "os"
 import path from "path"
 import { AgentDetect } from "../../src/agenthq/providers/detect"
 import { tmpdirScoped } from "../fixture/fixture"
@@ -204,11 +205,10 @@ describe("agenthq agentkit (real index, opt-in)", () => {
 // ---------------------------------------------------------------- real, opt-in
 
 // SPICY_REAL_AGENTKIT=status: start one session (initialize + session/new with the Workbench MCP server), no prompt.
-// SPICY_REAL_AGENTKIT=1: the whole validation below. Both need OPENCODE_AGENTKIT_BRIDGE (the bridge to test) and run
-// it only with --local-only.
+// SPICY_REAL_AGENTKIT=1: the whole validation below. Both use the bridge the product finds (OPENCODE_AGENTKIT_BRIDGE,
+// PATH, Applications, LaunchServices), as the provider status names it, and run it only with --local-only.
 const mode = process.env.SPICY_REAL_AGENTKIT
-const bridge = process.env.OPENCODE_AGENTKIT_BRIDGE
-const realAgentKit = (mode === "status" || mode === "1") && bridge ? it.live : it.live.skip
+const realAgentKit = mode === "status" || mode === "1" ? it.live : it.live.skip
 
 // A Swift package whose only file does not build (a function that never closes): AgentKit plans its edits for Swift
 // and verifies them with `swift build`, and so does this test.
@@ -222,7 +222,7 @@ const PROJECT = {
 
 describe("agenthq agentkit (real, opt-in)", () => {
   realAgentKit(
-    `REAL: AgentKit (--local-only) through the Agent HQ HTTP API [${bridge ? "skipped unless SPICY_REAL_AGENTKIT=status or 1" : "skipped: set OPENCODE_AGENTKIT_BRIDGE and SPICY_REAL_AGENTKIT=status or 1"}; $0, local Ollama only]`,
+    "REAL: AgentKit (--local-only) through the Agent HQ HTTP API [skipped unless SPICY_REAL_AGENTKIT=status or 1; $0, local Ollama only]",
     () =>
       Effect.gen(function* () {
         const { resetDatabase } = yield* Effect.promise(() => import("../fixture/db"))
@@ -245,6 +245,10 @@ describe("agenthq agentkit (real, opt-in)", () => {
         const untouched = Effect.promise(() => $`git status --porcelain ${FILE}`.cwd(dir).quiet().text()).pipe(
           Effect.map((text) => text.trim() === ""),
         )
+        // The whole project (.build is ignored).
+        const porcelain = Effect.promise(() =>
+          $`git status --porcelain --untracked-files=all`.cwd(dir).quiet().text(),
+        ).pipe(Effect.map((text) => text.split("\n").filter((line) => line.trim())))
         const builds = Effect.promise(() => $`swift build`.cwd(dir).nothrow().quiet()).pipe(
           Effect.map((result) => result.exitCode === 0),
         )
@@ -255,17 +259,25 @@ describe("agenthq agentkit (real, opt-in)", () => {
         const logs = process.env.SPICY_REAL_AGENTKIT_LOGS ?? (yield* tmpdirScoped())
         yield* Effect.promise(() => fs.mkdir(logs, { recursive: true }))
         const shim = path.join(logs, "agentkit-local-only")
-        yield* Effect.promise(async () => {
-          await fs.writeFile(
-            shim,
-            [
-              "#!/bin/sh",
-              '[ "$1" = "acp" ] || exit 64',
-              `tee -a '${logs}/in.jsonl' | '${bridge}' acp --local-only | tee -a '${logs}/out.jsonl'`,
-            ].join("\n"),
-          )
-          await fs.chmod(shim, 0o755)
-        })
+        // Set from the provider status in step a.
+        let bridge = ""
+        // AgentKit state that must never land in the project, and the daemons' temp state folders that must go.
+        const blaze = () => existsSync(path.join(dir, ".blaze"))
+        const stateHomes = new Set<string>()
+        const scratch = () =>
+          Promise.all(
+            [os.tmpdir(), "/tmp"].map((folder) =>
+              fs
+                .readdir(folder)
+                .then((names) =>
+                  names
+                    .filter((name) => /ocn|blaze|agentkit-acp-\d/i.test(name))
+                    .map((name) => path.join(folder, name)),
+                )
+                .catch(() => [] as string[]),
+            ),
+          ).then((lists) => lists.flat())
+        const tmpBefore = new Set(yield* Effect.promise(scratch))
         const rpc = (file: "in" | "out") =>
           Effect.promise(() =>
             fs
@@ -341,6 +353,11 @@ describe("agenthq agentkit (real, opt-in)", () => {
             .filter(Boolean)
             .map(Number)
         const remember = () => {
+          for (const pid of seen.keys()) {
+            const env = Bun.spawnSync(["ps", "-E", "-ww", "-p", String(pid), "-o", "command="]).stdout.toString()
+            const home = env.match(/(?:^|\s)BLAZE_STATE_HOME=(\S+)/)?.[1]
+            if (home) stateHomes.add(home)
+          }
           for (const pid of bridges()) {
             seen.set(pid, "agentkit-bridge acp --local-only")
             for (const item of tree(pid)) seen.set(item.pid, item.command)
@@ -392,8 +409,26 @@ describe("agenthq agentkit (real, opt-in)", () => {
         // ---- a. status: the provider, then initialize + session/new with the Workbench MCP server.
         const providers = (yield* call("/agenthq/providers")).body as AgentHQ.ProviderStatus[]
         const status = providers.find((item) => item.id === "agentkit")
-        report.status = status && { available: status.available, version: status.version, reason: status.reason }
+        bridge = status?.capabilities.notes?.[0]?.replace(/^Bridge: /, "") ?? ""
+        report.status = status && {
+          available: status.available,
+          version: status.version,
+          reason: status.reason,
+          bridge,
+        }
         expect(status).toMatchObject({ available: true })
+        expect(existsSync(bridge)).toBe(true)
+        yield* Effect.promise(async () => {
+          await fs.writeFile(
+            shim,
+            [
+              "#!/bin/sh",
+              '[ "$1" = "acp" ] || exit 64',
+              `tee -a '${logs}/in.jsonl' | '${bridge}' acp --local-only | tee -a '${logs}/out.jsonl'`,
+            ].join("\n"),
+          )
+          await fs.chmod(shim, 0o755)
+        })
         const created = yield* post("/agenthq/agents", {
           name: "Kit",
           avatar: { kind: "initials", value: "K" },
@@ -417,6 +452,7 @@ describe("agenthq agentkit (real, opt-in)", () => {
           mcpServers: opened?.params?.mcpServers?.map((item: { name: string }) => item.name),
           result: exchange.out.find((item) => item.id === opened?.id)?.result,
         }
+        remember()
         report.processes = [...seen.values()]
         report.socketsWhileRunning = yield* sockets()
         expect(initialize?.result?.agentCapabilities?.loadSession).toBe(false)
@@ -487,6 +523,9 @@ describe("agenthq agentkit (real, opt-in)", () => {
             check(`c: ${FILE} is untouched`, yield* untouched, undefined)
             const rest = yield* changed
             check("c: nothing else changed in the project", rest.length === 0, rest)
+            const status = yield* porcelain
+            check("c (new): git status --porcelain is empty", status.length === 0, status)
+            check("c (new): no .blaze in the project", !blaze(), undefined)
             const sets = yield* changesets()
             check(
               "c: no review changeset",
@@ -519,6 +558,7 @@ describe("agenthq agentkit (real, opt-in)", () => {
           check(`d: ${FILE} is untouched`, yield* untouched, undefined)
           const stray = (yield* changed).filter((line) => !before.includes(line))
           check("d: no stray edits", stray.length === 0, stray)
+          check("d (new): no .blaze in the project", !blaze(), undefined)
 
           // ---- b. A fix is proposed, applied by the human, reviewed and accepted, and the package builds.
           const askedFix = yield* ask(`fix the build error in ${FILE}`)
@@ -563,6 +603,14 @@ describe("agenthq agentkit (real, opt-in)", () => {
             }
             report.builds = yield* builds
             check("b: the package builds after the fix", report.builds === true, undefined)
+            const status = yield* porcelain
+            check(`b (new): only ${FILE} changed`, status.length === 1 && status[0] === ` M ${FILE}`, status)
+            check(
+              `b (new): review shows only ${FILE}`,
+              JSON.stringify(set?.files.map((file) => file.path)) === JSON.stringify([FILE]),
+              report.review,
+            )
+            check("b (new): no .blaze in the project", !blaze(), undefined)
           }
 
           // ---- e. Restart the IDE server: no session/load, a new AgentKit session, and the session says so.
@@ -611,6 +659,7 @@ describe("agenthq agentkit (real, opt-in)", () => {
             (questionEnd as { type?: string }).type === "turn.completed",
             questionEnd,
           )
+          check("e (new): no .blaze in the project", !blaze(), undefined)
         }
 
         // ---- f. Removing the identity ends the bridge's whole process group: nothing of ours is left.
@@ -627,6 +676,21 @@ describe("agenthq agentkit (real, opt-in)", () => {
           cleanup.processes.length === 0 && cleanup.sockets.length === 0,
           cleanup,
         )
+        report.stateHomes = [...stateHomes]
+        check("f (new): the daemons' temp state folders were seen", stateHomes.size > 0, undefined)
+        const kept = [...stateHomes].filter((home) => existsSync(home))
+        check("f (new): the daemons' temp state folders are gone", kept.length === 0, kept)
+        // New since the start, and ours: named after a bridge of this run (agentkit-acp-<pid>), or ocn-*/blaze.
+        const tmpLeft = (yield* Effect.promise(scratch)).filter((item) => {
+          if (tmpBefore.has(item)) return false
+          const pid = path.basename(item).match(/agentkit-acp-(\d+)/)?.[1]
+          return pid ? seen.has(Number(pid)) : true
+        })
+        report.tmpLeft = tmpLeft
+        const locks = tmpLeft.filter((item) => item.endsWith(".lock"))
+        const folders = tmpLeft.filter((item) => !item.endsWith(".lock"))
+        check("f (new): no temp state of ours left in TMPDIR or /tmp", folders.length === 0, folders)
+        check("f (new): no SwiftPM lock files of ours left in TMPDIR or /tmp", locks.length === 0, locks)
         expect(checks.filter((item) => !item.ok).map((item) => item.name)).toEqual([])
       }),
     1_800_000,

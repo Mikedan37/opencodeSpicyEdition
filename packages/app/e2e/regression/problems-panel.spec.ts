@@ -92,6 +92,141 @@ test("DIAG-12 language servers off: a banner over the list, and the empty state 
   await expect(panel).not.toContainText(off)
 })
 
+const ada = {
+  id: "agt_ada",
+  name: "Ada",
+  avatar: { kind: "preset", value: "fox", color: "orange" },
+  provider: "opencode",
+  projectDirectory: directory,
+  createdAt: 1,
+  updatedAt: 1,
+}
+
+test("UI-07 Fix with agent sends the problem's snapshot; Fix all in file sends the file's to an agent", async ({
+  page,
+}) => {
+  const mock = await setup(page)
+  mock.snapshot = snapshot([
+    {
+      ...problem("p_assign", 12, "Type 'string' is not assignable to type 'number'.", [
+        { ...tsc, runID: "run_tsc" },
+        { ...lsp, channel: "push" },
+      ]),
+      code: "TS2322",
+    },
+    {
+      ...problem("p_unused", 3, "'x' is declared but never used.", [{ ...lsp, channel: "pull" }]),
+      severity: "warning",
+    },
+  ])
+  mock.file = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n") + "\n"
+  mock.runs = [
+    {
+      id: "run_tsc",
+      kind: "check",
+      unit: `${directory}/tsconfig.json`,
+      checker: "tsc",
+      command: ["tsc", "--noEmit"],
+      execClass: "inert",
+      status: "failed",
+      startedAt: 1_700_000_000_000,
+      finishedAt: 1_700_000_000_900,
+      exitCode: 2,
+      counts: { error: 1, warning: 0, info: 0, hint: 0 },
+    },
+  ]
+  const panel = await openProblems(page)
+  const action = (selector: string) => panel.locator(selector).locator("xpath=..").locator('[data-action="handoff"]')
+  const menu = page.locator("[data-handoff-menu]")
+
+  // A problem row's picker: this session and the Agent HQ identity. This session gets exactly the problem's snapshot.
+  await action('[data-problem="p_assign"]').click()
+  await expect(menu.locator("[data-target]")).toHaveText(["This session", "Ada"])
+  await page.screenshot({ path: test.info().outputPath("ui07-picker.png") })
+  await menu.locator('[data-target="session"]').click()
+  await expect.poll(() => mock.prompts.length).toBe(1)
+  const prompt = mock.prompts[0]!
+  expect(prompt.path).toBe(`/session/${sessionID}/prompt_async`)
+  expect((prompt.body as { parts: { type: string; text: string }[] }).parts).toEqual([
+    expect.objectContaining({ type: "text", text: FIX_ONE }),
+  ])
+  await expect(page.getByText("Sent to this session", { exact: true })).toBeVisible()
+
+  // Fix all in file: the last used target comes first; Ada gets the file's snapshot as an Agent HQ message, and the
+  // toast links to the session that received it.
+  await action('[data-row="file"]').click()
+  await expect(menu.locator("[data-target]")).toHaveText([/^This session\s*Last used$/, "Ada"])
+  await menu.locator('[data-target="agent:agt_ada"]').click()
+  await expect.poll(() => mock.messages.length).toBe(1)
+  expect(mock.messages[0]).toEqual({ to: "agt_ada", text: FIX_FILE })
+  await expect(page.getByText("Sent to Ada", { exact: true })).toBeVisible()
+  await page.screenshot({ path: test.info().outputPath("ui07-sent.png") })
+  await page.getByRole("button", { name: "Open session" }).click()
+  await expect(page.locator('[data-workbench-tab="agents"]')).toHaveAttribute("aria-selected", "true")
+  await expect(page.locator('[data-component="agenthq-workspace"] [data-session="ags_ada"]')).toHaveAttribute(
+    "aria-current",
+    "true",
+  )
+
+  // Ada is now the default, also after a reload. Nothing else was sent.
+  await page.reload()
+  await expectSessionTitle(page, title)
+  await page.locator('[data-workbench-tab="problems"]').click()
+  await action('[data-problem="p_unused"]').click()
+  await expect(menu.locator("[data-target]")).toHaveText([/^Ada\s*Last used$/, "This session"])
+  await page.keyboard.press("Escape")
+  expect(mock.prompts).toHaveLength(1)
+  expect(mock.messages).toHaveLength(1)
+})
+
+const excerpt = (from: number, to: number, marked: number[]) =>
+  Array.from({ length: to - from + 1 }, (_, index) => {
+    const line = from + index
+    return `${marked.includes(line) ? ">" : " "} ${String(line).padStart(2)} | line ${line}`
+  })
+const VERIFIED =
+  "Latest verification run: tsc check of tsconfig.json: failed (exit code 2; 1 errors, 0 warnings; run run_tsc)."
+const FIX_ONE = [
+  "Fix this problem.",
+  "",
+  "File: src/app.ts",
+  "Severity: error",
+  "Range: 12:5-12:10",
+  "Code: TS2322",
+  "Message: Type 'string' is not assignable to type 'number'.",
+  "Sources: tsc (typecheck, run run_tsc), typescript (lsp, push)",
+  "",
+  'Source of src/app.ts (">" marks the problem lines):',
+  "```",
+  ...excerpt(2, 22, [12]),
+  "```",
+  "",
+  VERIFIED,
+].join("\n")
+const FIX_FILE = [
+  "Fix these 2 problems in src/app.ts.",
+  "",
+  "Problem 1 of 2",
+  "Severity: error",
+  "Range: 12:5-12:10",
+  "Code: TS2322",
+  "Message: Type 'string' is not assignable to type 'number'.",
+  "Sources: tsc (typecheck, run run_tsc), typescript (lsp, push)",
+  "",
+  "Problem 2 of 2",
+  "Severity: warning",
+  "Range: 3:5-3:10",
+  "Message: 'x' is declared but never used.",
+  "Sources: typescript (lsp, pull)",
+  "",
+  'Source of src/app.ts (">" marks the problem lines):',
+  "```",
+  ...excerpt(1, 22, [3, 12]),
+  "```",
+  "",
+  VERIFIED,
+].join("\n")
+
 function problem(id: string, line: number, message: string, sources: Record<string, unknown>[]) {
   return {
     id,
@@ -127,12 +262,18 @@ async function setup(page: Page) {
   const mock = {
     // GET /workbench/problems
     snapshot: snapshot([]),
+    // GET /workbench/file?path=src/app.ts and GET /workbench/runs
+    file: "",
+    runs: [] as unknown[],
+    // What this session's prompts and Agent HQ's messages received.
+    prompts: [] as { path: string; body: unknown }[],
+    messages: [] as unknown[],
     emit(...items: Record<string, unknown>[]) {
       pending.push(...items.map((item) => ({ directory, payload: { id: `evt_${Math.random()}`, ...item } })))
     },
   }
   await mockOpenCodeServer(page, {
-    protocol: "v2",
+    protocol: "v1",
     directory,
     project: {
       id: projectID,
@@ -178,7 +319,53 @@ async function setup(page: Page) {
   await page.route(`${server}/workbench/**`, (route) => {
     const url = new URL(route.request().url())
     if (url.pathname === "/workbench/problems") return json(route, mock.snapshot)
+    if (url.pathname === "/workbench/runs") return json(route, mock.runs)
+    if (url.pathname === "/workbench/file" && url.searchParams.get("path") === "src/app.ts")
+      return json(route, { content: mock.file, hash: "h1" })
     return json(route, { message: url.pathname }, 404)
+  })
+  // This session's prompt, whichever protocol the app speaks.
+  await page.route(/\/session\/[^/]+\/prompt(_async)?(\?|$)/, (route) => {
+    mock.prompts.push({ path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() })
+    return json(route, {})
+  })
+  await page.route(`${server}/agenthq/**`, (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path === "/agenthq/agents") return json(route, [ada])
+    if (path === "/agenthq/messages" && request.method() === "POST") {
+      const body = request.postDataJSON() as { to: string; text: string }
+      mock.messages.push(body)
+      return json(route, {
+        id: "amg_1",
+        from: "user",
+        to: body.to,
+        text: body.text,
+        evidenceIDs: [],
+        at: 1_700_000_000_500,
+        delivery: "delivered",
+        kind: "user",
+        sessionID: "ags_ada",
+        hops: 0,
+        relay: false,
+      })
+    }
+    if (path === "/agenthq/sessions/ags_ada")
+      return json(route, {
+        session: {
+          id: "ags_ada",
+          agentID: "agt_ada",
+          provider: "opencode",
+          title: "Messages",
+          status: "working",
+          pendingPermissions: 0,
+          createdAt: 1_700_000_000_500,
+          updatedAt: 1_700_000_000_500,
+        },
+        history: [],
+      })
+    // providers, sessions, tasks, messages: none
+    return json(route, [])
   })
   const ptyID = "pty_problems"
   const location = { directory, project: { id: projectID, directory } }

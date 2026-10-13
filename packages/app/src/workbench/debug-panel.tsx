@@ -12,7 +12,10 @@ import { errorText } from "./client"
 import { EXCEPTION_FILTERS, isLive, type Breakpoint } from "./debug"
 import { useDebug } from "./debug-context"
 import { DebugToolbar, OwnerChip, SessionPicker, VariableNode } from "./debug-ui"
+import { HandoffMenu } from "./handoff"
 import { useFileLineOpener } from "./open-file"
+import { useWorkbench } from "./panel"
+import { stopSnapshot } from "./snapshot"
 import { BUG_GLYPH, Glyph } from "./ui"
 
 const SECTIONS = ["stack", "variables", "watch", "breakpoints"] as const
@@ -23,6 +26,7 @@ const NOTE = "px-3 py-1 text-[12px] leading-[18px] text-v2-text-text-muted"
 // Side panel Debug tab: toolbar, call stack, variables, watches and breakpoints of the selected session.
 export default function DebugPanel() {
   const debug = useDebug()
+  const workbench = useWorkbench()
   const language = useLanguage()
   const [ui, setUi] = createStore({ closed: {} as Partial<Record<(typeof SECTIONS)[number], boolean>> })
   const session = () => debug.selected()
@@ -34,6 +38,15 @@ export default function DebugPanel() {
         <span class="mx-1 h-4 w-px shrink-0 bg-v2-border-border-muted" />
         <SessionPicker />
         <span class="flex-1" />
+        {/* UI-07: the stop as it is when a target is picked. */}
+        <Show when={session()?.state === "stopped" && session()?.stop}>
+          <HandoffMenu
+            text
+            label={language.t("workbench.handoff.investigate")}
+            class="shrink-0"
+            build={() => stopSnapshot({ root: workbench.directory, session: debug.selected()! })}
+          />
+        </Show>
         <Show when={session()}>{(current) => <OwnerChip session={current()} />}</Show>
       </div>
       <Status />

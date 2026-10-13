@@ -7,6 +7,8 @@ import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { useLanguage } from "@/context/language"
+import { errorText } from "./client"
+import { HandoffMenu } from "./handoff"
 import { useWorkbench } from "./panel"
 import {
   crashReason,
@@ -19,6 +21,7 @@ import {
   sourcesOf,
   type ProblemRow,
 } from "./problems"
+import { latestRun, problemSnapshot, shortPath } from "./snapshot"
 import { PanelState, RequestErrorState } from "./ui"
 import { VirtualList } from "./virtual-list"
 import { useFileLineOpener } from "./open-file"
@@ -47,6 +50,24 @@ export default function ProblemsPanel() {
     if (problem.file) openAt(problem.file, (problem.range?.start.line ?? 0) + 1)
   }
   const crashed = (problem: Workbench.Problem) => crashReason(problem, problems.state.snapshot?.producers ?? [])
+  // UI-07: what "Fix with agent" sends, made when a target is picked: the problems, the lines around them and the
+  // latest verification run.
+  const snapshotOf = async (list: readonly Workbench.Problem[], file: string | undefined) => {
+    const [source] = await Promise.all([
+      file
+        ? workbench.client.readFile(shortPath(workbench.directory, file)).then(
+            (result) => ({ text: result.content }),
+            (error: unknown) => ({ error: errorText(error) }),
+          )
+        : undefined,
+      workbench.runs.load(),
+    ])
+    const runs = workbench.runs.state.runs.map((entry) => entry.info)
+    return problemSnapshot({ root: workbench.directory, file, problems: list, source, run: latestRun(list, runs) })
+  }
+  const fix = (problem: Workbench.Problem) => snapshotOf([problem], problem.file)
+  const fixFile = (file: string | undefined) =>
+    snapshotOf(groups().find((group) => group.file === file)?.problems ?? [], file)
   const lspOff = () => problems.state.snapshot?.lsp === "off"
 
   return (
@@ -140,6 +161,8 @@ export default function ProblemsPanel() {
                 crashed={crashed}
                 onOpen={open}
                 onToggle={(key) => filter.set("collapsed", key, (value) => !value)}
+                onFix={fix}
+                onFixFile={fixFile}
               />
             )}
           </VirtualList>
@@ -165,34 +188,47 @@ export default function ProblemsPanel() {
   )
 }
 
+// The row's "with agent" action shows on hover and focus, and stays while its picker is open.
+const ACTION =
+  "mr-2 h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[expanded]:opacity-100"
+
 function Row(props: {
   row: ProblemRow
   crashed: (problem: Workbench.Problem) => string | undefined
   onOpen: (problem: Workbench.Problem) => void
   onToggle: (key: string) => void
+  onFix: (problem: Workbench.Problem) => Promise<string>
+  onFixFile: (file: string | undefined) => Promise<string>
 }) {
   const language = useLanguage()
   return (
     <Switch>
       <Match when={props.row.type === "file" ? props.row : undefined}>
         {(row) => (
-          <button
-            type="button"
-            data-row="file"
-            aria-expanded={!row().collapsed}
-            class="flex h-[26px] w-full items-center gap-1.5 px-3 text-left text-[12px] outline-none hover:bg-v2-overlay-simple-overlay-hover focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)]"
-            title={row().file}
-            onClick={() => props.onToggle(row().key)}
-          >
-            <Icon name={row().collapsed ? "chevron-right" : "chevron-down"} size="small" />
-            <span class="shrink-0 font-[530] text-v2-text-text-base">
-              {row().file ? getFilename(row().file) : language.t("workbench.problems.noFile")}
-            </span>
-            <span class="min-w-0 truncate text-v2-text-text-faint">{row().file ? getDirectory(row().file) : ""}</span>
-            <span class="ml-auto shrink-0 rounded-full bg-v2-background-bg-layer-02 px-1.5 text-[11px] tabular-nums text-v2-text-text-muted">
-              {row().count}
-            </span>
-          </button>
+          <div class="group flex h-[26px] items-center hover:bg-v2-overlay-simple-overlay-hover">
+            <button
+              type="button"
+              data-row="file"
+              aria-expanded={!row().collapsed}
+              class="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-3 pr-1 text-left text-[12px] outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)]"
+              title={row().file}
+              onClick={() => props.onToggle(row().key)}
+            >
+              <Icon name={row().collapsed ? "chevron-right" : "chevron-down"} size="small" />
+              <span class="shrink-0 font-[530] text-v2-text-text-base">
+                {row().file ? getFilename(row().file) : language.t("workbench.problems.noFile")}
+              </span>
+              <span class="min-w-0 truncate text-v2-text-text-faint">{row().file ? getDirectory(row().file) : ""}</span>
+              <span class="ml-auto shrink-0 rounded-full bg-v2-background-bg-layer-02 px-1.5 text-[11px] tabular-nums text-v2-text-text-muted">
+                {row().count}
+              </span>
+            </button>
+            <HandoffMenu
+              label={language.t("workbench.handoff.fixFile")}
+              class={ACTION}
+              build={() => props.onFixFile(row().file)}
+            />
+          </div>
         )}
       </Match>
       <Match when={props.row.type === "problem" ? props.row.problem : undefined}>
@@ -200,57 +236,64 @@ function Row(props: {
           const line = () => (problem().range?.start.line ?? 0) + 1
           const column = () => (problem().range?.start.character ?? 0) + 1
           return (
-            <button
-              type="button"
-              data-row="problem"
-              data-problem={problem().id}
-              disabled={!problem().file}
-              aria-label={
-                problem().file
-                  ? language.t("workbench.problems.open", { file: getFilename(problem().file), line: line() })
-                  : undefined
-              }
-              class="flex h-[26px] w-full items-center gap-2 pl-8 pr-3 text-left text-[12px] outline-none enabled:hover:bg-v2-overlay-simple-overlay-hover focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)]"
-              onClick={() => props.onOpen(problem())}
-            >
-              <span
-                class={`size-2 shrink-0 rounded-full ${SEVERITY_DOT[problem().severity]}`}
-                title={language.t(`workbench.problems.severity.${problem().severity}`)}
-              />
-              <span class="min-w-0 truncate text-v2-text-text-base" title={problem().message}>
-                {problem().message}
-              </span>
-              <Show when={problem().code !== undefined}>
-                <span class="shrink-0 font-mono text-[11px] text-v2-text-text-faint">{String(problem().code)}</span>
-              </Show>
-              <span
-                data-slot="problem-sources"
-                class="shrink-0 text-[11px] text-v2-text-text-faint"
-                title={sourcesOf(problem())
-                  .map((source) => `${source.tool}: ${source.kind}${source.channel ? ` (${source.channel})` : ""}`)
-                  .join("\n")}
+            <div class="group flex h-[26px] items-center hover:bg-v2-overlay-simple-overlay-hover">
+              <button
+                type="button"
+                data-row="problem"
+                data-problem={problem().id}
+                disabled={!problem().file}
+                aria-label={
+                  problem().file
+                    ? language.t("workbench.problems.open", { file: getFilename(problem().file), line: line() })
+                    : undefined
+                }
+                class="flex h-full min-w-0 flex-1 items-center gap-2 pl-8 pr-1 text-left text-[12px] outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)]"
+                onClick={() => props.onOpen(problem())}
               >
-                {sourceLabel(problem())}
-              </span>
-              <Show when={problem().stale}>
-                <Tag
-                  class="shrink-0"
-                  data-slot="problem-stale"
-                  title={
-                    props.crashed(problem()) === undefined
-                      ? language.t("workbench.problems.stale.description")
-                      : language.t("workbench.problems.stale.crashed", { reason: props.crashed(problem())! })
-                  }
-                >
-                  {language.t("workbench.problems.stale")}
-                </Tag>
-              </Show>
-              <Show when={problem().range}>
-                <span class="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-v2-text-text-muted">
-                  {line()}:{column()}
+                <span
+                  class={`size-2 shrink-0 rounded-full ${SEVERITY_DOT[problem().severity]}`}
+                  title={language.t(`workbench.problems.severity.${problem().severity}`)}
+                />
+                <span class="min-w-0 truncate text-v2-text-text-base" title={problem().message}>
+                  {problem().message}
                 </span>
-              </Show>
-            </button>
+                <Show when={problem().code !== undefined}>
+                  <span class="shrink-0 font-mono text-[11px] text-v2-text-text-faint">{String(problem().code)}</span>
+                </Show>
+                <span
+                  data-slot="problem-sources"
+                  class="shrink-0 text-[11px] text-v2-text-text-faint"
+                  title={sourcesOf(problem())
+                    .map((source) => `${source.tool}: ${source.kind}${source.channel ? ` (${source.channel})` : ""}`)
+                    .join("\n")}
+                >
+                  {sourceLabel(problem())}
+                </span>
+                <Show when={problem().stale}>
+                  <Tag
+                    class="shrink-0"
+                    data-slot="problem-stale"
+                    title={
+                      props.crashed(problem()) === undefined
+                        ? language.t("workbench.problems.stale.description")
+                        : language.t("workbench.problems.stale.crashed", { reason: props.crashed(problem())! })
+                    }
+                  >
+                    {language.t("workbench.problems.stale")}
+                  </Tag>
+                </Show>
+                <Show when={problem().range}>
+                  <span class="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-v2-text-text-muted">
+                    {line()}:{column()}
+                  </span>
+                </Show>
+              </button>
+              <HandoffMenu
+                label={language.t("workbench.handoff.fix")}
+                class={ACTION}
+                build={() => props.onFix(problem())}
+              />
+            </div>
           )
         }}
       </Match>

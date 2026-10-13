@@ -826,6 +826,56 @@ test("CON-07 a raw LLDB command waits for its ask under the command; a rejection
   ])
 })
 
+test("UI-07 Investigate with agent sends the stop's snapshot", async ({ page }) => {
+  const mock = await setup(page)
+  mock.sessions = [session()]
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  const stop = {
+    ...stopAt(1),
+    reason: "exception",
+    description: "Paused on exception",
+    exception: { id: "ZeroDivisionError", description: "division by zero" },
+  }
+  mock.emit(updated({ state: "stopped", stop, investigationID: "inv_debug" }))
+  const panel = page.locator("#review-panel")
+  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
+  await panel.locator('[data-workbench-side-tab="debug"]').click()
+  const debug = panel.locator('[data-component="workbench-debug"]')
+  const investigate = debug.locator('[data-action="handoff"]')
+  await expect(investigate).toHaveText("Investigate with agent")
+  await investigate.click()
+  const menu = page.locator("[data-handoff-menu]")
+  await expect(menu.locator("[data-target]")).toHaveText(["This session", "Ada"])
+  await page.screenshot({ path: test.info().outputPath("ui07-investigate.png") })
+  await menu.locator('[data-target="agent:agt_ada"]').click()
+  await expect.poll(() => mock.messages.length).toBe(1)
+  expect(mock.messages[0]).toEqual({
+    to: "agt_ada",
+    text: [
+      "Investigate this debugger stop.",
+      "",
+      "Program: app.py (debugpy, debug session dbg_one)",
+      "Reason: exception (Paused on exception)",
+      "Exception: ZeroDivisionError: division by zero",
+      "Investigation: inv_debug",
+      "",
+      "Top frames:",
+      "1. main at app.py:4",
+      "2. <module> at app.py:12",
+      "",
+      "Locals of main:",
+      "- x: int = 1",
+      "- items: list = [0, 1, 2, ...]",
+    ].join("\n"),
+  })
+  await expect(page.getByText("Sent to Ada", { exact: true })).toBeVisible()
+
+  // Only a stop can be investigated.
+  mock.emit(updated({ state: "running" }))
+  await expect(investigate).toHaveCount(0)
+})
+
 // The reply the page sends for a permission ask, within 10 s.
 async function replyTo(mock: { replies: { id: string; reply: unknown }[] }, id: string) {
   for (let tries = 0; tries < 200; tries++) {
@@ -902,6 +952,8 @@ async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
     investigation: {} as Record<string, unknown>,
     // POST /permission/:id/reply
     replies: [] as { id: string; reply: unknown }[],
+    // POST /agenthq/messages (Ada is the one Agent HQ identity)
+    messages: [] as unknown[],
     completions: [] as string[],
     startError: undefined as string | undefined,
     starts: [] as unknown[],
@@ -974,6 +1026,41 @@ async function setup(page: Page, options: { vcsDiff?: unknown[] } = {}) {
       headers: { "access-control-allow-origin": "*" },
       body: JSON.stringify(body),
     })
+
+  await page.route(`${server}/agenthq/**`, (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path === "/agenthq/agents")
+      return json(route, [
+        {
+          id: "agt_ada",
+          name: "Ada",
+          avatar: { kind: "preset", value: "fox", color: "orange" },
+          provider: "opencode",
+          projectDirectory: directory,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ])
+    if (path === "/agenthq/messages" && request.method() === "POST") {
+      const body = request.postDataJSON() as { to: string; text: string }
+      mock.messages.push(body)
+      return json(route, {
+        id: "amg_1",
+        from: "user",
+        to: body.to,
+        text: body.text,
+        evidenceIDs: [],
+        at: 1,
+        delivery: "delivered",
+        kind: "user",
+        sessionID: "ags_ada",
+        hops: 0,
+        relay: false,
+      })
+    }
+    return json(route, [])
+  })
 
   await page.route(`${server}/permission/*/reply*`, (route) => {
     const id = new URL(route.request().url()).pathname.split("/")[2]!

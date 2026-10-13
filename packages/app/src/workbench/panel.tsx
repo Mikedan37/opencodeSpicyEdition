@@ -35,6 +35,7 @@ import { Persist, persisted } from "@/utils/persist"
 import { createWorkbenchClient } from "./client"
 import { DebugProvider } from "./debug-context"
 import { EditorProvider } from "./editor-context"
+import { createHandoff } from "./handoff"
 import { createProblemsState, type ProblemFilter } from "./problems"
 import { createInvestigationsState } from "./investigations"
 import { createRunsState, isFinished } from "./runs"
@@ -150,6 +151,7 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       open(next)
       withView((view) => view.terminal.open())
     }
+    const handoff = createHandoff({ directory, showAgents: () => show("agents") })
     // The Debug tab of the side panel (workbench/debug-side.tsx) shows over whatever tab the panel has selected.
     const [side, setSide] = createSignal(false)
     const showSide = () => {
@@ -196,6 +198,7 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       runs,
       investigations,
       tools,
+      handoff,
       problemFilter: { state: problemFilter, set: setProblemFilter },
     }
   },

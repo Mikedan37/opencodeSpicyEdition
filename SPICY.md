@@ -7,19 +7,20 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 |---|---|---|
 | `packages/schema/src/event-manifest.ts` | Import `Workbench`, `AgentHQ` and `Review`; add their `Event.Definitions` to `featureDefinitions` | Workbench, Agent HQ and review events reach the server and client manifests |
 | `packages/core/src/v1/config/config.ts` | Optional `workbench` key (`ConfigWorkbenchV1`, new file `config/workbench.ts`) | Repository-defined check commands (VER-07); always exec-class, never run on load |
-| `packages/opencode/src/agent/agent.ts` | Default permissions `verify.exec` ask, `debug.*` ask, `debug.memory` deny | The built-in `"*": "allow"` would otherwise allow these silently |
+| `packages/opencode/src/agent/agent.ts` | Default permissions `verify.exec` ask, `debug.*` ask, `debug.memory` deny, `custom_*` ask (after `"*": "allow"`) | The built-in `"*": "allow"` would otherwise allow these silently |
 | `packages/opencode/src/lsp/client.ts` | Honor `workspace/diagnostic/refresh`, bounded warm-up for runtime-registered pull servers, process-exit detection, `processId` = opencode pid, diagnostics hook (`emitDiagnostics`) | REG-01/02/09/10; Workbench problem store |
 | `packages/opencode/src/lsp/lsp.ts` | `broken` keeps reason + retry backoff, crash watcher, `status()` reports `"error"`, `diagnosticEvents()` subscription | REG-02/09; problem store |
 | `packages/opencode/src/lsp/server.ts` | Strict gopls root, `*`-prefixed markers match by suffix, sourcekit `.m`/`.mm` only inside Swift/Xcode projects, TS/biome respect `OPENCODE_DISABLE_LSP_DOWNLOAD` | REG-03..06 |
 | `packages/opencode/src/lsp/diagnostic.ts` | Report lines include source and code, plus a warnings count | DIAG-10 |
 | `packages/opencode/src/tool/{edit,write,apply_patch}.ts` | Metadata keeps touched files' diagnostics plus counts, not the workspace map | REG-08 |
-| `packages/opencode/src/tool/registry.ts` | Register the `check` tool | Verification engine |
+| `packages/opencode/src/tool/registry.ts` | Register the `check`, `debug` and `tool_create` tools; `ToolRegistry.refresh()`; created `custom_*` tools imported fresh (`?v=<mtime>`), asked before every call, and skipped with a warning if they fail to load | Verification engine, debugger, tool creator |
 | `packages/opencode/src/session/prompt.ts` | Turn-end verification gate at the loop exit | P2 gate (`OPENCODE_VERIFY_GATE=off\|report-only\|fix`) |
 | `packages/opencode/src/cli/cmd/debug/index.ts` | `debug workbench` subcommand | Doctor |
-| `packages/opencode/src/server/routes/instance/httpapi/{api,server}.ts` | Compose `AgentHQApi`, `WorkbenchApi`, `WorkbenchDebugApi`, `ReviewApi`; provide their handlers and services (Agent HQ orchestrator, verification runs, review store) | New route groups |
+| `packages/opencode/src/server/routes/instance/httpapi/{api,server}.ts` | Compose `AgentHQApi`, `WorkbenchApi`, `WorkbenchDebugApi`, `WorkbenchToolsApi`, `ReviewApi`; provide their handlers and services (Agent HQ orchestrator, verification runs, review store) | New route groups |
 | `packages/opencode/src/index.ts` | Register `WorkbenchCommand` (`opencode workbench mcp`) | Workbench MCP bridge for agents outside opencode |
 | `packages/opencode/package.json`, `bun.lock` | Add `@anthropic-ai/claude-agent-sdk` pinned to `0.3.293` | Claude Code provider adapter (approved by the owner 2026-10-11) |
 | `packages/opencode/test/server/httpapi-exercise/index.ts` | Register Agent HQ, Workbench, debug and review route scenarios | `test:httpapi --fail-on-missing` covers every route |
+| `packages/opencode/test/session/tools.test.ts` | Expectations include the fork's built-in tools | Tool creator / workbench tools registered |
 | `packages/opencode/test/event-manifest.test.ts` | Expected size is upstream 88 + the fork's event definitions | Fork events sit on top of upstream's count |
 | `packages/opencode/test/cli/help/__snapshots__/help-snapshots.test.ts.snap` | `opencode debug workbench` line in the `debug --help` snapshot | Doctor subcommand |
 | `packages/opencode/test/lsp/{client,index}.test.ts`, `test/fixture/lsp/fake-lsp-server.js` | `refreshSupport` now true; fake server variants for the sourcekit pattern and dying servers | REG tests |

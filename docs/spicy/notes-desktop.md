@@ -322,3 +322,25 @@ does not exit.**
 
 In both runs: keychain unchanged, crash reports 92 → 92, no process left, no dialog. Screenshots of the failing run:
 `docs/spicy/desktop-smoke/20261012T234857/`.
+
+## Tools run on `spicy-ide` a163eb71b: 67/67
+
+New section, after Activity:
+
+- New tool drafts `greet` from the template, and nothing runs: there is only `.opencode/tool-drafts/greet.ts`.
+- It waits under Drafts, labelled "You", and the tab shows a badge of 1.
+- Approve (a click) moves it to `tool/custom_greet.ts`, and the list returns an `inputSchema`.
+- The Test run form returns `hello Ada`.
+- Disable renames the file to `.disabled`. Delete asks "Delete custom_greet?", and once answered in the dialog, the
+  tool and its files are gone.
+
+The fixture's `.opencode` holds `@opencode-ai/plugin` as npm ships it: this tree's `tsc` output with JS exports, `zod`
+beside it, and the manifest and lockfile config looks for. So approving installs nothing.
+
+The e2e spec instead links the repo's TypeScript source. That works under Bun, but the desktop sidecar runs under Node,
+which refuses it. With the desktop's server bundle under Node 22, approving failed with "it failed to load: Cannot find
+module …/packages/plugin/src/tool.js imported from …/src/index.ts", because the source imports `./tool.js`. With the
+compiled package, approve and run passed. Users get the compiled package from npm.
+
+Everything else passes as in the 64/64 run. Keychain unchanged, crash reports 92 → 92, no process left, no dialog.
+Screenshots: `docs/spicy/desktop-smoke/20261013T005724/` (31, `27-tools-new` … `30-tools-delete`).

@@ -24,6 +24,8 @@
 //   entry, the stop brings app.py forward, a click in the editor's gutter sets a breakpoint, F5 to it, the stack and
 //   variables, a Debug Console evaluation, F5 to the end, the Run tab's exit code and output.
 // - Activity: the tab renders (no investigations yet).
+// - Tools: New tool drafts a tool (nothing runs), it waits under Drafts with the badge, Approve enables it, a Test run
+//   returns its output, Disable, then Delete, which asks first.
 // - Quit mid-turn the way the menu does (app.quit()) and restart on the same root: the record says interrupted right
 //   after the quit, history recovered. After the restart (answer: discard), an unsaved edit does not stop the quit.
 //   No process of the app is left after each quit. Afterwards the throwaway keychain is deleted, and the real
@@ -179,6 +181,7 @@ const project = await createProject(path.join(root, "felix-demo"))
 const dir = `?directory=${encodeURIComponent(project)}`
 const tscMissing = await provideTsc(project)
 const debugpyMissing = await provideDebugpy(path.join(root, "home"))
+const pluginMissing = await providePlugin(project)
 const read = (file: string) => readFile(path.join(project, file), "utf8").catch(() => "")
 const git = (...args: string[]) => spawnSync("git", args, { cwd: project, env: gitEnv, encoding: "utf8" }).stdout.trim()
 
@@ -833,6 +836,75 @@ try {
     }),
   )
 
+  // ---------------------------------------------------------------- tools: draft, approve, test run, disable, delete
+  if (pluginMissing) skip("tools", pluginMissing)
+  else
+    await section(async () => {
+      const panel = '[data-component="workbench-tools"]'
+      const detail = `${panel} [data-component="workbench-tool"][data-tool="greet"]`
+      const status = `${query(detail)}?.getAttribute("data-status")`
+      const onDisk = (file: string) => existsSync(path.join(project, ".opencode", file))
+      await step("Tools: New tool drafts greet; it waits under Drafts and nothing runs", async () => {
+        await panelTab(renderer!, "tools")
+        await renderer!.waitFor(`${textOf(panel)}.includes("No tools yet")`, "the empty Tools tab")
+        await renderer!.click(`${panel} [data-action="tool-new"]`)
+        const form = `${panel} [data-component="workbench-tool-new"]`
+        await renderer!.waitFor(`${textOf(`${form} .cm-content`)}.includes("@opencode-ai/plugin")`, "the template")
+        await renderer!.type(`${form} input[name="name"]`, "greet")
+        await renderer!.type(`${form} input[name="description"]`, "Greets someone")
+        await shot("tools-new")
+        await renderer!.click(`${form} [data-action="tool-save"]`)
+        await renderer!.waitFor(`${status} === "draft"`, "the draft")
+        await renderer!.waitFor(
+          `${textOf(`${panel} [data-tool-group="draft"] [data-tool="greet"]`)}.includes("You")`,
+          "greet under Drafts, by You",
+        )
+        await renderer!.waitFor(`${textOf('[data-workbench-tab="tools"]')}.includes("1")`, "the tab's badge")
+        if (!onDisk("tool-drafts/greet.ts") || onDisk("tool/custom_greet.ts"))
+          throw new Error("expected only the draft file before approval")
+        await shot("tools-draft")
+      })
+      await step(
+        "Approve (a click) enables custom_greet; a Test run returns its output",
+        async () => {
+          await renderer!.click(`${detail} [data-action="tool-approve"]`)
+          await renderer!.waitFor(`${status} === "enabled"`, "enabled")
+          await renderer!.waitFor(exists(`${panel} [data-tool-group="enabled"] [data-tool="greet"]`), "under Enabled")
+          if (!onDisk("tool/custom_greet.ts") || onDisk("tool-drafts/greet.ts"))
+            throw new Error("the files did not move")
+          const listed = await api<{ name: string; status: string; inputSchema?: unknown }[]>(
+            server,
+            "GET",
+            `/workbench/tools${dir}`,
+          )
+          if (listed.find((tool) => tool.name === "greet")?.inputSchema === undefined)
+            throw new Error(`no inputSchema: ${JSON.stringify(listed)}`)
+          await renderer!.type(`${detail} [data-slot="tool-run"] input[name="name"]`, "Ada")
+          await renderer!.click(`${detail} [data-slot="tool-run"] [data-action="tool-run"]`)
+          await renderer!.waitFor(
+            `${textOf(`${detail} [data-slot="tool-run-result"] pre`)} === "hello Ada"`,
+            "the test run's output",
+          )
+          await shot("tools-run")
+          return "hello Ada"
+        },
+        (value) => value,
+      )
+      await step("Disable, then Delete (it asks first; answered in the UI)", async () => {
+        await renderer!.click(`${detail} [data-action="tool-disable"]`)
+        await renderer!.waitFor(`${status} === "disabled"`, "disabled")
+        if (!onDisk("tool/custom_greet.ts.disabled")) throw new Error("no disabled file")
+        await renderer!.click(`${detail} [data-action="tool-delete"]`)
+        await renderer!.waitFor(`${textOf('[role="dialog"]')}.includes("Delete custom_greet?")`, "the delete question")
+        await shot("tools-delete")
+        await renderer!.click('[role="dialog"] button', "Delete")
+        await renderer!.waitFor(`!${exists(`${panel} [data-tool-group] [data-tool="greet"]`)}`, "greet gone")
+        const listed = await api<unknown[]>(server, "GET", `/workbench/tools${dir}`)
+        if (listed.length || onDisk("tool/custom_greet.ts.disabled") || onDisk("tool-drafts/greet.ts"))
+          throw new Error(`left: ${JSON.stringify(listed)}`)
+      })
+    })
+
   // ---------------------------------------------------------------- quit mid-turn, restart, recover
   await section(async () => {
     await step("send a turn and quit while it streams", async () => {
@@ -1141,6 +1213,43 @@ async function createProject(dir: string) {
     if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`)
   }
   return realpathSync(dir)
+}
+
+// @opencode-ai/plugin in the project's .opencode as npm ships it (tsc's JS with JS exports, zod beside it), with the
+// manifest and lockfile config looks for, so approving a tool installs nothing. Not a link to the repo's TypeScript
+// source as the e2e spec does: the desktop sidecar runs under Node, which cannot load that source (its imports name
+// ./tool.js). The reason to skip otherwise.
+async function providePlugin(project: string) {
+  const source = path.resolve(DESKTOP_DIR, "../plugin")
+  const opencode = path.join(project, ".opencode")
+  const plugin = path.join(opencode, "node_modules", "@opencode-ai", "plugin")
+  const built = spawnSync(
+    path.join(source, "node_modules", ".bin", "tsc"),
+    ["-p", "tsconfig.json", "--outDir", path.join(plugin, "dist")],
+    {
+      cwd: source,
+      encoding: "utf8",
+    },
+  )
+  if (!existsSync(path.join(plugin, "dist", "index.js")) || !existsSync(path.join(plugin, "dist", "tool.js")))
+    return `could not build @opencode-ai/plugin: ${built.stdout}${built.stderr}`.trim()
+  const entry = (name: string) => ({ import: `./dist/${name}.js`, types: `./dist/${name}.d.ts` })
+  await Bun.write(
+    path.join(plugin, "package.json"),
+    JSON.stringify({
+      name: "@opencode-ai/plugin",
+      type: "module",
+      exports: { ".": entry("index"), "./tool": entry("tool") },
+    }),
+  )
+  await symlink(
+    realpathSync(path.join(source, "node_modules", "zod")),
+    path.join(opencode, "node_modules", "zod"),
+    "dir",
+  )
+  const dependencies = { "@opencode-ai/plugin": "*" }
+  await Bun.write(path.join(opencode, "package.json"), JSON.stringify({ dependencies }))
+  await Bun.write(path.join(opencode, "package-lock.json"), JSON.stringify({ packages: { "": { dependencies } } }))
 }
 
 // tsc from this tree as the project's own (the checker prefers node_modules/.bin/tsc); the reason to skip otherwise.

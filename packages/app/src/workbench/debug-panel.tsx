@@ -4,18 +4,20 @@ import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
+import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
+import { useSettingsDialog } from "@/components/settings-dialog"
 import { useLanguage } from "@/context/language"
 import { showToast } from "@/utils/toast"
 import { errorText } from "./client"
-import { EXCEPTION_FILTERS, isLive, type Breakpoint } from "./debug"
+import { EXCEPTION_FILTERS, humanDrives, isLive, stopReason, type Breakpoint } from "./debug"
 import { useDebug } from "./debug-context"
 import { DebugToolbar, OwnerChip, SessionPicker, VariableNode } from "./debug-ui"
 import { HandoffMenu } from "./handoff"
 import { useFileLineOpener } from "./open-file"
 import { useWorkbench } from "./panel"
-import { stopSnapshot } from "./snapshot"
+import { STOP_CONTEXT, stopSnapshot, stopSummary } from "./snapshot"
 import { BUG_GLYPH, Glyph } from "./ui"
 
 const SECTIONS = ["stack", "variables", "watch", "breakpoints"] as const
@@ -30,6 +32,11 @@ export default function DebugPanel() {
   const language = useLanguage()
   const [ui, setUi] = createStore({ closed: {} as Partial<Record<(typeof SECTIONS)[number], boolean>> })
   const session = () => debug.selected()
+  debug.showingSide()
+  const canHand = () => {
+    const current = session()
+    return !!current && isLive(current) && humanDrives(current)
+  }
 
   return (
     <div data-component="workbench-debug" class="flex min-h-0 flex-1 flex-col">
@@ -38,14 +45,38 @@ export default function DebugPanel() {
         <span class="mx-1 h-4 w-px shrink-0 bg-v2-border-border-muted" />
         <SessionPicker />
         <span class="flex-1" />
-        {/* UI-07: the stop as it is when a target is picked. */}
-        <Show when={session()?.state === "stopped" && session()?.stop}>
+        {/* UX #13: one menu for an agent: investigate this stop (UI-07, the stop as it is when a target is picked),
+            or let the agent drive */}
+        <Show when={session()?.state === "stopped" || canHand()}>
           <HandoffMenu
-            text
-            label={language.t("workbench.handoff.investigate")}
+            action="ask-agent"
+            label={language.t("workbench.debug.askAgent")}
+            heading={language.t("workbench.debug.investigateWith")}
             class="shrink-0"
-            build={() => stopSnapshot({ root: workbench.directory, session: debug.selected()! })}
-          />
+            build={
+              session()?.state === "stopped" && session()?.stop
+                ? () => {
+                    const input = { root: workbench.directory, session: debug.selected()! }
+                    return { summary: stopSummary(input), context: stopSnapshot(input), name: STOP_CONTEXT }
+                  }
+                : undefined
+            }
+          >
+            <Show when={canHand()}>
+              <MenuV2.Item
+                data-action="debug-hand-to-agent"
+                class="h-auto! py-1!"
+                onSelect={() => void debug.setOwner("agent", session()!.id)}
+              >
+                <span class="flex flex-col gap-1">
+                  {language.t("workbench.debug.handToAgent")}
+                  <span class="text-[11px] text-v2-text-text-muted">
+                    {language.t("workbench.debug.handToAgent.description")}
+                  </span>
+                </span>
+              </MenuV2.Item>
+            </Show>
+          </HandoffMenu>
         </Show>
         <Show when={session()}>{(current) => <OwnerChip session={current()} />}</Show>
       </div>
@@ -86,13 +117,13 @@ export default function DebugPanel() {
 function Status() {
   const debug = useDebug()
   const language = useLanguage()
+  const openSetup = useSettingsDialog("workbench")
   const text = () => {
     const current = debug.selected()
     if (debug.state.list === "unavailable") return language.t("workbench.debug.unavailable")
     if (!current) return language.t("workbench.debug.status.none")
     if (current.state === "stopped" && current.stop) {
-      const reason = current.stop.description || current.stop.reason
-      return language.t("workbench.debug.status.stopped", { reason })
+      return language.t("workbench.debug.status.stopped", { reason: stopReason(current.stop) })
     }
     if (current.state === "failed" && current.error)
       return language.t("workbench.debug.status.failed", { error: current.error })
@@ -100,15 +131,18 @@ function Status() {
   }
   const exception = () => debug.selected()?.stop?.exception
   return (
-    <div class="shrink-0 px-3 py-1.5" data-slot="debug-status">
+    <div role="status" class="shrink-0 px-3 py-1.5" data-slot="debug-status">
       <Show
         when={debug.selected() || debug.state.list === "unavailable"}
         fallback={
-          <div class="flex items-center gap-2 text-[12px] text-v2-text-text-muted">
+          <div class="flex flex-wrap items-center gap-2 text-[12px] text-v2-text-text-muted">
             <span class="text-v2-icon-icon-muted">
               <Glyph path={BUG_GLYPH} size={16} />
             </span>
-            {text()}
+            <span class="min-w-0 flex-1">{text()}</span>
+            <ButtonV2 size="small" variant="ghost" data-action="open-setup" onClick={openSetup}>
+              {language.t("workbench.setup.open")}
+            </ButtonV2>
           </div>
         }
       >
@@ -116,7 +150,7 @@ function Status() {
           class="select-text text-[12px] leading-[18px]"
           classList={{
             "text-v2-state-fg-danger": debug.selected()?.state === "failed",
-            "text-v2-state-fg-warning": debug.selected()?.state === "stopped",
+            "text-[var(--spicy-fg-warning)]": debug.selected()?.state === "stopped",
             "text-v2-text-text-muted": debug.selected()?.state !== "failed" && debug.selected()?.state !== "stopped",
           }}
         >
@@ -162,7 +196,7 @@ function CallStack() {
                     classList={{ "bg-v2-state-fg-warning": current(), "bg-transparent": !current() }}
                   />
                   <span class="min-w-0 truncate font-mono text-v2-text-text-base">{frame.name}</span>
-                  <span class="ml-auto shrink-0 font-mono text-[11px] text-v2-text-text-faint">
+                  <span class="ml-auto shrink-0 font-mono text-[11px] text-v2-text-text-muted">
                     {frame.file ? `${getFilename(frame.file)}:${frame.line ?? ""}` : ""}
                   </span>
                 </button>
@@ -306,7 +340,7 @@ function Watches() {
                   fallback={
                     <div class={`${ROW} font-mono`} title={value()?.text}>
                       <span class="shrink-0 text-v2-text-text-accent">{expression}</span>
-                      <span class="shrink-0 text-v2-text-text-faint">=</span>
+                      <span class="shrink-0 text-v2-text-text-muted">=</span>
                       <span
                         class="min-w-0 truncate"
                         classList={{
@@ -420,7 +454,7 @@ function Breakpoints() {
             <div data-breakpoint-file={file}>
               <div class="flex h-[22px] items-center gap-1.5 px-3 text-[12px]" title={file}>
                 <span class="shrink-0 font-[530] text-v2-text-text-base">{getFilename(file)}</span>
-                <span class="min-w-0 truncate text-v2-text-text-faint">
+                <span class="min-w-0 truncate text-v2-text-text-muted">
                   {file.includes("/") ? getDirectory(file) : ""}
                 </span>
               </div>
@@ -462,7 +496,7 @@ function Breakpoints() {
                               .join(" · ")}
                           </span>
                           <Show when={state()?.verified === false}>
-                            <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-faint">
+                            <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-muted">
                               {language.t("workbench.debug.breakpoints.unverified")}
                             </span>
                           </Show>

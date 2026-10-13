@@ -132,11 +132,11 @@ describe("editor mappings", () => {
         doc,
       ),
     ).toEqual([
-      { from: 20, to: 21, severity: "error", message: "undefined name x", source: "pyright" },
-      { from: 13, to: 21, severity: "error", message: "undefined name x", source: "pyright" },
-      { from: 22, to: 22, severity: "error", message: "undefined name x", source: "pyright" },
+      { from: 20, to: 21, severity: "error", message: "undefined name x", source: "pyright", id: "p1" },
+      { from: 13, to: 21, severity: "error", message: "undefined name x", source: "pyright", id: "p1" },
+      { from: 22, to: 22, severity: "error", message: "undefined name x", source: "pyright", id: "p9" },
       // A point (tsc reports one) marks the word that starts there: "return".
-      { from: 13, to: 19, severity: "error", message: "undefined name x", source: "pyright" },
+      { from: 13, to: 19, severity: "error", message: "undefined name x", source: "pyright", id: "p1" },
     ])
   })
 

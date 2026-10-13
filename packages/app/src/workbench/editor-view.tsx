@@ -60,6 +60,7 @@ import { useSessionLayout } from "@/pages/session/session-layout"
 import { showToast } from "@/utils/toast"
 import { errorText } from "./client"
 import { HIGHLIGHT, loadLanguage, THEME } from "./codemirror"
+import { stopException } from "./debug"
 import { useDebug } from "./debug-context"
 import {
   diagnosticsFor,
@@ -78,7 +79,7 @@ import { useWorkbench } from "./panel"
 
 // ---------------------------------------------------------------- debugger and comment decorations
 
-type Marks = { breakpoints: Map<number, BreakpointMark>; exec?: number; values?: string }
+type Marks = { breakpoints: Map<number, BreakpointMark>; exec?: number; values?: string; exception?: string }
 const setMarks = StateEffect.define<Marks>()
 const marksField = StateField.define<Marks>({
   create: () => ({ breakpoints: new Map() }),
@@ -132,18 +133,25 @@ const spacer = new (class extends GutterMarker {
 const execGutterMarker = new (class extends GutterMarker {
   override elementClass = "cm-spicy-exec-gutter"
 })()
+const exceptionGutterMarker = new (class extends GutterMarker {
+  override elementClass = "cm-spicy-exec-gutter cm-spicy-exec-exception"
+})()
 
-class ValuesWidget extends WidgetType {
-  constructor(readonly text: string) {
+// A row under the paused line: the exception it stopped on (red), or the top frame's values.
+class NoteWidget extends WidgetType {
+  constructor(
+    readonly kind: "values" | "exception",
+    readonly text: string,
+  ) {
     super()
   }
-  override eq(other: ValuesWidget) {
-    return other.text === this.text
+  override eq(other: NoteWidget) {
+    return other.kind === this.kind && other.text === this.text
   }
   override toDOM() {
     const row = document.createElement("div")
-    row.className = "cm-spicy-values"
-    row.dataset.debugValues = ""
+    row.className = `cm-spicy-${this.kind}`
+    row.dataset[this.kind === "values" ? "debugValues" : "debugException"] = ""
     row.textContent = this.text
     row.title = this.text
     return row
@@ -151,22 +159,28 @@ class ValuesWidget extends WidgetType {
 }
 
 const execDecorations = EditorView.decorations.compute([marksField], (state) => {
-  const { exec, values } = state.field(marksField)
+  const { exec, values, exception } = state.field(marksField)
   if (!exec || exec > state.doc.lines) return Decoration.none
   const line = state.doc.line(exec)
   const ranges = [
-    Decoration.line({ class: "cm-spicy-exec", attributes: { "data-spicy-exec": "", "data-line": String(exec) } }).range(
-      line.from,
-    ),
+    Decoration.line({
+      class: exception ? "cm-spicy-exec cm-spicy-exec-exception" : "cm-spicy-exec",
+      attributes: { "data-spicy-exec": "", "data-line": String(exec) },
+    }).range(line.from),
   ]
-  if (values) ranges.push(Decoration.widget({ widget: new ValuesWidget(values), block: true, side: 1 }).range(line.to))
+  if (exception)
+    ranges.push(
+      Decoration.widget({ widget: new NoteWidget("exception", exception), block: true, side: 1 }).range(line.to),
+    )
+  if (values)
+    ranges.push(Decoration.widget({ widget: new NoteWidget("values", values), block: true, side: 2 }).range(line.to))
   return Decoration.set(ranges)
 })
 
 const execGutter = gutterLineClass.compute([marksField], (state) => {
-  const exec = state.field(marksField).exec
+  const { exec, exception } = state.field(marksField)
   if (!exec || exec > state.doc.lines) return RangeSet.empty
-  return RangeSet.of([execGutterMarker.range(state.doc.line(exec).from)])
+  return RangeSet.of([(exception ? exceptionGutterMarker : execGutterMarker).range(state.doc.line(exec).from)])
 })
 
 // Comment boxes and the comment draft (upstream's line comment controller renders them) as block widgets under
@@ -595,7 +609,26 @@ function Editor(props: EditorViewProps) {
     const own = (workbench.problems.state.snapshot?.problems ?? []).filter(
       (problem) => problem.file && file.normalize(problem.file) === path,
     )
-    current.dispatch(setDiagnostics(current.state, diagnosticsFor(own, current.state.doc)))
+    const byID = new Map(own.map((problem) => [problem.id, problem]))
+    // UX #10: the hover tooltip offers Fix with agent for the problem it shows.
+    const fix = language.t("workbench.handoff.fixShort")
+    current.dispatch(
+      setDiagnostics(
+        current.state,
+        diagnosticsFor(own, current.state.doc).map((item) => ({
+          ...item,
+          actions: [
+            {
+              name: fix,
+              apply: () => {
+                const problem = byID.get(item.id)
+                if (problem) workbench.fixProblems([problem], problem.file)
+              },
+            },
+          ],
+        })),
+      ),
+    )
   })
 
   // The debugger: breakpoints, the selected frame's line, and the top frame's values under it.
@@ -604,7 +637,10 @@ function Editor(props: EditorViewProps) {
     const stop = session?.state === "stopped" ? session.stop : undefined
     const frame = stop?.frames.find((item) => item.id === debug.frameID())
     if (!stop || !frame?.file || !frame.line || (debug.relative(frame.file) ?? frame.file) !== path) return
-    return { line: frame.line, top: frame.id === stop.frames[0]?.id, locals: stop.locals }
+    const top = frame.id === stop.frames[0]?.id
+    // The exception was raised in the top frame; a caller's line keeps the paused look.
+    const exception = top ? stopException(stop, language.t("workbench.debug.exceptionStop")) : undefined
+    return { line: frame.line, top, locals: stop.locals, exception }
   }
   createEffect(() => {
     const current = view()
@@ -631,7 +667,14 @@ function Editor(props: EditorViewProps) {
     const values = shown
       .map((item) => `${item.name} = ${item.value.length > 40 ? `${item.value.slice(0, 40)}…` : item.value}`)
       .join("   ")
-    current.dispatch({ effects: setMarks.of({ breakpoints, exec: paused?.line, values: values || undefined }) })
+    current.dispatch({
+      effects: setMarks.of({
+        breakpoints,
+        exec: paused?.line,
+        values: values || undefined,
+        exception: paused?.exception,
+      }),
+    })
   })
   createEffect(
     on(

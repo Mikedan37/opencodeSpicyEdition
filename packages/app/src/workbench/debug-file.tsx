@@ -1,6 +1,8 @@
 import { createEffect, createMemo, lazy, onCleanup, onMount, Show, Suspense } from "solid-js"
 import { File, type FileProps, type TextFileProps } from "@opencode-ai/session-ui/file"
 import { isBinaryContent, mediaKindFromPath } from "@opencode-ai/session-ui/pierre/media"
+import { useLanguage } from "@/context/language"
+import { stopException } from "./debug"
 import { useDebugOptional, type DebugContextValue } from "./debug-context"
 import { EDITOR_MAX_CHARS } from "./editor"
 import { useEditorOptional } from "./editor-context"
@@ -12,6 +14,7 @@ type Annotation<T> = NonNullable<TextFileProps<T>["annotations"]>[number]
 type Marks = {
   breakpoints: { line: number; kind: "line" | "condition" | "log"; verified: boolean }[]
   exec?: number
+  exception?: boolean
 }
 
 const COLORS = {
@@ -22,6 +25,7 @@ const COLORS = {
 const STYLES = ["background-image", "background-repeat", "background-color", "box-shadow", "color"]
 // Inline, so it also wins over the viewer's selection color on the same line.
 const PAUSED = "rgb(from var(--v2-state-fg-warning) r g b / 0.18)"
+const EXCEPTION = "rgb(from var(--v2-state-fg-danger) r g b / 0.16)"
 
 // The app-wide File component. In the side panel's file tabs, text files open in the editor (editor-view.tsx), which
 // has the debugger's marks and Problems in its gutter; images, audio, binary and very large files keep the read-only
@@ -67,6 +71,7 @@ export function DebugFile<T>(props: FileProps<T>) {
 function MarkedFile<T>(props: { debug: DebugContextValue; text: TextFileProps<T> }) {
   const debug = props.debug
   const text = props.text
+  const language = useLanguage()
   let host!: HTMLDivElement
 
   const name = () => (text.file.name ? (debug.relative(text.file.name) ?? text.file.name) : undefined)
@@ -75,7 +80,9 @@ function MarkedFile<T>(props: { debug: DebugContextValue; text: TextFileProps<T>
     const stop = session?.state === "stopped" ? session.stop : undefined
     const frame = stop?.frames.find((item) => item.id === debug.frameID())
     if (!stop || !frame?.file || !frame.line || (debug.relative(frame.file) ?? frame.file) !== name()) return
-    return { line: frame.line, top: frame.id === stop.frames[0]?.id, locals: stop.locals }
+    const top = frame.id === stop.frames[0]?.id
+    const exception = top ? stopException(stop, language.t("workbench.debug.exceptionStop")) : undefined
+    return { line: frame.line, top, locals: stop.locals, exception }
   })
   const marks = createMemo((): Marks => {
     const file = name()
@@ -88,39 +95,54 @@ function MarkedFile<T>(props: { debug: DebugContextValue; text: TextFileProps<T>
         verified: verified?.find((entry) => entry.line === item.line)?.verified !== false,
       })),
       exec: exec()?.line,
+      exception: !!exec()?.exception,
     }
   })
-  // Values of the top frame's locals named on the paused line.
-  const values = createMemo(() => {
+  // Under the paused line: the exception it stopped on, and the values of the top frame's locals named on the line.
+  const note = createMemo(() => {
     const current = exec()
     if (!current?.top) return
     const words = new Set(lineText(text.file.contents, current.line).match(/[A-Za-z_$][\w$]*/g))
     const shown = current.locals.filter((item) => words.has(item.name)).slice(0, 6)
-    if (!shown.length) return
+    if (!shown.length && !current.exception) return
     return {
       lineNumber: current.line,
-      // Short values keep the row inside the viewer; the Debug tab has them in full.
       metadata: {
-        spicyDebugValues: shown
+        spicyDebugNote: true,
+        exception: current.exception,
+        // Short values keep the row inside the viewer; the Debug tab has them in full.
+        values: shown
           .map((item) => `${item.name} = ${item.value.length > 40 ? `${item.value.slice(0, 40)}…` : item.value}`)
           .join("   "),
       },
     } as unknown as Annotation<T>
   })
   const annotations = createMemo(() => {
-    const own = values()
+    const own = note()
     const base = text.annotations ?? []
     return own ? [...base, own] : base
   })
   const renderAnnotation = (annotation: Annotation<T>) => {
-    const meta = annotation.metadata as { spicyDebugValues?: string } | undefined
-    if (meta?.spicyDebugValues === undefined) return text.renderAnnotation?.(annotation)
-    const row = document.createElement("div")
-    row.dataset.debugValues = ""
-    row.className = "truncate px-3 font-mono text-[11px] leading-5 text-v2-state-fg-warning"
-    row.textContent = meta.spicyDebugValues
-    row.title = meta.spicyDebugValues
-    return row
+    const meta = annotation.metadata as { spicyDebugNote?: true; exception?: string; values: string } | undefined
+    if (!meta?.spicyDebugNote) return text.renderAnnotation?.(annotation)
+    const box = document.createElement("div")
+    const row = (kind: "exception" | "values", value: string, className: string) => {
+      const node = document.createElement("div")
+      node.dataset[kind === "values" ? "debugValues" : "debugException"] = ""
+      node.className = className
+      node.textContent = value
+      node.title = value
+      box.append(node)
+    }
+    if (meta.exception)
+      row(
+        "exception",
+        meta.exception,
+        "mx-3 my-0.5 whitespace-pre-wrap break-words rounded-[4px] bg-v2-state-bg-danger px-2 font-mono text-[11px] leading-[18px] text-v2-state-fg-danger",
+      )
+    if (meta.values)
+      row("values", meta.values, "truncate px-3 font-mono text-[11px] leading-5 text-[var(--spicy-fg-warning)]")
+    return box
   }
 
   let frame: number | undefined
@@ -192,15 +214,18 @@ function decorate(root: ShadowRoot, marks: Marks) {
       node.style.backgroundRepeat = "no-repeat"
     }
   if (marks.exec === undefined) return
+  // An exception stop is red (UX #13).
+  const fill = marks.exception ? EXCEPTION : PAUSED
+  const tone = marks.exception ? "var(--v2-state-fg-danger)" : "var(--v2-state-fg-warning)"
   for (const node of root.querySelectorAll<HTMLElement>(`[data-line="${marks.exec}"]`)) {
     node.dataset.spicyExec = ""
-    node.style.backgroundColor = PAUSED
+    node.style.backgroundColor = fill
   }
   for (const node of root.querySelectorAll<HTMLElement>(`[data-column-number="${marks.exec}"]`)) {
     node.dataset.spicyExec = ""
-    node.style.backgroundColor = PAUSED
-    node.style.boxShadow = "inset 3px 0 0 var(--v2-state-fg-warning)"
-    node.style.color = "var(--v2-state-fg-warning)"
+    node.style.backgroundColor = fill
+    node.style.boxShadow = `inset 3px 0 0 ${tone}`
+    node.style.color = marks.exception ? tone : "var(--spicy-fg-warning)"
   }
 }
 

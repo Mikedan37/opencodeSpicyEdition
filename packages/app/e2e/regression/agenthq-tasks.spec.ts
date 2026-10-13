@@ -126,6 +126,23 @@ test("tasks: create with dependencies, start, review gate, approve refusal and m
   await expect(detail.locator("strong")).toHaveText("the config")
   expect(mock.approvals).toBe(0)
 
+  // UX #4: each file opens the diff Approve would merge, read at the review's head, and All changes all of it; Approve
+  // sits under the summary with its size. A 409 says why, with Check again.
+  await expect(gate.locator('[data-slot="review-totals"]')).toHaveText("1 file, +12 −3")
+  await gate.locator('[data-review-file="src/config.ts"]').click()
+  await expect(gate.locator('[data-slot="review-diff"] [data-component="file"][data-mode="diff"]')).toBeVisible()
+  expect(mock.diffs.at(-1)).toEqual({ path: "src/config.ts", head: "abc1234" })
+  await page.screenshot({ path: test.info().outputPath("ux4-merge-gate.png") })
+  await gate.locator('[data-action="task-review-all"]').click()
+  await expect.poll(() => mock.diffs.at(-1)).toEqual({ path: null, head: "abc1234" })
+  await expect(gate.locator('[data-slot="review-diff"] [data-patch-file]')).toHaveCount(2)
+  mock.diffConflict = "the reviewed head abc1234 is no longer on task-calm-river-1a2b"
+  await gate.locator('[data-review-file="src/config.ts"]').click()
+  await expect(gate.locator('[data-slot="review-diff-error"]')).toContainText(mock.diffConflict)
+  mock.diffConflict = undefined
+  await gate.locator('[data-slot="review-diff-error"] button').click()
+  await expect(gate.locator('[data-slot="review-diff"]')).toHaveCount(0)
+
   // Check again after cleaning up; the merge itself is refused with the server's words, then succeeds
   mock.reviewClean = true
   await gate.locator('[data-action="task-review-refresh"]').click()
@@ -137,6 +154,14 @@ test("tasks: create with dependencies, start, review gate, approve refusal and m
     "merge failed: CONFLICT (content): Merge conflict in src/config.ts",
   )
   mock.approveRefusal = undefined
+  // UX #12: while an approval finishes merging, the task says so and nothing can be pressed.
+  mock.emit(taskEvent(mock.tasks.tsk_1!, { merging: "abc1234" }))
+  await expect(detail.locator('[data-slot="task-merging"]')).toHaveText("Merging…")
+  await expect(gate.locator('[data-action="task-approve"]')).toBeDisabled()
+  await expect(gate.locator('[data-action="task-review-refresh"]')).toBeDisabled()
+  await expect(detail.locator('[data-action="task-delete"]')).toBeDisabled()
+  mock.emit(taskEvent(mock.tasks.tsk_1!, { merging: undefined }))
+  await expect(detail.locator('[data-slot="task-merging"]')).toHaveCount(0)
   await gate.locator('[data-action="task-approve"]').click()
   await expect(rows.nth(0).locator("[data-task-status]")).toHaveAttribute("data-task-status", "done")
   await expect(detail.locator('[data-slot="task-workspace"]')).toHaveText("Merged; its worktree is removed")
@@ -253,6 +278,9 @@ async function setup(page: Page) {
     threads: [] as string[],
     approvals: 0,
     reviewClean: false,
+    // GET .../review/diff: the queries asked, and a 409 to answer with
+    diffs: [] as { path: string | null; head: string | null }[],
+    diffConflict: undefined as string | undefined,
     approveRefusal: undefined as string | undefined,
     emit(...items: Record<string, unknown>[]) {
       pending.push(...items.map((item) => ({ directory, payload: { id: `evt_${Math.random()}`, ...item } })))
@@ -381,6 +409,22 @@ async function setup(page: Page) {
       mock.tasks[id] = task
       return json(route, task)
     }
+    const diffOf = path.match(/^\/agenthq\/tasks\/(tsk_\d+)\/review\/diff$/)?.[1]
+    if (diffOf) {
+      mock.diffs.push({ path: url.searchParams.get("path"), head: url.searchParams.get("head") })
+      if (mock.diffConflict) return json(route, { _tag: "ConflictError", message: mock.diffConflict }, 409)
+      const config =
+        "diff --git a/src/config.ts b/src/config.ts\n--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,1 +1,1 @@\n-export const keys = []\n+export const keys = parse()\n"
+      const readme =
+        "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,1 @@\n-old\n+new\n"
+      return json(route, {
+        taskID: diffOf,
+        head: "abc1234",
+        base: "main",
+        ...(url.searchParams.get("path") ? { path: url.searchParams.get("path") } : {}),
+        diff: url.searchParams.get("path") ? config : config + readme,
+      })
+    }
     const match = path.match(/^\/agenthq\/tasks\/(tsk_\d+)(?:\/(\w+))?$/)
     const task = match ? mock.tasks[match[1]!] : undefined
     if (match && task) {
@@ -412,6 +456,7 @@ async function setup(page: Page) {
         return json(route, {
           taskID: task.id,
           branch: "task-calm-river-1a2b",
+          head: "abc1234",
           base: "main",
           commits: [{ sha: "0123456789abcdef", subject: "Ada (Agent HQ): Parse config" }],
           files: [{ path: "src/config.ts", additions: 12, deletions: 3 }],

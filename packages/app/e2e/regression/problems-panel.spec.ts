@@ -1,6 +1,7 @@
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { expect, test, type Page, type Route } from "@playwright/test"
 import { mockOpenCodeServer } from "../utils/mock-server"
+import { mockWorkbench, problemsSnapshot } from "../utils/workbench-mock"
 import { expectSessionTitle } from "../utils/waits"
 
 // The Problems tab against mocked workbench routes: merged sources (DIAG-01), a crashed language server's stale
@@ -31,6 +32,10 @@ test("DIAG-01 a merged problem lists all its sources and the kind filter matches
   await expect(merged).toHaveText("tsc · LSP (push, pull)")
   await expect(merged).toHaveAttribute("title", "tsc: typecheck\ntypescript: lsp (push)\ntypescript: lsp (pull)")
   await expect(panel.locator('[data-problem="p_tsc"] [data-slot="problem-sources"]')).toHaveText("tsc")
+  // A row's name is its content (UX a11y), not just where it opens
+  await expect(
+    panel.getByRole("button", { name: "Error: Cannot find name 'foo'., app.ts line 9, column 5", exact: true }),
+  ).toBeVisible()
   await page.screenshot({ path: test.info().outputPath("diag01-sources.png") })
 
   // Its first source is tsc, yet the language-server filter keeps it: the filter looks at every source.
@@ -75,13 +80,15 @@ test("DIAG-12 language servers off: a banner over the list, and the empty state 
   mock.snapshot = { ...snapshot([problem("p_tsc", 9, "Cannot find name 'foo'.", [tsc])]), lsp: "off" }
   const panel = await openProblems(page)
   const off = 'Language servers are off: set "lsp": true in your opencode config.'
-  await expect(panel.locator('[data-slot="problems-lsp-off"]')).toHaveText(off)
+  const banner = panel.locator('[data-slot="problems-lsp-off"]')
+  await expect(banner).toContainText(off)
+  await expect(banner.getByRole("button", { name: "Turn on language servers" })).toBeVisible()
   await page.screenshot({ path: test.info().outputPath("diag12-banner.png") })
 
-  // No problems: the empty state carries the same line, and no banner.
+  // No problems: the empty state carries the same line, and no banner. Nothing reported, so not an all-clear.
   mock.snapshot = { ...snapshot([]), lsp: "off" }
   mock.emit({ type: "workbench.problems.updated", properties: { producers: [], counts: snapshot([]).counts } })
-  await expect(panel).toContainText("No problems detected")
+  await expect(panel).toContainText("Nothing checked yet")
   await expect(panel).toContainText(off)
   await expect(panel.locator('[data-slot="problems-lsp-off"]')).toHaveCount(0)
   await page.screenshot({ path: test.info().outputPath("diag12-empty.png") })
@@ -139,6 +146,20 @@ test("UI-07 Fix with agent sends the problem's snapshot; Fix all in file sends t
   const action = (selector: string) => panel.locator(selector).locator("xpath=..").locator('[data-action="handoff"]')
   const menu = page.locator("[data-handoff-menu]")
 
+  // UX #10: a "Fix" text button shows on the hovered row and on the row the keyboard is on, and Tab reaches it.
+  const fix = action('[data-problem="p_assign"]')
+  await expect(fix).toHaveText("Fix")
+  await expect(fix).toHaveAttribute("aria-label", "Fix with agent: Type 'string' is not assignable to type 'number'.")
+  await expect.poll(() => fix.evaluate((el) => getComputedStyle(el).opacity)).toBe("0")
+  await panel.locator('[data-problem="p_assign"]').hover()
+  await expect.poll(() => fix.evaluate((el) => getComputedStyle(el).opacity)).toBe("1")
+  await page.mouse.move(0, 0)
+  await panel.locator('[data-problem="p_assign"]').focus()
+  await expect.poll(() => fix.evaluate((el) => getComputedStyle(el).opacity)).toBe("1")
+  await page.keyboard.press("Tab")
+  await expect(fix).toBeFocused()
+  await expect(action('[data-row="file"]')).toHaveText("Fix all")
+
   // A problem row's picker: this session and the Agent HQ identity. This session gets exactly the problem's snapshot.
   await action('[data-problem="p_assign"]').click()
   await expect(menu.locator("[data-target]")).toHaveText(["This session", "Ada"])
@@ -147,10 +168,26 @@ test("UI-07 Fix with agent sends the problem's snapshot; Fix all in file sends t
   await expect.poll(() => mock.prompts.length).toBe(1)
   const prompt = mock.prompts[0]!
   expect(prompt.path).toBe(`/session/${sessionID}/prompt_async`)
-  expect((prompt.body as { parts: { type: string; text: string }[] }).parts).toEqual([
-    expect.objectContaining({ type: "text", text: FIX_ONE }),
+  // UX #10: a one-line message, with the snapshot attached as "Problem context" (the server hands it to the model
+  // whole).
+  const parts = (prompt.body as { parts: { type: string; text?: string; url?: string; filename?: string }[] }).parts
+  expect(parts).toEqual([
+    expect.objectContaining({
+      type: "text",
+      text: "Fix the problem at src/app.ts:12: Type 'string' is not assignable to type 'number'.",
+    }),
+    expect.objectContaining({ type: "file", mime: "text/plain", filename: "Problem context" }),
   ])
+  const attached = parts[1]!.url!
+  expect(Buffer.from(attached.slice(attached.indexOf(",") + 1), "base64").toString("utf8")).toBe(FIX_ONE)
   await expect(page.getByText("Sent to this session", { exact: true })).toBeVisible()
+  // The timeline shows it as a collapsible chip, not a wall of text.
+  const chip = page.locator('[data-slot="user-message-context"]')
+  await expect(chip.locator("summary")).toHaveText("Problem context")
+  await expect(chip.locator("pre")).toBeHidden()
+  await chip.locator("summary").click()
+  expect(await chip.locator("pre").textContent()).toBe(FIX_ONE)
+  await page.screenshot({ path: test.info().outputPath("ui07-context-chip.png") })
 
   // Fix all in file: the last used target comes first; Ada gets the file's snapshot as an Agent HQ message, and the
   // toast links to the session that received it.
@@ -226,6 +263,49 @@ const FIX_FILE = [
   "",
   VERIFIED,
 ].join("\n")
+
+test("first run: Nothing checked yet, Run checks, Last checked, and Turn on language servers after asking", async ({
+  page,
+}) => {
+  const { mock, open } = await mockWorkbench(page, { directory: "/work/first", title: "First run" })
+  mock.snapshot = { ...problemsSnapshot([]), lsp: "off" }
+  mock.files["opencode.json"] = '{\n  "model": "test/test"\n}\n'
+  await open()
+  await page.locator('[data-status="problems"]').click()
+  const panel = page.locator('[data-component="workbench-problems"]')
+  // Nothing reported yet: no false all-clear, and the way to get a real answer.
+  await expect(panel).toContainText("Nothing checked yet")
+  await expect(panel).not.toContainText("No problems detected")
+  await page.screenshot({ path: test.info().outputPath("first-run-unchecked.png") })
+  await panel.getByRole("button", { name: "Run checks" }).last().click()
+  await expect.poll(() => mock.checks).toEqual([{ unit: "/work/first" }])
+
+  // Once a checker reported: the all-clear, with when and what.
+  mock.snapshot = {
+    ...problemsSnapshot(
+      [],
+      [{ producer: "check:tsc", kind: "typecheck", tool: "tsc", state: "idle", updatedAt: Date.now() }],
+    ),
+    lsp: "off",
+  }
+  mock.emit({ type: "workbench.problems.updated", properties: { producers: [], counts: mock.snapshot.counts } })
+  await expect(panel).toContainText("No problems detected")
+  await expect(panel.locator('[data-slot="problems-checked"]')).toHaveText("Last checked: Just now · tsc")
+
+  // Turn on language servers: asks, then writes the project's opencode.json and reloads the project.
+  await panel.locator('[data-action="problems-lsp"]').click()
+  const dialog = page.getByRole("dialog")
+  await expect(dialog).toContainText("Turn on language servers?")
+  await expect(dialog).toContainText('This sets "lsp": true in opencode.json in this project')
+  await page.screenshot({ path: test.info().outputPath("first-run-lsp-confirm.png") })
+  mock.snapshot = { ...mock.snapshot, lsp: "on" }
+  await dialog.locator('[data-choice="enable"]').click()
+  await expect
+    .poll(() => mock.config)
+    .toEqual([{ path: "opencode.json", content: '{\n  "model": "test/test",\n  "lsp": true\n}\n', baseHash: "h1" }])
+  await expect.poll(() => mock.disposed).toBe(1)
+  await expect(panel.locator('[data-action="problems-lsp"]')).toHaveCount(0)
+})
 
 function problem(id: string, line: number, message: string, sources: Record<string, unknown>[]) {
   return {

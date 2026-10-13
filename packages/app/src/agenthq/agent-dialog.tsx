@@ -1,6 +1,7 @@
 import { createEffect, For, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { Icon } from "@opencode-ai/ui/icon"
 import { Tag } from "@opencode-ai/ui/v2/badge-v2"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { Dialog, DialogBody, DialogFooter, DialogHeader, DialogTitle } from "@opencode-ai/ui/v2/dialog-v2"
@@ -8,15 +9,19 @@ import { DividerV2 } from "@opencode-ai/ui/v2/divider-v2"
 import { Field } from "@opencode-ai/ui/v2/field-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import type { AgentHQ } from "@opencode-ai/schema/agent-hq"
+import { ModelSelectorPopoverV2 } from "@/components/dialog-select-model"
 import { useDirectoryPicker } from "@/components/directory-picker"
 import { useLanguage } from "@/context/language"
+import { useLocal } from "@/context/local"
 import { useServerSDK } from "@/context/server-sdk"
 import { showToast } from "@/utils/toast"
 import { errorText, type AgentDraft } from "@/workbench/client"
+import { InlineCode } from "@/workbench/ui"
 import { AgentAvatar, agentInitials, AVATAR_COLORS, AVATAR_PRESET_IDS } from "./avatar"
 import { useAgentHQ } from "./context"
 
 type Agent = AgentHQ.AgentIdentity
+type ModelState = ReturnType<typeof useLocal>["model"]
 
 export function createAgentDraft(agent: Agent | undefined, directory: string) {
   return createStore({
@@ -40,6 +45,7 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
   const dialog = useDialog()
   const serverSDK = useServerSDK()
   const pickDirectory = useDirectoryPicker()
+  const local = useLocal()
   const [draft, setDraft] = props.draft
   const mounted = { value: true }
   onCleanup(() => (mounted.value = false))
@@ -52,6 +58,19 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
   })
 
   const provider = () => agenthq.state.providers.find((item) => item.id === draft.provider)
+  // UX #14: a custom ACP agent needs a launch command this dialog has no field for yet, so it is offered only to an
+  // agent that already is one.
+  const providers = () => agenthq.state.providers.filter((item) => item.id !== "acp" || props.agent?.provider === "acp")
+  // The composer's model picker, choosing for this agent: opencode agents take "providerID/modelID".
+  const chosen = () => local.model.list().find((item) => `${item.provider.id}/${item.id}` === draft.model)
+  const models = {
+    list: local.model.list,
+    visible: local.model.visible,
+    current: chosen,
+    set: (item?: { providerID: string; modelID: string }) =>
+      setDraft("model", item ? `${item.providerID}/${item.modelID}` : ""),
+  } as unknown as ModelState
+  const modelName = () => chosen()?.name ?? (draft.model || language.t("agenthq.dialog.model.placeholder"))
   // An unavailable provider can't take new agents, but an existing agent can still be renamed.
   const valid = () =>
     !!draft.name.trim() &&
@@ -109,8 +128,10 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
   const pick = (avatar: Agent["avatar"]) => setDraft("avatar", avatar)
   const pressed = (kind: Agent["avatar"]["kind"], value?: string) =>
     draft.avatar.kind === kind && (value === undefined || draft.avatar.value === value)
-  const choice =
-    "flex size-10 items-center justify-center rounded-[10px] outline outline-1 outline-transparent transition-[background-color,outline-color] hover:bg-v2-overlay-simple-overlay-hover focus-visible:outline-v2-border-border-focus aria-pressed:[box-shadow:inset_0_0_0_2px_var(--v2-border-border-focus)]"
+  // Avatars and colours are native radio groups (UX #14): one tab stop each, arrow keys inside.
+  const ring =
+    "cursor-pointer items-center justify-center outline outline-1 outline-transparent hover:bg-v2-overlay-simple-overlay-hover has-[:focus-visible]:outline-v2-border-border-focus has-[:checked]:[box-shadow:inset_0_0_0_2px_var(--v2-border-border-focus)]"
+  const choice = `flex size-10 rounded-[10px] transition-[background-color,outline-color] ${ring}`
 
   return (
     <Dialog fit>
@@ -135,34 +156,50 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
           </Field>
 
           <div class="flex flex-col gap-2">
-            <div class={label}>{language.t("agenthq.dialog.avatar")}</div>
+            <div class={label} id="agenthq-avatar-label">
+              {language.t("agenthq.dialog.avatar")}
+            </div>
             <div class="-ml-1 flex flex-wrap items-center gap-1">
-              <For each={AVATAR_PRESET_IDS}>
-                {(id) => (
-                  <button
-                    type="button"
-                    class={choice}
-                    aria-pressed={pressed("preset", id)}
-                    aria-label={language.t(`agenthq.dialog.avatar.${id}`)}
-                    onClick={() => pick({ kind: "preset", value: id, color: draft.avatar.color })}
-                  >
-                    <AgentAvatar avatar={{ kind: "preset", value: id, color: draft.avatar.color }} name="" size={32} />
-                  </button>
-                )}
-              </For>
-              <button
-                type="button"
-                class={choice}
-                aria-pressed={pressed("initials")}
-                aria-label={language.t("agenthq.dialog.avatar.initials")}
-                onClick={() => pick({ kind: "initials", value: agentInitials(draft.name), color: draft.avatar.color })}
-              >
-                <AgentAvatar
-                  avatar={{ kind: "initials", value: agentInitials(draft.name) || "?", color: draft.avatar.color }}
-                  name={draft.name}
-                  size={32}
-                />
-              </button>
+              <div role="radiogroup" aria-labelledby="agenthq-avatar-label" class="flex flex-wrap items-center gap-1">
+                <For each={AVATAR_PRESET_IDS}>
+                  {(id) => (
+                    <label class={choice} title={language.t(`agenthq.dialog.avatar.${id}`)}>
+                      <input
+                        type="radio"
+                        name="agenthq-avatar"
+                        class="sr-only"
+                        value={id}
+                        checked={pressed("preset", id)}
+                        aria-label={language.t(`agenthq.dialog.avatar.${id}`)}
+                        onChange={() => pick({ kind: "preset", value: id, color: draft.avatar.color })}
+                      />
+                      <AgentAvatar
+                        avatar={{ kind: "preset", value: id, color: draft.avatar.color }}
+                        name=""
+                        size={32}
+                      />
+                    </label>
+                  )}
+                </For>
+                <label class={choice} title={language.t("agenthq.dialog.avatar.initials")}>
+                  <input
+                    type="radio"
+                    name="agenthq-avatar"
+                    class="sr-only"
+                    value="initials"
+                    checked={pressed("initials")}
+                    aria-label={language.t("agenthq.dialog.avatar.initials")}
+                    onChange={() =>
+                      pick({ kind: "initials", value: agentInitials(draft.name), color: draft.avatar.color })
+                    }
+                  />
+                  <AgentAvatar
+                    avatar={{ kind: "initials", value: agentInitials(draft.name) || "?", color: draft.avatar.color }}
+                    name={draft.name}
+                    size={32}
+                  />
+                </label>
+              </div>
               <TextInputV2
                 class="!w-24"
                 aria-label={language.t("agenthq.dialog.avatar.emoji")}
@@ -176,18 +213,25 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
                 }}
               />
             </div>
-            <div class="-ml-1 flex flex-wrap gap-1" aria-label={language.t("agenthq.dialog.avatar.color")} role="group">
+            <div
+              class="-ml-1 flex flex-wrap gap-1"
+              aria-label={language.t("agenthq.dialog.avatar.color")}
+              role="radiogroup"
+            >
               <For each={AVATAR_COLORS}>
                 {(color) => (
-                  <button
-                    type="button"
-                    class="flex size-7 items-center justify-center rounded-[8px] outline outline-1 outline-transparent hover:bg-v2-overlay-simple-overlay-hover focus-visible:outline-v2-border-border-focus aria-pressed:[box-shadow:inset_0_0_0_2px_var(--v2-border-border-focus)]"
-                    aria-pressed={(draft.avatar.color ?? "gray") === color}
-                    aria-label={language.t("agenthq.dialog.avatar.color.select", { color })}
-                    onClick={() => pick({ ...draft.avatar, color })}
-                  >
+                  <label class={`flex size-7 rounded-[8px] ${ring}`} title={color}>
+                    <input
+                      type="radio"
+                      name="agenthq-color"
+                      class="sr-only"
+                      value={color}
+                      checked={(draft.avatar.color ?? "gray") === color}
+                      aria-label={language.t("agenthq.dialog.avatar.color.select", { color })}
+                      onChange={() => pick({ ...draft.avatar, color })}
+                    />
                     <span class="size-4 rounded-[4px]" style={{ background: `var(--v2-avatar-bg-${color})` }} />
-                  </button>
+                  </label>
                 )}
               </For>
             </div>
@@ -196,12 +240,12 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
           <fieldset class="flex flex-col gap-1.5">
             <legend class={`${label} mb-2`}>{language.t("agenthq.dialog.provider")}</legend>
             <Show
-              when={agenthq.state.providers.length > 0}
+              when={providers().length > 0}
               fallback={
                 <span class="text-[12px] text-v2-text-text-muted">{language.t("agenthq.dialog.provider.none")}</span>
               }
             >
-              <For each={agenthq.state.providers}>
+              <For each={providers()}>
                 {(item) => (
                   <label
                     data-provider={item.id}
@@ -223,8 +267,9 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
                     <span class="flex min-w-0 flex-col gap-0.5">
                       <span class="flex items-center gap-1.5 text-[13px] text-v2-text-text-base">
                         {item.name}
-                        <Show when={item.version}>
-                          <span class="text-[11px] text-v2-text-text-faint">{item.version}</span>
+                        {/* A development build's version (0.0.0-…) says nothing to the user. */}
+                        <Show when={item.version && !item.version.startsWith("0.0.0-")}>
+                          <span class="text-[11px] text-v2-text-text-muted">{item.version}</span>
                         </Show>
                         <Show when={item.available && item.auth === "required"}>
                           <Tag>{language.t("agenthq.dialog.provider.auth")}</Tag>
@@ -232,7 +277,7 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
                       </span>
                       <Show when={!item.available}>
                         <span class="text-[11px] text-v2-text-text-muted">
-                          {item.reason ?? language.t("agenthq.dialog.provider.unavailable")}
+                          <InlineCode text={item.reason ?? language.t("agenthq.dialog.provider.unavailable")} />
                         </span>
                       </Show>
                       {/* A binary the provider found on its own (AgentKit's bridge): the human sees what will run. */}
@@ -250,14 +295,45 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
 
           <Field>
             <Field.Label>{language.t("agenthq.dialog.model")}</Field.Label>
-            <TextInputV2
-              class="!w-full"
-              name="model"
-              value={draft.model}
-              disabled={provider()?.capabilities.models === false}
-              placeholder={language.t("agenthq.dialog.model.placeholder")}
-              onInput={(event) => setDraft("model", event.currentTarget.value)}
-            />
+            <Show
+              when={draft.provider === "opencode"}
+              fallback={
+                <TextInputV2
+                  class="!w-full"
+                  name="model"
+                  value={draft.model}
+                  disabled={provider()?.capabilities.models === false}
+                  placeholder={language.t("agenthq.dialog.model.placeholder")}
+                  onInput={(event) => setDraft("model", event.currentTarget.value)}
+                />
+              }
+            >
+              <div class="flex w-full items-center gap-2">
+                <ModelSelectorPopoverV2
+                  model={models}
+                  trigger={(triggerProps) => (
+                    <ButtonV2
+                      {...triggerProps}
+                      type="button"
+                      variant="neutral"
+                      class="min-w-0 flex-1 justify-between!"
+                      data-action="agent-model"
+                      aria-label={`${language.t("agenthq.dialog.model")}: ${modelName()}`}
+                    >
+                      <span class="truncate" classList={{ "text-v2-text-text-muted": !draft.model }}>
+                        {modelName()}
+                      </span>
+                      <Icon name="chevron-down" size="small" />
+                    </ButtonV2>
+                  )}
+                />
+                <Show when={draft.model}>
+                  <ButtonV2 type="button" variant="ghost" onClick={() => setDraft("model", "")}>
+                    {language.t("agenthq.dialog.model.default")}
+                  </ButtonV2>
+                </Show>
+              </div>
+            </Show>
           </Field>
 
           <Field>

@@ -767,3 +767,112 @@ Upstream-owned files changed: `packages/app/vite.config.ts` (`optimizeDeps.inclu
 - `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 35 before and after (8 new `intelligencetasksd`
   reports, a system daemon writing one every 20 minutes). No Electron, no lldb; no server, debugpy or temp project
   left behind.
+
+## UX wave 1: fixes from the UX audit
+
+From `spicy-ide` e38ce9f1e (fast-forward, cache-only install); merged `spicy-ide` at 8d61eb1bd (review partial state,
+investigation rules) and bb796cc9a (permission previews, task review diff, the merging state). Numbers refer to
+`spicy-wt/ux/UX_AUDIT.md`.
+
+### What changed
+
+- **Finding the IDE (#1).** A status strip under the session: Problems ("Not checked yet" or the counts), agents that
+  need you, the debug state, checks running; each item opens its tab with the panel, and it names the panel's key. A
+  one-time "Your IDE" card above the composer (`Persist.global("workbench.intro")`). Palette commands for all seven
+  tabs, Run checks, Fix, New agent, New task (only with an agent) and New tool, and the same entries in the desktop
+  View menu (`desktopMenuLabel` reads the fork's copy).
+- **Problems before anything checked (#5).** "Nothing checked yet" until a producer has run; Run checks in the toolbar
+  and the empty state; "Last checked: 2 m ago · tsc, ruff"; "Turn on language servers" asks, then writes `"lsp": true`
+  into `opencode.jsonc`/`opencode.json` through the editor route and reloads the project.
+- **Notifications (#6).** An Agent HQ ask and a task ready for review raise an OS notification (the app's
+  permission and sound settings); clicking opens the ask or the task.
+- **IDE setup (#8).** Settings → IDE setup: the doctor's languages × language server, checks, tests and debugger, each
+  tool ✓ or ✗ with why and a command to copy; Recheck. Problems, the Debug Console and the Debug tab link to it.
+- **Review (#9).** The Agent changes mode opens first when agent hunks are pending; the first Alt+F5 lands on the first
+  hunk, the chosen hunk has a strong ring and a keys hint; hunk buttons are named "Accept change 1 of 2 in a.txt";
+  decided hunks are drawn with the timeline's diff; a file with kept and reverted hunks says "Partly kept (1 kept · 1
+  reverted)".
+- **Fix with agent (#10).** Visible Fix / Fix all buttons, Fix in the editor's lint tooltip and in the palette (a
+  target picker dialog). The message is a one-line summary; the snapshot rides along as a text attachment that the
+  timeline shows as a collapsible "Problem context" / "Debug stop context" chip.
+- **Approvals and the merge gate (#3, #4, #12).** Permission cards show the backend's preview: an edit as a diff, a
+  command with where it runs, or one line (raw details only for older adapters); only Allow once is primary and
+  "always" says what it covers. The merge gate shows the task's diff file by file and in full, "Check again" after a
+  409, and Approve under "N files, +a −d". A task that is merging says "Merging…" and nothing on it can be pressed.
+- **Debug controls (#13).** "Controlled by: You ▾" (Take over / Release control, each with what it means) and "Ask an
+  agent ▾" (investigate this stop with a target, or let the agent drive). An exception stop paints its line red with
+  the exception in a banner under it, in the editor and the read-only viewer (top frame only; a caller keeps the paused
+  look). One set of debug controls on screen: the Debug Console drops its toolbar and owner menu while the side Debug
+  tab is open. The Run tab shows once a debug session has a terminal (and while it is the open tab).
+- **Agent dialog (#14).** Custom ACP agents are offered only when editing one (no launch command field yet). OpenCode
+  agents choose their model with the composer's model picker ("Use default" clears it); other providers keep the text
+  field. Avatars and colours are native radio groups (one tab stop each). Reasons render `code`; development versions
+  (`0.0.0-…`) are hidden.
+- **Copy (#15).** Project-relative paths in Problems folders, Output units, permission titles, working folders, diff
+  headers and the debugger's own console lines. Plurals ("1 approval waiting", "3 pieces of evidence", "1 error in
+  changed files", "1 task waiting for your review"). Relative times in Activity, Tools and Agent HQ tick on one shared
+  30 s clock (`workbench/clock.ts`). "Last check" lists only the counts that are not zero. Investigation reasons show
+  the supervisor rule as words ("No progress"), the sentence, and links to the runs (named by checker) and the
+  evidence; older "S2: …" sentences lose the prefix. Turn notes say "Turn completed" or why a turn stopped early,
+  never the raw stop reason; a cancelled turn ends with "Cancelled by you". "Paused: exception", not "Paused: Paused on
+  exception".
+- **Accessibility (section 5).** A keyboard focus ring on the Workbench and side Debug tab triggers (upstream's bar
+  clears it on the button; `TAB_FOCUS` on the wrapper). Problem rows are named by their content ("Error: …, app.ts
+  line 9, column 5"). Severity dots in Output and the Debug tab's state dot have words for screen readers. Debug
+  status, Run status and "Last check" are status regions; the Agent HQ conversation announces each finished reply,
+  new ask and error once (not the history a session had when shown). Fork views use the muted grey for faint text and
+  `workbench/tokens.css` for warning and success text at 4.5:1 in light mode (yellow-1100, green-900; the "Permission
+  requested" title was 2.35:1, "Passed" 3.97:1); dark mode keeps upstream's tokens.
+
+### Files
+
+Fork: `workbench/{status-strip,clock,setup,setup-view,patch-view,tokens.css,panel,ui,en,problems,problems-panel,
+output-panel,activity-panel,tools-panel,debug,debug-context,debug-console,debug-panel,debug-ui,debug-run,debug-side,
+debug-file,editor,editor-view,codemirror,handoff,snapshot}`, `agenthq/{context,store,agents-panel,tasks-panel,
+agent-dialog}`, `review/{context,view}`; e2e `utils/workbench-mock.ts` (a mocked server for these specs) and specs
+`ide-discoverability`, `agenthq-dialog` (new), `agenthq-panel`, `agenthq-tasks`, `activity-panel`, `debug-panel`,
+`problems-panel`, `review-agent-changes`, `investigate-with-agent`, `run-stdin`.
+
+Upstream-owned files changed (each marked `// spicy:`):
+
+- `packages/app/src/pages/session.tsx`: mounts the status strip and the "Your IDE" card.
+- `packages/app/src/context/language.tsx`: `WorkbenchPluralKey`, so `language.plural` takes the fork's
+  `<key>.one`/`<key>.other` copy.
+- `packages/app/src/desktop-menu.ts` (+ `desktop-menu.test.ts`) and `packages/desktop/src/main/menu.ts`: the IDE's
+  View menu entries and `desktopMenuLabel`.
+- `packages/app/src/components/settings-v2/dialog-settings-v2.tsx`: the IDE setup tab.
+- `packages/session-ui/src/components/message-part.tsx`: a text attachment named "Problem context" / "Debug stop
+  context" shows as a collapsible chip.
+- Earlier waves, unchanged here: `packages/app/vite.config.ts`, `packages/app/src/pages/layout.tsx`.
+
+### UX wave 1 tests and verification
+
+- Unit: app `test:unit` 826 pass, 0 fail (new: `stopException`, `stopReason`, `splitPatch`, `fixCommand`, the
+  desktop View menu entries, the problems first-run helpers); `test-browser` 44/44; typecheck clean; Prettier clean
+  on every file this wave touched.
+- E2E, the whole `e2e/regression` folder with `--workers=2`: 146 tests, 145 passed on the first run. The one failure,
+  upstream's `session-timeline-history-root.spec.ts` (interruption), is geometry: the status strip takes 28 px under
+  the session, and at that much less height upstream's timeline scrolls a top-edge part out of view when
+  "Interrupted" appears (reproduced with the strip removed and the viewport 28 px shorter; passes with the strip at
+  1300, 1357 and 1413 px). Its viewport now grows by the strip's height (`// spicy:`); 2/2 since. The run includes the
+  seven real-server specs (isolated XDG dirs, scripted model, real debugpy): `editor-code-intelligence`, `editor-save`,
+  `investigate-with-agent`, `investigation-activity`, `review-agent-changes`, `run-stdin`, `tools`.
+- New or reworked specs: `ide-discoverability` (strip, palette, View-menu commands, the card, notifications, IDE
+  setup, Fix from the palette, the tab focus ring), `agenthq-dialog` (providers, the model picker, radio groups by
+  keyboard), `agenthq-panel` (preview cards with relative paths, turn notes, "Cancelled by you", the announcer, the
+  relative folder), `agenthq-tasks` (merge gate diff, 409, Merging…), `activity-panel` (rule tag, run and evidence
+  links, plurals, legacy "S7:" sentences), `debug-panel` (the two menus, the red exception line and banner, one set
+  of controls, the Run tab, status role, relative console lines), `problems-panel` (first run, row names),
+  `review-agent-changes` (agent changes first, keyboard model, partly kept).
+- axe-core 4.11.4 on every Workbench tab, the tab bar and the side Debug tab, light and dark, on a real server with
+  content in each (scratch spec): 22 nodes before (light: Agents 4, Problems 3, Output 3, Debug Console 3, side Debug
+  6; dark: Agents 1, side Debug 2; all `color-contrast` except one `aria-required-children` per scheme), 2 after: the
+  upstream side-panel tablist holding a non-tab button (`aria-required-children`, critical), in light and dark.
+- `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 35 at the start, 42 at the end. The 7 new ones are
+  not from these runs: six `clangd` aborts (Xcode toolchain, reparented to launchd after their parent exited,
+  23:12–23:36) and one Swift `engine_hub-checks` binary from `/private/tmp` (23:09); none of these specs use C, C++ or
+  Swift, and none were added during the final full run. No Electron, no lldb; no server, debugpy or temp project left
+  behind (an older `$TMPDIR/opencode-review-e2e-pEgJsb` from 16:01 is not from this wave).
+- Screenshots: scratchpad `ux1/shots-before/` and `ux1/shots-after/` (strip, card, first run, IDE setup, review, Fix
+  chip, permission preview, merge gate, debug menus, exception line, one toolbar, agent dialog, activity reasons, tab
+  focus, and each tab in light and dark).

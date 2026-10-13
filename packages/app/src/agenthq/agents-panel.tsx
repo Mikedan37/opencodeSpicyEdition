@@ -1,4 +1,4 @@
-import { createEffect, createMemo, For, Match, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Portal } from "solid-js/web"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -12,13 +12,14 @@ import { Markdown } from "@opencode-ai/session-ui/markdown"
 import { getFilename } from "@opencode-ai/core/util/path"
 import type { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { useLanguage } from "@/context/language"
-import { getRelativeTime } from "@/utils/time"
 import { showToast } from "@/utils/toast"
 import { VirtualList } from "@/workbench/virtual-list"
 import { errorText } from "@/workbench/client"
-import { PanelState, RequestErrorState, TONE_CLASS } from "@/workbench/ui"
+import { useRelativeTime } from "@/workbench/clock"
+import { InlineCode, PanelState, RequestErrorState, TONE_CLASS } from "@/workbench/ui"
 import { useWorkbench } from "@/workbench/panel"
 import { draftedTool } from "@/workbench/tools"
+import { PatchView } from "@/workbench/patch-view"
 import { AgentAvatar } from "./avatar"
 import { AgentDialog, createAgentDraft } from "./agent-dialog"
 import { useAgentHQ } from "./context"
@@ -188,7 +189,7 @@ function AgentCard(props: { agent: Agent }) {
           <span class="flex min-w-0 items-center gap-1.5">
             <ProviderChip provider={props.agent.provider} />
             <Show when={props.agent.model}>
-              <span class="truncate text-[11px] text-v2-text-text-faint">{props.agent.model}</span>
+              <span class="truncate text-[11px] text-v2-text-text-muted">{props.agent.model}</span>
             </Show>
           </span>
         </span>
@@ -197,7 +198,7 @@ function AgentCard(props: { agent: Agent }) {
       <span class="w-full truncate text-[12px] text-v2-text-text-muted">
         {latest() ? latest()?.title || language.t("agenthq.session.untitled") : language.t("agenthq.card.noSession")}
       </span>
-      <span class="w-full truncate text-[11px] text-v2-text-text-faint" title={props.agent.projectDirectory}>
+      <span class="w-full truncate text-[11px] text-v2-text-text-muted" title={props.agent.projectDirectory}>
         {[getFilename(props.agent.projectDirectory), props.agent.specialty].filter(Boolean).join(" · ")}
       </span>
     </button>
@@ -232,6 +233,7 @@ function StatusPill(props: { status?: AgentHQ.AgentSessionStatus }) {
 function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () => void }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
+  const ago = useRelativeTime()
   const sessions = createMemo(() => agentSessions(agenthq.state.sessions, props.agent.id))
   const sessionID = createMemo(() => agenthq.ui.sessionID ?? sessions()[0]?.id)
   const session = createMemo(() => {
@@ -326,13 +328,11 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
                   </span>
                   <span class="flex items-center gap-1.5">
                     <StatusPill status={item.status} />
-                    <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-faint">
-                      {getRelativeTime(new Date(item.updatedAt).toISOString(), language.t)}
-                    </span>
+                    <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-muted">{ago(item.updatedAt)}</span>
                   </span>
                   <Show when={item.pendingPermissions > 0}>
-                    <span class="text-[11px] text-v2-state-fg-warning">
-                      {language.t("agenthq.session.pending", { count: item.pendingPermissions })}
+                    <span class="text-[11px] text-[var(--spicy-fg-warning)]">
+                      {language.plural("agenthq.session.pending", item.pendingPermissions)}
                     </span>
                   </Show>
                 </button>
@@ -410,8 +410,35 @@ function SessionFeed(props: { sessionID: string; agentName: string }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
   const feed = () => agenthq.state.feeds[props.sessionID]
+  // The conversation for screen readers (UX a11y): each finished reply, new ask and error, once. What a session
+  // already had when it was first shown is not read out.
+  const [said, setSaid] = createSignal("")
+  const seen = new Map<string, Set<string>>()
+  const settled = (item: FeedItem) =>
+    (item.kind === "permission" && !item.outcome) ||
+    (item.kind === "message" && item.final && item.role === "assistant") ||
+    (item.kind === "note" && item.tone === "error")
+  const spoken = (item: FeedItem) => {
+    if (item.kind === "permission")
+      return language.t("agenthq.announce.permission", { name: props.agentName, title: item.title })
+    if (item.kind === "message") return `${props.agentName}: ${item.text.slice(0, 280)}`
+    return language.t("agenthq.announce.error", { message: item.kind === "note" ? item.text : "" })
+  }
+  createEffect(() => {
+    const current = feed()
+    if (!current || current.status === "loading") return
+    const done = current.items.filter(settled)
+    const known = seen.get(props.sessionID)
+    if (!known) return void seen.set(props.sessionID, new Set(done.map((item) => item.key)))
+    const fresh = done.filter((item) => !known.has(item.key))
+    fresh.forEach((item) => known.add(item.key))
+    if (fresh.length) setSaid(fresh.map(spoken).join(". "))
+  })
   return (
     <div class="flex min-h-0 flex-1 flex-col">
+      <div data-slot="feed-announce" class="sr-only" aria-live="polite" aria-atomic="true">
+        {said()}
+      </div>
       <Show when={feed()?.status === "error"}>
         <div class="flex shrink-0 items-center gap-2 bg-v2-state-bg-danger px-3 py-1.5 text-[12px] text-v2-state-fg-danger">
           <span class="min-w-0 flex-1 truncate">
@@ -518,7 +545,7 @@ function ToolRow(props: { tool: ToolItem }) {
     <>
       <Switch fallback={<LoaderV2 width={12} height={12} class="shrink-0" />}>
         <Match when={props.tool.state === "completed"}>
-          <Icon name="circle-check" size="small" class="text-v2-state-fg-success" />
+          <Icon name="circle-check" size="small" class="text-[var(--spicy-fg-success)]" />
         </Match>
         <Match when={props.tool.state === "error"}>
           <Icon name="circle-x" size="small" class="text-v2-state-fg-danger" />
@@ -526,7 +553,7 @@ function ToolRow(props: { tool: ToolItem }) {
       </Switch>
       <span class="shrink-0 font-mono text-[12px] text-v2-text-text-base">{props.tool.tool}</span>
       <span class="min-w-0 flex-1 truncate text-[12px] text-v2-text-text-muted">{props.tool.title}</span>
-      <span class="shrink-0 text-[11px] text-v2-text-text-faint">{language.t(`agenthq.tool.${props.tool.state}`)}</span>
+      <span class="shrink-0 text-[11px] text-v2-text-text-muted">{language.t(`agenthq.tool.${props.tool.state}`)}</span>
     </>
   )
   return (
@@ -557,7 +584,7 @@ function ToolRow(props: { tool: ToolItem }) {
             class="flex min-w-0 items-center gap-1 border-t border-v2-border-border-muted px-2 py-1 text-[12px] text-v2-text-text-base"
           >
             <span class="min-w-0 truncate">{language.t("agenthq.tool.drafted", { name: name() })}</span>
-            <span class="shrink-0 text-v2-text-text-faint">{" — "}</span>
+            <span class="shrink-0 text-v2-text-text-muted">{" — "}</span>
             <button
               type="button"
               data-action="review-tool"
@@ -580,6 +607,26 @@ function ToolRow(props: { tool: ToolItem }) {
 function PermissionCard(props: { permission: PermissionItem; sessionID: string }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
+  // Paths in what the provider wrote, relative to where the agent works (UX #15): its session's folder (a task's
+  // worktree) or the agent's.
+  const root = () => {
+    const session = agenthq.state.sessions[props.sessionID]
+    const agent = agenthq.state.agents.find((item) => item.id === session?.agentID)
+    return (session?.workingDirectory ?? agent?.workingDirectory ?? agent?.projectDirectory)?.replace(/\/+$/, "")
+  }
+  const rel = (text: string) => {
+    const base = root()
+    return base ? text.replaceAll(`${base}/`, "") : text
+  }
+  const place = (cwd: string) => (cwd === root() ? getFilename(cwd) : rel(cwd))
+  const always = (permission: PermissionItem) =>
+    language.t(
+      permission.preview?.kind === "edit"
+        ? "agenthq.permission.alwaysEdits"
+        : permission.preview?.kind === "command"
+          ? "agenthq.permission.alwaysCommand"
+          : "agenthq.permission.always",
+    )
   return (
     <div
       role="group"
@@ -593,19 +640,63 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
           !!props.permission.outcome,
       }}
     >
-      <div class="flex items-center gap-1.5 text-[12px] font-[530] text-v2-state-fg-warning">
+      <div class="flex items-center gap-1.5 text-[12px] font-[530] text-[var(--spicy-fg-warning)]">
         <Icon name="shield" size="small" />
         {language.t("agenthq.permission")}
       </div>
-      <div class="mt-1 text-[13px] text-v2-text-text-base">{props.permission.title}</div>
+      <div class="mt-1 text-[13px] text-v2-text-text-base">{rel(props.permission.title)}</div>
       <Show when={props.permission.tool}>
         <div class="font-mono text-[11px] text-v2-text-text-muted">{props.permission.tool}</div>
       </Show>
-      <Show when={props.permission.details}>
-        <pre class="mt-1 max-h-40 select-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[16px] text-v2-text-text-muted">
-          {props.permission.details}
-        </pre>
-      </Show>
+      {/* UX #3: what is being approved, readable: the edit as a diff, the command and where it runs, or one line */}
+      <Switch
+        fallback={
+          <Show when={props.permission.details}>
+            <pre class="mt-1 max-h-40 select-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[16px] text-v2-text-text-muted">
+              {rel(props.permission.details ?? "")}
+            </pre>
+          </Show>
+        }
+      >
+        <Match when={props.permission.preview?.kind === "edit" ? props.permission.preview : undefined}>
+          {(edit) => (
+            <div
+              data-slot="permission-edit"
+              class="mt-1.5 max-h-80 overflow-auto rounded-[6px] bg-v2-background-bg-base"
+            >
+              <PatchView diff={edit().diff} root={root()} />
+              <Show when={edit().truncated}>
+                <p class="px-2 py-1 text-[11px] text-v2-text-text-muted">
+                  {language.t("agenthq.permission.truncated")}
+                </p>
+              </Show>
+            </div>
+          )}
+        </Match>
+        <Match when={props.permission.preview?.kind === "command" ? props.permission.preview : undefined}>
+          {(command) => (
+            <div data-slot="permission-command" class="mt-1.5 flex flex-col gap-0.5">
+              <pre class="select-text overflow-x-auto whitespace-pre-wrap break-words rounded-[6px] bg-v2-background-bg-base px-2 py-1 font-mono text-[12px] text-v2-text-text-base">
+                {`$ ${command().command}`}
+              </pre>
+              <Show when={command().cwd}>
+                {(cwd) => (
+                  <span class="font-mono text-[11px] text-v2-text-text-muted">
+                    {language.t("agenthq.permission.cwd", { cwd: place(cwd()) })}
+                  </span>
+                )}
+              </Show>
+            </div>
+          )}
+        </Match>
+        <Match when={props.permission.preview?.kind === "other" ? props.permission.preview : undefined}>
+          {(other) => (
+            <p data-slot="permission-other" class="mt-1 select-text text-[12px] text-v2-text-text-base">
+              {other().summary}
+            </p>
+          )}
+        </Match>
+      </Switch>
       <Show
         when={!props.permission.outcome}
         fallback={
@@ -619,7 +710,8 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
             {(option) => (
               <ButtonV2
                 size="small"
-                variant={option.kind.startsWith("allow") ? "contrast" : "neutral"}
+                // Only "Allow once" is the primary answer; "always" says what it covers.
+                variant={option.kind === "allow_once" ? "contrast" : "neutral"}
                 disabled={!!props.permission.responding}
                 data-option={option.id}
                 onClick={() => void agenthq.respond(props.sessionID, props.permission.requestID, option.id)}
@@ -627,7 +719,7 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
                 <Show when={props.permission.responding === option.id}>
                   <LoaderV2 width={12} height={12} />
                 </Show>
-                {option.label}
+                {option.kind === "allow_always" ? always(props.permission) : option.label}
               </ButtonV2>
             )}
           </For>
@@ -644,6 +736,21 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
   )
 }
 
+// How a turn ended, from the provider's stop reason (UX #15): a normal end ("stop", "end_turn", …) is just "Turn
+// completed"; the raw reason is not shown.
+const TURN_NOTE: Record<
+  string,
+  "agenthq.note.cancelled" | `agenthq.note.turn.${"length" | "refused" | "requests" | "error"}`
+> = {
+  cancelled: "agenthq.note.cancelled",
+  length: "agenthq.note.turn.length",
+  max_tokens: "agenthq.note.turn.length",
+  "content-filter": "agenthq.note.turn.refused",
+  refusal: "agenthq.note.turn.refused",
+  max_turn_requests: "agenthq.note.turn.requests",
+  error: "agenthq.note.turn.error",
+}
+
 function NoteRow(props: { note: NoteItem }) {
   const language = useLanguage()
   return (
@@ -655,11 +762,13 @@ function NoteRow(props: { note: NoteItem }) {
         </div>
       </Match>
       <Match when={props.note.tone === "turn"}>
-        <div data-row="turn" class="mx-3 my-1 flex items-center gap-2 text-[11px] text-v2-text-text-faint">
+        <div
+          data-row="turn"
+          data-reason={props.note.text || undefined}
+          class="mx-3 my-1 flex items-center gap-2 text-[11px] text-v2-text-text-muted"
+        >
           <span class="h-px flex-1 bg-v2-border-border-muted" />
-          {props.note.text
-            ? language.t("agenthq.note.turnReason", { reason: props.note.text })
-            : language.t("agenthq.note.turn")}
+          {language.t(TURN_NOTE[props.note.text] ?? "agenthq.note.turn")}
           <span class="h-px flex-1 bg-v2-border-border-muted" />
         </div>
       </Match>
@@ -668,7 +777,7 @@ function NoteRow(props: { note: NoteItem }) {
           data-row="error"
           class={`mx-3 my-1 select-text whitespace-pre-wrap break-words rounded-[8px] px-2.5 py-1.5 text-[12px] ${TONE_CLASS.danger}`}
         >
-          {props.note.text}
+          <InlineCode text={props.note.text} />
         </div>
       </Match>
     </Switch>

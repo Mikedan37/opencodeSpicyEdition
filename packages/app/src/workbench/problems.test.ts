@@ -6,8 +6,10 @@ import {
   filterProblems,
   groupProblems,
   problemRows,
+  lastChecked,
   sourceLabel,
   type ProblemFilter,
+  withLsp,
 } from "./problems"
 
 const problem = (
@@ -132,6 +134,25 @@ describe("problems", () => {
     expect(crashReason({ ...stale, stale: false }, producers)).toBeUndefined()
     expect(crashReason(problem("t", { stale: true }), producers)).toBeUndefined()
     expect(crashReason(stale, [{ ...producers[0]!, state: "idle" }])).toBeUndefined()
+  })
+
+  test("last checked: the newest finished report, one entry per tool; nothing while none finished", () => {
+    const producer = (tool: string, state: "idle" | "running" | "failed", updatedAt: number) =>
+      ({ producer: `p:${tool}:${updatedAt}`, kind: "typecheck", tool, state, updatedAt }) as const
+    expect(lastChecked([])).toBeUndefined()
+    expect(lastChecked([producer("tsc", "running", 9)])).toBeUndefined()
+    expect(
+      lastChecked([producer("tsc", "idle", 5), producer("eslint", "failed", 7), producer("tsc", "idle", 6)]),
+    ).toEqual({ at: 7, tools: ["eslint", "tsc"] })
+  })
+
+  test("turning language servers on edits the project config and keeps JSONC comments", () => {
+    expect(withLsp('{\n  "model": "x"\n}\n')).toBe('{\n  "model": "x",\n  "lsp": true\n}\n')
+    expect(withLsp('{ "lsp": false }')).toBe('{\n  "lsp": true\n}\n')
+    // JSONC: a false value flips; otherwise the key goes first, with a comma only when more follows.
+    expect(withLsp('{\n  // off for now\n  "lsp": false,\n}\n')).toBe('{\n  // off for now\n  "lsp": true,\n}\n')
+    expect(withLsp('{\n  // models\n  "model": "x",\n}\n')).toBe('{\n  "lsp": true,\n  // models\n  "model": "x",\n}\n')
+    expect(withLsp("{ /* empty */ }")).toBe('{\n  "lsp": true /* empty */ }')
   })
 
   test("debounces invalidations and never overlaps refetches", async () => {

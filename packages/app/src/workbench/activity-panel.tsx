@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, onMount, Show, Switch } from "solid-js"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
@@ -8,9 +8,9 @@ import type { Workbench } from "@opencode-ai/schema/workbench"
 import { AgentAvatar } from "@/agenthq/avatar"
 import { useAgentHQ } from "@/agenthq/context"
 import { useLanguage } from "@/context/language"
-import { getRelativeTime } from "@/utils/time"
 import { showToast } from "@/utils/toast"
 import { errorText } from "./client"
+import { useRelativeTime } from "./clock"
 import { useDebug } from "./debug-context"
 import { ENDED, RESUMABLE } from "./investigations"
 import { useWorkbench } from "./panel"
@@ -35,6 +35,8 @@ const STATUS_TONE: Record<Status, keyof typeof TONE_CLASS> = {
 }
 const SECTION = "mb-1 mt-4 text-[11px] font-[530] uppercase tracking-[0.04em] text-v2-text-text-muted"
 const LINK = "text-v2-text-text-accent hover:underline disabled:text-v2-text-text-faint disabled:no-underline"
+// Older records wrote the supervisor rule into the sentence ("S2: …"); the rule is a field now.
+const sentence = (reason: string) => reason.replace(/^S[1-8]: /, "")
 
 function InvestigationStatusPill(props: { status: Status }) {
   const language = useLanguage()
@@ -48,14 +50,14 @@ function InvestigationStatusPill(props: { status: Status }) {
   )
 }
 
-const time = (at: number, t: Parameters<typeof getRelativeTime>[1]) => getRelativeTime(new Date(at).toISOString(), t)
-
 // Bottom panel Activity tab: the project's investigations (P7), each with its status timeline and its evidence, which
 // links to the verification run in Output, the debug session in the Debug tab, or the agent's session.
 export default function ActivityPanel() {
   const workbench = useWorkbench()
   const language = useLanguage()
   const investigations = workbench.investigations
+  // Run links name their check ("pytest test") from the run list, which the Output tab loads otherwise.
+  onMount(() => void workbench.runs.load())
   const [selected, setSelected] = createSignal<string>()
   const current = createMemo(() => investigations.find(selected()) ?? investigations.state.list[0])
   // Another view pointing here (a console row's evidence) selects that investigation.
@@ -128,6 +130,7 @@ function AgentName(props: { agentID?: string }) {
 
 function ListRow(props: { summary: Workbench.InvestigationSummary; selected: boolean; onSelect: () => void }) {
   const language = useLanguage()
+  const ago = useRelativeTime()
   return (
     <button
       type="button"
@@ -141,17 +144,17 @@ function ListRow(props: { summary: Workbench.InvestigationSummary; selected: boo
         <span class="min-w-0 flex-1 truncate text-[12px] font-[530] text-v2-text-text-base">{props.summary.title}</span>
         <InvestigationStatusPill status={props.summary.status} />
       </span>
-      <span class="flex min-w-0 items-center gap-2 text-[11px] text-v2-text-text-faint">
+      <span class="flex min-w-0 items-center gap-2 text-[11px] text-v2-text-text-muted">
         <AgentName agentID={props.summary.agentID} />
-        <span class="shrink-0">
-          {language.t("workbench.activity.evidenceCount", { count: props.summary.evidenceCount })}
-        </span>
-        <span class="ml-auto shrink-0">{time(props.summary.updatedAt, language.t)}</span>
+        <span class="shrink-0">{language.plural("workbench.activity.evidenceCount", props.summary.evidenceCount)}</span>
+        <span class="ml-auto shrink-0">{ago(props.summary.updatedAt)}</span>
       </span>
       <Show when={props.summary.reason}>
-        <span class="truncate text-[11px] text-v2-text-text-muted" title={props.summary.reason}>
-          {props.summary.reason}
-        </span>
+        {(reason) => (
+          <span class="truncate text-[11px] text-v2-text-text-muted" title={sentence(reason())}>
+            {sentence(reason())}
+          </span>
+        )}
       </Show>
     </button>
   )
@@ -160,6 +163,7 @@ function ListRow(props: { summary: Workbench.InvestigationSummary; selected: boo
 function Detail(props: { summary: Workbench.InvestigationSummary }) {
   const workbench = useWorkbench()
   const language = useLanguage()
+  const ago = useRelativeTime()
   const investigations = workbench.investigations
   const state = () => investigations.state.details[props.summary.id]
   const record = () => state()?.detail?.investigation
@@ -234,9 +238,9 @@ function Detail(props: { summary: Workbench.InvestigationSummary }) {
       <Show when={props.summary.reason}>
         <p
           data-slot="investigation-reason"
-          class="mt-2 select-text rounded-[6px] bg-v2-background-bg-layer-02 px-2 py-1 text-[12px] text-v2-text-text-muted"
+          class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[6px] bg-v2-background-bg-layer-02 px-2 py-1 text-[12px] text-v2-text-text-base"
         >
-          {props.summary.reason}
+          <Reason {...props.summary} onEvidence={reveal} />
         </p>
       </Show>
       <Switch>
@@ -270,19 +274,8 @@ function Detail(props: { summary: Workbench.InvestigationSummary }) {
                       class="flex min-w-0 flex-wrap items-center gap-2 text-[12px]"
                     >
                       <InvestigationStatusPill status={checkpoint.status} />
-                      <span class="shrink-0 text-[11px] text-v2-text-text-faint">
-                        {time(checkpoint.at, language.t)}
-                      </span>
-                      <Show when={checkpoint.reason}>
-                        <span class="min-w-0 select-text text-v2-text-text-base">{checkpoint.reason}</span>
-                      </Show>
-                      <Show when={checkpoint.evidenceID}>
-                        {(id) => (
-                          <button type="button" class={`${LINK} font-mono text-[11px]`} onClick={() => reveal(id())}>
-                            {id()}
-                          </button>
-                        )}
-                      </Show>
+                      <span class="shrink-0 text-[11px] text-v2-text-text-muted">{ago(checkpoint.at)}</span>
+                      <Reason {...checkpoint} onEvidence={reveal} />
                     </li>
                   )}
                 </For>
@@ -316,9 +309,9 @@ function Detail(props: { summary: Workbench.InvestigationSummary }) {
                           )}
                         </span>
                         <span class="text-v2-text-text-muted">
-                          {language.t("workbench.activity.attempt.errors", { count: attempt.errorCount })}
+                          {language.plural("workbench.activity.attempt.errors", attempt.errorCount)}
                         </span>
-                        <span class="min-w-0 truncate font-mono text-[11px] text-v2-text-text-faint">
+                        <span class="min-w-0 truncate font-mono text-[11px] text-v2-text-text-muted">
                           {attempt.changes.map((change) => getFilename(change.file)).join(", ")}
                         </span>
                       </li>
@@ -343,7 +336,7 @@ function Detail(props: { summary: Workbench.InvestigationSummary }) {
               </Show>
               <Show when={investigation().unverified.length}>
                 <h4 class={SECTION}>{language.t("workbench.activity.unverified")}</h4>
-                <ul class="flex flex-col gap-0.5 font-mono text-[11px] text-v2-state-fg-warning">
+                <ul class="flex flex-col gap-0.5 font-mono text-[11px] text-[var(--spicy-fg-warning)]">
                   <For each={investigation().unverified}>
                     {(file) => (
                       <li class="truncate" title={file}>
@@ -416,6 +409,7 @@ function Meta(props: { investigation: Workbench.Investigation; summary: Workbenc
 
 function EvidenceRow(props: { evidence: Evidence; focused: boolean }) {
   const language = useLanguage()
+  const ago = useRelativeTime()
   const refs = () => props.evidence.refs
   return (
     <li
@@ -435,8 +429,8 @@ function EvidenceRow(props: { evidence: Evidence; focused: boolean }) {
         <span class="shrink-0 font-[530] text-v2-text-text-base">
           {language.t(`workbench.activity.kind.${props.evidence.kind}`)}
         </span>
-        <span class="shrink-0 font-mono text-[10px] text-v2-text-text-faint">{props.evidence.id}</span>
-        <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-faint">{time(props.evidence.at, language.t)}</span>
+        <span class="shrink-0 font-mono text-[10px] text-v2-text-text-muted">{props.evidence.id}</span>
+        <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-muted">{ago(props.evidence.at)}</span>
       </div>
       <p class="mt-0.5 select-text text-v2-text-text-base">{props.evidence.summary}</p>
       <div class="mt-0.5 flex flex-wrap items-center gap-3 text-[11px]">
@@ -458,9 +452,51 @@ function EvidenceRow(props: { evidence: Evidence; focused: boolean }) {
   )
 }
 
+// A reason as people read it (UX #15): the supervisor rule as a short tag, the sentence, and links to the runs and the
+// evidence it refers to.
+function Reason(props: {
+  reason?: string
+  rule?: Workbench.SupervisorRule
+  runIDs?: readonly string[]
+  evidenceID?: string
+  onEvidence: (id: string) => void
+}) {
+  const language = useLanguage()
+  return (
+    <>
+      <Show when={props.rule}>
+        {(rule) => (
+          <span
+            data-rule={rule()}
+            class={`shrink-0 rounded-full px-1.5 text-[10px] font-[530] leading-4 ${TONE_CLASS.warning}`}
+          >
+            {language.t(`workbench.activity.rule.${rule()}`)}
+          </span>
+        )}
+      </Show>
+      <Show when={props.reason}>
+        {(reason) => <span class="min-w-0 select-text text-v2-text-text-base">{sentence(reason())}</span>}
+      </Show>
+      <For each={props.runIDs ?? []}>{(id) => <RunLink runID={id} />}</For>
+      <Show when={props.evidenceID}>
+        {(id) => (
+          <button type="button" data-link="evidence" class={LINK} onClick={() => props.onEvidence(id())}>
+            {language.t("workbench.activity.link.evidence")}
+          </button>
+        )}
+      </Show>
+    </>
+  )
+}
+
 function RunLink(props: { runID: string }) {
   const workbench = useWorkbench()
   const language = useLanguage()
+  // "tsc check" when this window has the run; its id otherwise.
+  const name = () => {
+    const run = workbench.runs.state.runs.find((entry) => entry.info.id === props.runID)?.info
+    return run ? `${run.checker} ${run.kind}` : props.runID
+  }
   return (
     <button
       type="button"
@@ -471,7 +507,7 @@ function RunLink(props: { runID: string }) {
         workbench.open("output")
       }}
     >
-      {language.t("workbench.activity.link.run", { id: props.runID })}
+      {language.t("workbench.activity.link.run", { id: name() })}
     </button>
   )
 }
@@ -509,7 +545,7 @@ function SessionLink(props: { sessionID?: string; agentID?: string }) {
   return (
     <Show when={props.sessionID}>
       {(id) => (
-        <Show when={agent()} fallback={<span class="font-mono text-[11px] text-v2-text-text-faint">{id()}</span>}>
+        <Show when={agent()} fallback={<span class="font-mono text-[11px] text-v2-text-text-muted">{id()}</span>}>
           {(agentID) => (
             <button
               type="button"

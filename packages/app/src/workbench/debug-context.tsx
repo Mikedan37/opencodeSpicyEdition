@@ -1,4 +1,13 @@
-import { createContext, createEffect, createRoot, on, onCleanup, useContext, type ParentProps } from "solid-js"
+import {
+  createContext,
+  createEffect,
+  createRoot,
+  createSignal,
+  on,
+  onCleanup,
+  useContext,
+  type ParentProps,
+} from "solid-js"
 import { createStore } from "solid-js/store"
 import { Option, Schema } from "effect"
 import { Workbench } from "@opencode-ai/schema/workbench"
@@ -47,6 +56,8 @@ function createDebug() {
   )
   const debug = createDebugState({ client: workbench.client, directory: workbench.directory, prefs: [prefs, setPrefs] })
   const [consoleFilter, setConsoleFilter] = createStore({ stdout: true, stderr: true, console: true })
+  // How many side Debug tabs are on screen: the Debug Console drops its own toolbar while one is (UX #13, one toolbar).
+  const [sides, setSides] = createSignal(0)
   void debug.load()
 
   const stop = sdk().event.listen((event) => {
@@ -211,6 +222,12 @@ function createDebug() {
     end,
     openStart,
     consoleFilter: { state: consoleFilter, set: setConsoleFilter },
+    sideShown: () => sides() > 0,
+    // The side Debug tab, while mounted.
+    showingSide() {
+      setSides((count) => count + 1)
+      onCleanup(() => setSides((count) => count - 1))
+    },
     lldbAsk,
     answering: (requestID: string) => !!answering[requestID],
     answer,

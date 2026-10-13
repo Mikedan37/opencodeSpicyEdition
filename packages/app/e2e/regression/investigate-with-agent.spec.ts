@@ -4,11 +4,11 @@ import { expect, test } from "@playwright/test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { stopSnapshot } from "../../src/workbench/snapshot"
+import { stopSnapshot, stopSummary } from "../../src/workbench/snapshot"
 import { createProject, fakeModel, startServer } from "../utils/opencode-server"
 
 // UI-07 on a real opencode server (isolated XDG dirs) with real debugpy: the program stops on its uncaught exception,
-// "Investigate with agent" → This session sends the stop's snapshot, and the session stores exactly that text as the
+// "Ask an agent" → This session sends the stop's snapshot, and the session stores exactly that text as the
 // user's message, which the scripted model then answers. Run with PLAYWRIGHT_SERVER_PORT set to a free port.
 
 const AVG = [
@@ -26,7 +26,10 @@ const AVG = [
   "",
 ].join("\n")
 
-type Message = { info: { role: string }; parts: { type: string; text?: string }[] }
+type Message = {
+  info: { role: string }
+  parts: { type: string; text?: string; synthetic?: boolean; filename?: string }[]
+}
 
 test.use({ viewport: { width: 1440, height: 900 } })
 
@@ -58,7 +61,7 @@ test("UI-07 Investigate with agent sends the real stop to this session", async (
     const debug = panel.locator('[data-component="workbench-debug"]')
     await expect(debug.locator('[data-slot="debug-status"]')).toContainText("ZeroDivisionError")
 
-    await debug.locator('[data-action="handoff"]').click()
+    await debug.locator('[data-action="ask-agent"]').click()
     await page.locator('[data-handoff-menu] [data-target="session"]').click()
     await expect(page.getByText("Sent to this session", { exact: true })).toBeVisible()
 
@@ -72,11 +75,26 @@ test("UI-07 Investigate with agent sends the real stop to this session", async (
     expect(expected).toContain("- xs: list = []")
     // debugpy's value-less "special variables" group stays out.
     expect(expected).not.toContain("special variables")
-    const userTexts = async () =>
+    // The message is the one-line summary; the snapshot rides along as "Debug stop context", which the server hands
+    // the model whole (a synthetic text part).
+    const user = async () =>
       ((await (await api(`/session/${session.id}/message`)).json()) as Message[])
         .filter((message) => message.info.role === "user")
-        .map((message) => message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""))
-    await expect.poll(userTexts, { timeout: 30_000 }).toEqual([expected])
+        .map((message) => ({
+          text: message.parts.flatMap((part) => (part.type === "text" && !part.synthetic ? [part.text] : [])),
+          context: message.parts.some((part) => part.type === "text" && part.synthetic && part.text === expected),
+          files: message.parts.flatMap((part) => (part.type === "file" ? [part.filename] : [])),
+        }))
+    await expect.poll(user, { timeout: 30_000 }).toEqual([
+      {
+        text: [stopSummary({ root: project, session: stopped })],
+        context: true,
+        files: ["Debug stop context"],
+      },
+    ])
+    expect(stopSummary({ root: project, session: stopped })).toBe(
+      "Investigate the debugger stop: ZeroDivisionError at avg.py:8.",
+    )
     // The model answered it; nothing was approved on its behalf.
     await expect.poll(() => model.remaining(), { timeout: 30_000 }).toBe(0)
     await expect(page.getByText("Looking into the division.")).toBeVisible({ timeout: 30_000 })

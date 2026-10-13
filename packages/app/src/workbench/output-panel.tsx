@@ -6,15 +6,15 @@ import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { useLanguage } from "@/context/language"
-import { showToast } from "@/utils/toast"
 import { ansiLines, fileRefs, resolvePath, type AnsiStyle } from "./ansi"
-import { errorText, WorkbenchRequestError } from "./client"
 import { useFileLineOpener } from "./open-file"
 import { useWorkbench } from "./panel"
 import { isFinished, needsDetail, type RunEntry } from "./runs"
+import { shortPath } from "./snapshot"
 import { Glyph, OUTPUT_GLYPH, PanelState, TONE_CLASS } from "./ui"
 import { VirtualList } from "./virtual-list"
 
+const REPORT_COUNTS = ["passed", "failed", "skipped", "unavailable", "timedOut"] as const
 const STATUS_TONE: Record<Workbench.RunStatus, keyof typeof TONE_CLASS> = {
   queued: "neutral",
   running: "info",
@@ -30,8 +30,8 @@ const STATUS_TONE: Record<Workbench.RunStatus, keyof typeof TONE_CLASS> = {
 const ANSI_COLORS = {
   "--ansi-black": "var(--v2-text-text-base)",
   "--ansi-red": "var(--v2-state-fg-danger)",
-  "--ansi-green": "var(--v2-state-fg-success)",
-  "--ansi-yellow": "var(--v2-state-fg-warning)",
+  "--ansi-green": "var(--spicy-fg-success)",
+  "--ansi-yellow": "var(--spicy-fg-warning)",
   "--ansi-blue": "var(--v2-state-fg-info)",
   "--ansi-magenta": "var(--v2-avatar-bg-pink)",
   "--ansi-cyan": "var(--v2-avatar-bg-cyan)",
@@ -45,6 +45,15 @@ export default function OutputPanel() {
   const [ui, setUi] = createStore({ open: {} as Record<string, boolean> })
   const [now, setNow] = createSignal(Date.now())
   const running = createMemo(() => runs.state.runs.some((entry) => !isFinished(entry.info.status)))
+  // "Last check: 2 passed, 1 failed": the counts that are not zero (UX #15).
+  const summaryText = (summary: Workbench.VerificationReport["summary"]) => {
+    const counts = REPORT_COUNTS.filter((key) => summary[key]).map((key) =>
+      language.t(`workbench.output.report.${key}`, { count: summary[key] }),
+    )
+    return counts.length
+      ? language.t("workbench.output.report", { counts: counts.join(", ") })
+      : language.t("workbench.output.report.empty")
+  }
 
   onMount(() => void runs.load())
   createEffect(() => {
@@ -53,20 +62,8 @@ export default function OutputPanel() {
     onCleanup(() => clearInterval(timer))
   })
 
-  const check = () =>
-    // The whole project as one folder unit; the server checks up to 200 of its source files (gitignore-aware).
-    runs.check({ unit: workbench.directory }).catch((error: unknown) =>
-      showToast({
-        variant: "error",
-        title: language.t("workbench.output.failed"),
-        description:
-          error instanceof WorkbenchRequestError && error.kind === "unavailable"
-            ? language.t("workbench.output.unavailable")
-            : errorText(error),
-      }),
-    )
   const runChecks = () => (
-    <ButtonV2 size="small" variant="neutral" disabled={runs.state.checking} onClick={() => void check()}>
+    <ButtonV2 size="small" variant="neutral" disabled={runs.state.checking} onClick={() => void workbench.runChecks()}>
       <Show when={runs.state.checking}>
         <LoaderV2 width={12} height={12} />
       </Show>
@@ -92,14 +89,14 @@ export default function OutputPanel() {
           {runChecks()}
           <Show when={runs.state.report}>
             {(report) => (
-              <span class="truncate text-[12px] text-v2-text-text-muted" data-slot="report">
-                {language.t("workbench.output.report", { ...report().summary })}
+              <span role="status" class="truncate text-[12px] text-v2-text-text-muted" data-slot="report">
+                {summaryText(report().summary)}
               </span>
             )}
           </Show>
           <span class="flex-1" />
           <Show when={runs.state.history === "unavailable"}>
-            <span class="shrink-0 text-[11px] text-v2-text-text-faint">
+            <span class="shrink-0 text-[11px] text-v2-text-text-muted">
               {language.t("workbench.output.historyUnavailable")}
             </span>
           </Show>
@@ -141,7 +138,8 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
     if (start === undefined) return
     return seconds((info().finishedAt ?? props.now) - start)
   }
-  const unit = () => (info().unit.startsWith(`${directory}/`) ? info().unit.slice(directory.length + 1) : info().unit)
+  // Project-relative; the project itself goes by its folder's name (UX #15).
+  const unit = () => (info().unit === directory ? getFilename(directory) : shortPath(directory, info().unit))
   let section!: HTMLElement
   // A run another view pointed at (an investigation's evidence) scrolls into view.
   createEffect(() => {
@@ -185,21 +183,23 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
           {(counts) => (
             <span class="flex shrink-0 items-center gap-2 text-[11px] tabular-nums text-v2-text-text-muted">
               <span title={language.t("workbench.problems.severity.error")} class="flex items-center gap-1">
-                <span class="size-2 rounded-full bg-v2-state-fg-danger" />
+                <span aria-hidden="true" class="size-2 rounded-full bg-v2-state-fg-danger" />
+                <span class="sr-only">{language.t("workbench.problems.severity.error")}</span>
                 {counts().error}
               </span>
               <span title={language.t("workbench.problems.severity.warning")} class="flex items-center gap-1">
-                <span class="size-2 rounded-full bg-v2-state-fg-warning" />
+                <span aria-hidden="true" class="size-2 rounded-full bg-v2-state-fg-warning" />
+                <span class="sr-only">{language.t("workbench.problems.severity.warning")}</span>
                 {counts().warning}
               </span>
             </span>
           )}
         </Show>
         <Show when={duration()}>
-          <span class="shrink-0 text-[11px] tabular-nums text-v2-text-text-faint">{duration()}</span>
+          <span class="shrink-0 text-[11px] tabular-nums text-v2-text-text-muted">{duration()}</span>
         </Show>
         <Show when={info().exitCode !== undefined}>
-          <span class="shrink-0 font-mono text-[11px] text-v2-text-text-faint">
+          <span class="shrink-0 font-mono text-[11px] text-v2-text-text-muted">
             {language.t("workbench.output.exit", { code: info().exitCode ?? 0 })}
           </span>
         </Show>
@@ -207,13 +207,13 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
       <Show when={props.open}>
         <div class="pb-2">
           <div
-            class="select-text truncate px-3 pb-1 font-mono text-[11px] text-v2-text-text-faint"
+            class="select-text truncate px-3 pb-1 font-mono text-[11px] text-v2-text-text-muted"
             title={info().command.join(" ")}
           >
             {info().command.join(" ")}
           </div>
           <Show when={info().reason}>
-            <div class="px-3 pb-1 text-[12px] text-v2-state-fg-warning">{info().reason}</div>
+            <div class="px-3 pb-1 text-[12px] text-[var(--spicy-fg-warning)]">{info().reason}</div>
           </Show>
           <Switch fallback={<RunOutput entry={props.entry} />}>
             <Match when={needsDetail(props.entry) && props.entry.detail === "loading"}>
@@ -223,7 +223,7 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
               </div>
             </Match>
             <Match when={!props.entry.output}>
-              <div class="px-3 py-1 text-[12px] text-v2-text-text-faint">
+              <div class="px-3 py-1 text-[12px] text-v2-text-text-muted">
                 {needsDetail(props.entry) && props.entry.detail === "failed"
                   ? language.t("workbench.output.loadFailed")
                   : language.t("workbench.output.noOutput")}
@@ -231,7 +231,7 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
             </Match>
           </Switch>
           <Show when={props.entry.truncated}>
-            <div class="px-3 pt-1 text-[11px] text-v2-text-text-faint">{language.t("workbench.output.truncated")}</div>
+            <div class="px-3 pt-1 text-[11px] text-v2-text-text-muted">{language.t("workbench.output.truncated")}</div>
           </Show>
         </div>
       </Show>

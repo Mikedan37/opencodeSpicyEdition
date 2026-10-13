@@ -95,6 +95,27 @@ const SearchResult = Schema.Struct({
   total: Schema.Int,
 })
 export type SearchResult = typeof SearchResult.Type
+// GET /workbench/doctor (workbench/doctor.ts `Report`): per language, LSP and the tools found and whether they run.
+const DoctorProbe = Schema.Struct({
+  area: Schema.Literals(["runtime", "lsp", "check", "test", "debug"]),
+  tool: Schema.String,
+  status: Schema.Literals(["ok", "missing", "broken", "blocked"]),
+  path: Schema.optional(Schema.String),
+  version: Schema.optional(Schema.String),
+  reason: Schema.optional(Schema.String),
+})
+const DoctorReport = Schema.Struct({
+  languages: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      name: Schema.String,
+      lsp: Schema.Struct({ server: Schema.String, enabled: Schema.Boolean, reason: Schema.optional(Schema.String) }),
+      probes: Schema.Array(DoctorProbe),
+    }),
+  ),
+})
+export type DoctorReport = typeof DoctorReport.Type
+export type DoctorProbe = typeof DoctorProbe.Type
 
 // Agent HQ orchestration (groups/agenthq.ts; docs/spicy/notes-agenthq.md "Routes (wave 2)"). `description: null`
 // clears it on edit.
@@ -132,6 +153,7 @@ const decoders = {
   tasks: Schema.decodeUnknownOption(Schema.Array(AgentHQ.Task)),
   task: Schema.decodeUnknownOption(AgentHQ.Task),
   taskReview: Schema.decodeUnknownOption(AgentHQ.TaskReview),
+  taskReviewDiff: Schema.decodeUnknownOption(AgentHQ.TaskReviewDiff),
   messages: Schema.decodeUnknownOption(Schema.Array(AgentHQ.AgentMessage)),
   message: Schema.decodeUnknownOption(AgentHQ.AgentMessage),
   investigations: Schema.decodeUnknownOption(Schema.Array(Workbench.InvestigationSummary)),
@@ -142,6 +164,7 @@ const decoders = {
   tool: Schema.decodeUnknownOption(Workbench.CustomTool),
   toolResult: Schema.decodeUnknownOption(Workbench.CustomToolResult),
   fileWritten: Schema.decodeUnknownOption(FileWritten),
+  doctor: Schema.decodeUnknownOption(DoctorReport),
   lspHover: Schema.decodeUnknownOption(Schema.NullOr(Workbench.LspHover)),
   lspLocations: Schema.decodeUnknownOption(Schema.Array(Workbench.LspLocation)),
   searchResult: Schema.decodeUnknownOption(SearchResult),
@@ -231,6 +254,7 @@ export function createWorkbenchClient(input: {
     respond: (id: string, requestID: string, optionID: string) =>
       call("POST", `${session(id)}/permissions/${encodeURIComponent(requestID)}`, { optionID }),
     problems: () => decoded(decoders.problems, "GET", "/workbench/problems"),
+    doctor: () => decoded(decoders.doctor, "GET", "/workbench/doctor"),
     // 409 when the file no longer hashes to baseHash (null: it must not exist); 403 outside the project.
     readFile: (path: string) => decoded(decoders.fileText, "GET", `/workbench/file?path=${encodeURIComponent(path)}`),
     writeFile: (body: { path: string; content: string; baseHash: string | null }) =>
@@ -323,6 +347,16 @@ export function createWorkbenchClient(input: {
     // Dry run of approving: what merging the task's branch would bring in, as of the branch commit `head`. Touches
     // nothing outside the task's own branch.
     taskReview: (id: string) => decoded(decoders.taskReview, "GET", `${task(id)}/review`),
+    // What approving merges (base...head) for one file or all of them; pass the review's head so it is exactly that.
+    // 409 when the head is no longer on the branch, or the branch is gone.
+    taskReviewDiff: (id: string, query: { path?: string; head?: string }) =>
+      decoded(
+        decoders.taskReviewDiff,
+        "GET",
+        `${task(id)}/review/diff?${new URLSearchParams(
+          Object.entries(query).filter((entry): entry is [string, string] => !!entry[1]),
+        )}`,
+      ),
     // Merges exactly the reviewed `head`; the server refuses when the task changed since that review.
     approveTask: (id: string, head?: string) => decoded(decoders.task, "POST", `${task(id)}/approve`, { head }),
     messages: (filter: { taskID?: string; agentID?: string }) =>

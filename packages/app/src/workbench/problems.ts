@@ -52,6 +52,36 @@ export function crashReason(problem: Problem, producers: Workbench.ProblemsSnaps
     .find((item) => item?.reason)?.reason
 }
 
+// When the project was last checked and by what: the newest finished report first, one entry per tool.
+export function lastChecked(producers: Workbench.ProblemsSnapshot["producers"]) {
+  const done = producers.filter((item) => item.state !== "running").toSorted((a, b) => b.updatedAt - a.updatedAt)
+  if (!done.length) return
+  return { at: done[0]!.updatedAt, tools: [...new Set(done.map((item) => item.tool))] }
+}
+
+// A project config with "lsp": true (DIAG-12's Turn on). Plain JSON is rewritten; JSONC keeps its comments: an
+// "lsp": false becomes true, else the key goes first in the object.
+// ponytail: the JSONC path is a text edit, not a parser; a commented-out "lsp": false before the real key is changed.
+export function withLsp(text: string) {
+  const json = (() => {
+    try {
+      return JSON.parse(text) as unknown
+    } catch {
+      return undefined
+    }
+  })()
+  if (json && typeof json === "object" && !Array.isArray(json))
+    return JSON.stringify({ ...json, lsp: true }, null, 2) + "\n"
+  if (/"lsp"\s*:\s*false/.test(text)) return text.replace(/("lsp"\s*:\s*)false/, "$1true")
+  const open = text.indexOf("{")
+  const rest = text
+    .slice(open + 1)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "")
+    .trim()
+  return `${text.slice(0, open + 1)}\n  "lsp": true${rest.startsWith("}") ? "" : ","}${text.slice(open + 1)}`
+}
+
 export function filterProblems(problems: readonly Problem[], filter: ProblemFilter) {
   const query = filter.query.trim().toLowerCase()
   return problems.filter((problem) => {

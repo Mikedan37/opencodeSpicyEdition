@@ -30,6 +30,8 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 | `packages/app/src/context/command.tsx` | `EDITABLE_KEYBIND_IDS` also spreads `SPICY_EDITABLE_KEYBIND_IDS` from `workbench/keys.ts` | Fork keys (F5, F9, F10, …) fire while typing; new fork keys only edit `keys.ts` |
 | `packages/app/src/pages/session/session-side-panel.tsx` | Debug tab trigger and content in the side panel tabs | Debugger side panel (v2 layout) |
 | `packages/app/src/context/language.tsx` | Merge the fork's English `workbench/en` dictionary into the base dictionary | Workbench strings; other locales fall back to English |
+| `packages/app/vite.config.ts` | `optimizeDeps.include` pre-bundles the Markdown renderer's packages | A cold dev server reloaded the page mid-test (Agent HQ e2e flake) |
+| `packages/app/src/pages/layout.tsx` | No "Go to session" toast for `debug.lldbCommand` asks | Their session id is synthetic, so the link would 404; the Debug Console shows the ask inline |
 | `packages/app/src/pages/session.tsx` | Wrap the session children in `WorkbenchProviders` and `ReviewProvider`; an `agent` review mode (new layout only) that renders `ReviewChangesPanel` | Workbench and Agent HQ state for the bottom panel; agent changes review |
 | `packages/app/src/context/layout.tsx` | `ReviewChangeMode` gains `agent` and persists it; `tabCloseGuards` hook in `close()` | Agent changes review mode; the editor asks Save / Don't save / Cancel before closing a dirty tab |
 | `packages/app/src/pages/session/file-tabs.tsx` | `ReviewFileGate` wraps the loaded file render | Pending agent changes show inline with Accept / Reject |

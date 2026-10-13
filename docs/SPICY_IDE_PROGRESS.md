@@ -65,6 +65,8 @@ Real AgentKit 0.15.1 (`--local-only`, found in ~/Applications with no setup): al
 the next session (sweep). AgentKit discovery runs a found bridge only if it isn't quarantined or on /Volumes, is the
 user's own and not group/world-writable, and lives under home or /Applications (`666f1c4ae`).
 
+Gap fixes after validation (merged by `dd5a6867c`): DIAG-01 multi-source problems, DIAG-07 stale after a crash, DIAG-12 "language servers are off", DIAG-13 real rust-analyzer, CON-03 multi-line console, CON-05 evidence chips, CON-07 `debug.lldbCommand` ask, CON-10 Run tab stdin e2e, CON-11 Swift output e2e, E2E-01 Activity e2e, UI-07 Fix/Investigate with agent, schema event-manifest baseline (15/15), cold-Vite e2e flake.
+
 ## Environment blockers (owner action)
 
 - macOS Developer Mode off: lldb-dap cannot launch (Swift/C/C++/Rust debugging, E2E-02/03, DAP-18).

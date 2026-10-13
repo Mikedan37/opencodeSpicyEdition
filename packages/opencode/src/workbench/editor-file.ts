@@ -97,4 +97,13 @@ export async function write(ctx: InstanceContext, input: { path: string; content
   return { hash: hash(bytes), file: place.shown, created: !stat }
 }
 
+// An existing file inside the project, named as the project and its language servers name it (code intelligence).
+export async function existing(ctx: InstanceContext, file: string) {
+  const place = await locate(ctx, file)
+  if (isFailure(place)) return place
+  const stat = await fs.stat(place.target).catch(() => undefined)
+  if (!stat?.isFile()) return fail("missing", `No such file: ${file}`)
+  return place.shown
+}
+
 export * as WorkbenchEditorFile from "./editor-file"

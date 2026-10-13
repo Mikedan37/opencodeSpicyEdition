@@ -107,6 +107,22 @@ export const ProblemsSnapshot = Schema.Struct({
 }).annotate({ identifier: "WorkbenchProblemsSnapshot" })
 export interface ProblemsSnapshot extends Schema.Schema.Type<typeof ProblemsSnapshot> {}
 
+// ---------------------------------------------------------------- code intelligence (the IDE editor)
+
+export const LspHover = Schema.Struct({
+  markdown: Schema.String, // the server's hover text as markdown (plain text arrives fenced)
+  range: optional(Range), // the word it describes
+}).annotate({ identifier: "WorkbenchLspHover" })
+export interface LspHover extends Schema.Schema.Type<typeof LspHover> {}
+
+export const LspLocation = Schema.Struct({
+  file: Schema.String, // absolute; under the project directory unless `outside`
+  range: Range,
+  outside: optional(Schema.Boolean), // outside the project directory: the editor cannot open it
+  preview: optional(Schema.String), // references: the line's text, trimmed (files inside the project)
+}).annotate({ identifier: "WorkbenchLspLocation" })
+export interface LspLocation extends Schema.Schema.Type<typeof LspLocation> {}
+
 // ---------------------------------------------------------------- verification
 
 // A timeout, a skip, a missing tool or a cancelled run is never a pass.

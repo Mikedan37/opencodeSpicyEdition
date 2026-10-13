@@ -64,6 +64,25 @@ export const workbenchScenarios: Scenario[] = [
         }),
       "status",
     ),
+  // Code intelligence: language servers are off in the exercise's projects, so the answers are empty.
+  http.protected
+    .get("/workbench/lsp/hover", "workbench.lsp.hover")
+    .seeded(editable)
+    .at((ctx) => ({ path: "/workbench/lsp/hover?path=edit.txt&line=0&character=1", headers: ctx.headers() }))
+    .json(200, (body) => check(body === null, "no language server: no hover")),
+  http.protected
+    .get("/workbench/lsp/definition", "workbench.lsp.definition")
+    .seeded(editable)
+    .at((ctx) => ({ path: "/workbench/lsp/definition?path=edit.txt&line=0&character=1", headers: ctx.headers() }))
+    .json(200, (body) => {
+      array(body)
+      check(body.length === 0, "no language server: no definition")
+    }),
+  http.protected
+    .get("/workbench/lsp/references", "workbench.lsp.references")
+    .seeded(editable)
+    .at((ctx) => ({ path: "/workbench/lsp/references?path=../outside.txt&line=0&character=1", headers: ctx.headers() }))
+    .status(403),
   http.protected.get("/workbench/doctor", "workbench.doctor").json(200, (body) => {
     object(body)
     check(Array.isArray(body.languages) && body.languages.length > 0, "doctor should list languages")

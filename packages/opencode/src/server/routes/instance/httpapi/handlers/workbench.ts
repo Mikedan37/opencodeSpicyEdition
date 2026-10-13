@@ -19,10 +19,11 @@ import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { LSP } from "@/lsp/lsp"
 import { WorkbenchEditorFile } from "@/workbench/editor-file"
+import { WorkbenchEditorLsp } from "@/workbench/editor-lsp"
 import { SessionID } from "@/session/schema"
 import { InstanceHttpApi } from "../api"
 import { ConflictError, ForbiddenError, InvalidRequestError, notFound } from "../errors"
-import { CheckPayload, FileQuery, FileWritePayload, ProblemsQuery } from "../groups/workbench"
+import { CheckPayload, FileQuery, FileWritePayload, LspQuery, ProblemsQuery } from "../groups/workbench"
 
 export const workbenchHandlers = HttpApiBuilder.group(
   InstanceHttpApi,
@@ -65,6 +66,29 @@ export const workbenchHandlers = HttpApiBuilder.group(
         // may still be starting.
         yield* lsp.touchFile(result.file).pipe(Effect.forkDetach)
         return { hash: result.hash }
+      })
+
+      // A position in an existing project file, named as its language servers know it.
+      const at = Effect.fn("WorkbenchHttpApi.lspAt")(function* (query: typeof LspQuery.Type) {
+        const instance = yield* InstanceState.context
+        const file = yield* Effect.promise(() => WorkbenchEditorFile.existing(instance, query.path))
+        if (WorkbenchEditorFile.isFailure(file)) return yield* refuse(file)
+        return { at: { file, line: query.line, character: query.character }, directory: instance.directory }
+      })
+      const lspHover = Effect.fn("WorkbenchHttpApi.lspHover")(function* (ctx: { query: typeof LspQuery.Type }) {
+        return yield* WorkbenchEditorLsp.hover(lsp, (yield* at(ctx.query)).at)
+      })
+      const lspDefinition = Effect.fn("WorkbenchHttpApi.lspDefinition")(function* (ctx: {
+        query: typeof LspQuery.Type
+      }) {
+        const place = yield* at(ctx.query)
+        return yield* WorkbenchEditorLsp.definition(lsp, place.at, place.directory)
+      })
+      const lspReferences = Effect.fn("WorkbenchHttpApi.lspReferences")(function* (ctx: {
+        query: typeof LspQuery.Type
+      }) {
+        const place = yield* at(ctx.query)
+        return yield* WorkbenchEditorLsp.references(lsp, place.at, place.directory)
       })
 
       const list = Effect.fn("WorkbenchHttpApi.problems")(function* (ctx: { query: typeof ProblemsQuery.Type }) {
@@ -142,6 +166,9 @@ export const workbenchHandlers = HttpApiBuilder.group(
         .handle("run", run)
         .handle("doctor", doctor)
         .handle("session", session)
+        .handle("lspHover", lspHover)
+        .handle("lspDefinition", lspDefinition)
+        .handle("lspReferences", lspReferences)
         .handle("file", file)
         .handle("writeFile", writeFile)
     }),

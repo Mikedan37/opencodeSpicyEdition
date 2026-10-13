@@ -49,6 +49,7 @@ import { Skill } from "@/skill"
 import { Snapshot } from "@/snapshot"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
+import { Debugpy } from "@/workbench/dap/adapters/debugpy"
 import { WorkbenchInvestigation } from "@/workbench/investigation/investigation"
 import { WorkbenchCheckers } from "@/workbench/verify/checkers"
 import { WorkbenchGate } from "@/workbench/verify/gate"
@@ -161,6 +162,10 @@ const build = (checkers?: WorkbenchCheckers.Info[]) =>
 const it = build([marker, markerTest])
 const real = build()
 const goReal = which("go") ? real.instance : real.instance.skip
+const debugpyMissing = await Debugpy.resolve({ directory: process.cwd() }).then((found) =>
+  "error" in found ? found.error : which("pytest") ? undefined : "pytest not found",
+)
+const pythonReal = debugpyMissing ? real.instance.skip : real.instance
 
 const providerConfig = (url: string): Partial<ConfigV1.Info> => ({
   provider: {
@@ -377,5 +382,87 @@ describe("verification feeds investigations", () => {
       expect(full.evidence.map((item) => [item.kind, item.class])).toEqual([["exception", "observed"]])
       expect(full.investigation.notes.map((note) => note.text)).toEqual(["an empty list divides by zero"])
     }),
+  )
+
+  // E2E-01 without the UI: a scripted model, the real debugpy and real checkers (ruff, mypy, pytest).
+  pythonReal(
+    `E2E-01 [debugpy, pytest] failing test -> debugger stop -> patch -> verification -> resolved${
+      debugpyMissing ? ` [skipped: ${debugpyMissing}]` : ""
+    }`,
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        const llm = yield* TestLLMServer
+        yield* Effect.promise(() =>
+          write(dir, {
+            "opencode.json": JSON.stringify(providerConfig(llm.url)),
+            "avg.py": "def average(xs: list[int]) -> float:\n    return sum(xs) / len(xs)\n",
+            "test_avg.py": [
+              "import unittest",
+              "",
+              "from avg import average",
+              "",
+              "",
+              "class AverageTest(unittest.TestCase):",
+              "    def test_empty(self) -> None:",
+              "        self.assertEqual(average([]), 0)",
+              "",
+              "    def test_two(self) -> None:",
+              "        self.assertEqual(average([10, 20]), 15)",
+              "",
+            ].join("\n"),
+          }),
+        )
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({
+          title: "e2e-01",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "test_empty fails; find out why and fix it" }],
+        })
+        yield* llm.tool("debug", { action: "start", preset: "python-test", program: "test_avg.py" })
+        yield* llm.tool("debug", { action: "stop" })
+        yield* llm.tool("write", {
+          filePath: "avg.py",
+          content: "def average(xs: list[int]) -> float:\n    return sum(xs) / len(xs) if xs else 0\n",
+        })
+        yield* llm.tool("check", { files: ["avg.py"], tests: true })
+        yield* llm.text("fixed: an empty list averages to 0")
+
+        yield* prompt.loop({ sessionID: session.id })
+        const messages = yield* MessageV2.filterCompactedEffect(session.id)
+        const outputs = messages.flatMap((message) =>
+          message.parts.flatMap((part) =>
+            part.type === "tool" && part.state.status === "completed" ? [[part.tool, part.state.output]] : [],
+          ),
+        )
+        // The stop came from the real debugger, in the function under test.
+        expect(outputs[0]?.[0]).toBe("debug")
+        expect(outputs[0]?.[1]).toContain("ZeroDivisionError")
+        expect(outputs[0]?.[1]).toContain("average")
+        expect(repairs(messages)).toHaveLength(0)
+        expect(yield* llm.pending).toBe(0)
+
+        const investigations = yield* WorkbenchInvestigation.Service
+        const summary = (yield* investigations.list()).find((item) => item.sessionID === session.id)
+        const full = yield* investigations.full(summary!.id)
+        expect(full.investigation.status).toBe("resolved")
+        expect(full.investigation.checkpoints.at(-1)?.reason).toBe(
+          "the reproduction and the checks passed after the last patch",
+        )
+        expect(full.evidence[0]).toMatchObject({ kind: "exception", class: "observed" })
+        const verified = full.evidence.filter((item) => item.class === "verified").map((item) => item.kind)
+        expect(verified).toEqual(["check-run", "repro-run"])
+        expect(full.evidence.some((item) => item.kind === "patch")).toBe(true)
+        expect(full.report).toContain("Verified")
+        // Nothing the debugger started is left running.
+        for (const item of full.investigation.processes) expect(() => process.kill(item.pid, 0)).toThrow()
+      }),
+    120_000,
   )
 })

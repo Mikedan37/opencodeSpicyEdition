@@ -762,3 +762,31 @@ test/agenthq` 1115 pass / 13 skip / 1 todo / 0 fail; `packages/core` PTY tests 1
   id, the agent text, and old-format checkpoints; `investigation.test.ts` stores an old-format record and reads it
   through `full` (checkpoint and report) and `list`; the S2/S5/S7 assertions in `verification.test.ts`,
   `tool/debug.test.ts` and `mcp-debug.test.ts` now check the fields.
+
+## Terminal.app session files (embedded shells)
+
+- Bug: a process started from Terminal.app carries `TERM_PROGRAM=Apple_Terminal` and that window's `TERM_SESSION_ID`.
+  Every interactive shell the server started in a PTY (the IDE terminal, debug Run terminals, tests) inherited both,
+  so macOS's `/etc/zshrc_Apple_Terminal` and `/etc/bashrc_Apple_Terminal` saved "session restore" history into
+  `~/.zsh_sessions/<id>.*` and `~/.bash_sessions/<id>.*`, overwriting the window's own files.
+- Fix, `packages/core/src/pty.ts` (marked `spicy:`): `Pty.ownTerminal(env)` drops `TERM_SESSION_ID` and
+  `TERM_PROGRAM_VERSION`, sets `TERM_PROGRAM=opencode` (as VS Code sets `vscode`, so the per-Terminal rc files are
+  not read) and `SHELL_SESSIONS_DISABLE=1`; every PTY gets it. Agent HQ's `agentEnv()` applies it too, keeping its
+  credential stripping, since agents' bash tools start shells (and the debugger's `DebugEnv` follows `agentEnv`).
+- Also fixed, `packages/core/src/pty/pty.bun.ts` (marked `spicy:`): bun-pty starts the child with the server's own
+  environment plus the given one, so leaving a variable out (this `TERM_SESSION_ID`, and the debugger's `omit` of the
+  server credentials) did not unset it under Bun when the server process itself had it. The Bun backend now starts
+  the command through `/usr/bin/env -u NAME …` for the variables left out (names only on the command line). node-pty
+  (the Node sidecar) already takes the environment as given.
+- Tests (never the real home: every shell runs with `HOME` and `ZDOTDIR` in a temp folder and a fake session id):
+  `packages/core/test/pty/terminal-session.test.ts` — zsh and bash in an opencode PTY under a Terminal.app parent
+  environment print `sid=unset tp=opencode ssd=1` and leave no `.zsh_sessions`/`.bash_sessions` in the temp home; a
+  control (the same shells with Terminal's environment) does create them there; a child Bun process holding a secret
+  and a session id in its real environment gets neither into its PTY; `ownTerminal` itself.
+  `packages/opencode/test/agenthq/terminal-env.test.ts` — `agentEnv()` (terminal and credentials), an interactive
+  shell started with it leaves no session files, and the control does.
+- Runs: `packages/core` PTY tests 22 pass; `test/workbench test/agenthq` + debug HTTP test 266 pass / 8 skip / 0 fail;
+  `test/tool test/server test/session` 1067 pass / 9 skip / 1 todo / 1 fail (`httpapi-v2-pty` "retains exited
+  sessions", the known load timeout; 4/4 twice alone). All runs used `env -u TERM_SESSION_ID TERM_PROGRAM=opencode
+SHELL_SESSIONS_DISABLE=1`, and the real `~/.zsh_sessions`/`~/.bash_sessions` were compared (read only) before and
+  after: unchanged.

@@ -299,6 +299,14 @@ describe("workbench git panel", () => {
       expect(generated.status).toBe(200)
       expect(generated.body).toEqual({ message: "Add the greeting\n\nSays hello.", model: "test/test-model" })
       expect(prompts.at(-1)).toContain("hello.txt")
+      expect(prompts.at(-1)).not.toContain("[diff truncated]")
+
+      // A huge staged diff reaches the model cut to its first 60 KB, marked as cut.
+      await Bun.write(path.join(tmp.path, "big.txt"), "y\n".repeat(100_000))
+      await api.stage(["big.txt"])
+      expect((await api.message()).status).toBe(200)
+      expect(prompts.at(-1)).toContain("[diff truncated]")
+      expect(prompts.at(-1)!.length).toBeLessThan(100_000) // JSON-escaped; the whole diff would be over 260 000
     } finally {
       model.stop(true)
     }

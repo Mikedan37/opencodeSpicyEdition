@@ -209,6 +209,8 @@ const layer = Layer.effect(
           const remoteName = (yield* run(cwd, ["config", `branch.${branch}.remote`])).text().trim()
           const merge = (yield* run(cwd, ["config", `branch.${branch}.merge`])).text().trim()
           if (!remoteName || !merge) return yield* conflict(`${branch} has no upstream to push to`)
+          // A remote is a positional argument: one spelled like an option (--force) is never passed.
+          if (remoteName.startsWith("-")) return yield* invalid(`${remoteName} is not a remote git can push to`)
           // The branch to its upstream, never forced: a rejected push is reported as git words it.
           const pushed = yield* remote(cwd, "git", ["push", remoteName, `refs/heads/${branch}:${merge}`])
           if (pushed.exitCode !== 0) return yield* conflict(pushed.err || pushed.out || "git push failed")
@@ -216,7 +218,8 @@ const layer = Layer.effect(
         }
         const target = input.remote ?? (current.remotes.includes("origin") ? "origin" : current.remotes[0])
         if (!target) return yield* conflict("this repository has no remote to push to")
-        if (!current.remotes.includes(target)) return yield* invalid(`no remote named ${target}`)
+        if (!current.remotes.includes(target) || target.startsWith("-"))
+          return yield* invalid(`no remote named ${target}`)
         if (!input.setUpstream)
           return yield* conflict(`${branch} has no upstream branch; publish it to ${target} with --set-upstream`)
         const pushed = yield* remote(cwd, "git", [
@@ -285,7 +288,12 @@ const layer = Layer.effect(
         const { name, model } = yield* smallModel
         if (!name) return yield* conflict("set small_model in your opencode config to generate commit messages")
         if (!model) return yield* conflict(`small_model ${name} is not available`)
-        const diff = yield* run(cwd, ["diff", "--cached", "--no-color", "--no-ext-diff"])
+        // The model reads at most MAX_DIFF bytes of the staged diff; git's output past that is not even kept.
+        const diff = yield* git.run(["diff", "--cached", "--no-color", "--no-ext-diff"], {
+          cwd,
+          env: QUIET,
+          maxOutputBytes: MAX_DIFF,
+        })
         if (!diff.text().trim()) return yield* conflict("nothing is staged")
         const stat = (yield* run(cwd, ["diff", "--cached", "--stat", "--no-color"])).text().trim()
         const sessionID = SessionID.descending()
@@ -306,9 +314,7 @@ const layer = Layer.effect(
             model,
             sessionID,
             retries: 1,
-            messages: [
-              { role: "user", content: prompt(stat, diff.text().slice(0, MAX_DIFF), diff.text().length > MAX_DIFF) },
-            ],
+            messages: [{ role: "user", content: prompt(stat, diff.text(), diff.truncated) }],
           })
           .pipe(
             Stream.filter(LLMEvent.is.textDelta),

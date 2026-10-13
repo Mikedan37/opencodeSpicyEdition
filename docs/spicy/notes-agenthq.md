@@ -1017,3 +1017,59 @@ From `packages/opencode`: `bun test --timeout 120000 test/agenthq` 43 pass, 4 sk
 `bun test test/review/review.test.ts test/event-manifest.test.ts` 10 pass; `bun run typecheck` clean.
 
 No upstream-owned files were edited in wave 9.
+
+# Wave 10: a found AgentKit bridge must be local and the human's own
+
+The independent validation found that discovery ran `agentkit-bridge --help` from every app with OpenCode Native's
+bundle id each time the Agents tab listed providers, without approval, and the newest copy became the bridge for new
+sessions. A downloaded app with that bundle id would have been run, and a quarantined binary makes Gatekeeper show a
+dialog.
+
+Now a copy found in Applications or through LaunchServices runs only after it passes these checks, made on resolved
+paths before anything of it runs (`vet` in `providers/detect.ts`):
+
+1. Neither the app nor its bridge has `com.apple.quarantine`. `/usr/bin/xattr <app> <bridge>` only lists attribute
+   names (a native tool, no UI), and an answer it cannot give counts as quarantined. Nothing under `/Volumes/`.
+2. The bridge, its folder and the bundle's `Contents/MacOS` are owned by this user or root and are not writable by
+   group or others.
+3. Only paths under the home folder (`Global.Path.home`) or `/Applications` qualify.
+4. `--help` and `--version` run once per binary (real path, size, mtime, inode), one question at a time; provider
+   lists reuse the answer until the binary changes. This holds for every bridge, including one set by the human.
+
+A session start checks the chosen copy again and refuses ("AgentKit bridge not found") if it no longer passes or now
+resolves to another file. The status note `Bridge: <path>` names the resolved file that runs, and the new-agent
+dialog's provider picker now shows it under an available provider; before, it showed only name, version and reason.
+`OPENCODE_AGENTKIT_BRIDGE`, PATH and an identity's `launch` are what the human chose and stay unchecked, as `claude` and
+`codex` on PATH are.
+
+Changes in behavior: a copy in an Applications folder gets the same checks, and one without an ACP mode is now
+skipped (LaunchServices is asked next) instead of reported as "no ACP mode yet". Opened downloads keep their
+quarantine attribute (flags `01c3` on this Mac's downloaded apps), so a downloaded OpenCode Native is never picked up
+on its own; the human can point at it with the env var or PATH. In tests the home folder is the test home, so the unit
+tests never run this Mac's real bridge; the opt-in real checks drop `OPENCODE_TEST_HOME` to look from the real home.
+
+On this Mac LaunchServices lists four copies. The outputs build (`~/Documents/Codex/.../outputs/OpenCodeNative`) is
+owned by the user, mode 755 for the app, `Contents/MacOS` and the bridge, and has only `com.apple.FinderInfo` and
+`com.apple.fileprovider.fpfs#P`. It is still chosen: `SPICY_REAL_AGENTKIT=index` gave `{"available":true,
+"version":"0.1.0","bridge":"Bridge: /Users/mdanylchuk/Documents/Codex/2026-10-10/so-w/outputs/OpenCodeNative/OpenCode
+Native.app/Contents/MacOS/agentkit-bridge"}`. `~/OpenCodeCode/OpenCodeNative-agentkit` passes the checks but has no
+ACP mode (asked once); the two package copies have no bridge.
+
+## Tests (wave 10)
+
+`agentkit.test.ts`, with copies of OpenCode Native under the test home whose bridges log every run:
+
+| Test                                                                                                  | What it shows                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Applications, else the newest copy LaunchServices knows                                               | as before (newest with ACP wins, skips no-ACP and bridgeless copies, a failing index finds nothing); the session runs the chosen bridge; a copy in an Applications folder beats newer indexed ones                                                                                                                                                                                                                                                          |
+| never runs a found copy that is quarantined, on a mounted image, outside home, or not the human's own | the newest copy is skipped and never runs when its app or only its bridge is quarantined, when its owner is someone else (faked stat), when it or its folder is writable by others or the group (real chmod), or outside home; on a mounted image (faked realpath, home on the image too) nothing is even asked about it; a chosen copy quarantined after the list is refused at session start and never runs `acp`; the control then picks the newest copy |
+| asks a bridge about itself once per binary, until it changes                                          | 5 lists: one `--help`, one `--version`; after a new mtime, 3 lists: one more of each; a session start adds only `acp`                                                                                                                                                                                                                                                                                                                                       |
+| reads the quarantine attribute with the system's xattr (macOS)                                        | a plain temp file: false; after `xattr -w com.apple.quarantine` on it: true; a missing path: true                                                                                                                                                                                                                                                                                                                                                           |
+
+Each rule was removed in turn from `vet` (quarantine, `/Volumes`, roots, owner, group-writable, the session-start
+recheck, the cache) and each time a test failed.
+
+Results: `bun test --timeout 120000 test/agenthq` 46 pass, 4 skip (the opt-in real checks), 0 fail; `bun run
+typecheck` clean in `packages/opencode` and `packages/app`; `packages/app` Agent HQ unit tests 18 pass.
+
+No upstream-owned files were edited in wave 10.

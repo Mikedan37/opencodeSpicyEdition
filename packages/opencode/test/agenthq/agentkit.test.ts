@@ -8,11 +8,12 @@ import { describe, expect } from "bun:test"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Global } from "@opencode-ai/core/global"
 import { AppProcess } from "@opencode-ai/core/process"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { $ } from "bun"
 import { Effect } from "effect"
-import { existsSync } from "fs"
+import { existsSync, realpathSync, statSync } from "fs"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
@@ -42,6 +43,56 @@ const fakeBridge = (body?: string) =>
       })
     return { dir, bin }
   })
+
+const FIXTURE = path.join(import.meta.dir, "../fixture/agenthq/fake-acp-agent.ts")
+
+/** A folder under the home folder (the test home), where found copies of OpenCode Native may live; resolved. */
+const homeScoped = Effect.acquireRelease(
+  Effect.promise(async () => realpathSync(await fs.mkdtemp(path.join(Global.Path.home, "agentkit-")))),
+  (dir) => Effect.promise(() => fs.rm(dir, { recursive: true, force: true })),
+)
+
+/**
+ * An `OpenCode Native.app` copy at `<root>/<name>` whose bridge has this usage (none: no bridge) and mtime. The bridge
+ * logs every run's first argument to `<bridge>.runs`; `acp` runs the scripted ACP agent.
+ */
+const nativeApp = (root: string, name: string, usage: string | undefined, minutesAgo = 0) =>
+  Effect.promise(async () => {
+    const bundle = path.join(root, name, "OpenCode Native.app")
+    const bin = path.join(bundle, "Contents", "MacOS", "agentkit-bridge")
+    await fs.mkdir(path.dirname(bin), { recursive: true })
+    await fs.chmod(path.dirname(bin), 0o755)
+    if (usage !== undefined) {
+      await fs.writeFile(
+        bin,
+        [
+          "#!/bin/sh",
+          `echo "$1" >> '${bin}.runs'`,
+          `if [ "$1" = "acp" ]; then exec '${process.execPath}' '${FIXTURE}'; fi`,
+          bridgeScript(usage),
+        ].join("\n"),
+      )
+      await fs.chmod(bin, 0o755)
+      const at = new Date(Date.now() - minutesAgo * 60_000)
+      await fs.utimes(bin, at, at)
+    }
+    const runs = () =>
+      fs.readFile(`${bin}.runs`, "utf8").then(
+        (text) => text.split("\n").filter(Boolean),
+        () => [] as string[],
+      )
+    return { bundle, bin, runs }
+  })
+
+const kit = (projectDirectory: string): AgentHQ.AgentIdentity => ({
+  id: AgentHQ.AgentID.create(),
+  name: "Kit",
+  avatar: { kind: "initials", value: "K" },
+  provider: "agentkit",
+  projectDirectory,
+  createdAt: 0,
+  updatedAt: 0,
+})
 
 describe("agenthq agentkit (agentkit-bridge acp)", () => {
   it.live("is available only when the bridge's usage lists an ACP mode", () =>
@@ -92,82 +143,43 @@ describe("agenthq agentkit (agentkit-bridge acp)", () => {
     }),
   )
 
-  it.live("finds the bridge through OPENCODE_AGENTKIT_BRIDGE, then PATH, then OpenCode Native.app", () =>
+  it.live("finds the bridge the human chose: OPENCODE_AGENTKIT_BRIDGE, then PATH", () =>
     Effect.gen(function* () {
       const explicit = yield* fakeBridge(bridgeScript(USAGE))
       const onPath = yield* fakeBridge(bridgeScript(USAGE))
-      const apps = yield* tmpdirScoped()
-      const bundled = path.join(apps, "OpenCode Native.app", "Contents", "MacOS", "agentkit-bridge")
-      yield* Effect.promise(async () => {
-        await fs.mkdir(path.dirname(bundled), { recursive: true })
-        await fs.writeFile(bundled, `#!/bin/sh\n${bridgeScript(USAGE)}\n`)
-        await fs.chmod(bundled, 0o755)
-      })
       const find = AgentDetect.agentkitBridge
-      expect(find({ OPENCODE_AGENTKIT_BRIDGE: explicit.bin, PATH: onPath.dir, applications: [apps] })).toBe(
-        explicit.bin,
-      )
+      expect(find({ OPENCODE_AGENTKIT_BRIDGE: explicit.bin, PATH: onPath.dir })).toBe(explicit.bin)
       // An explicit setting that points nowhere is not silently replaced by another bridge.
-      expect(find({ OPENCODE_AGENTKIT_BRIDGE: path.join(apps, "gone"), PATH: onPath.dir })).toBeUndefined()
-      expect(find({ PATH: onPath.dir, applications: [apps] })).toBe(onPath.bin)
-      expect(find({ PATH: "", applications: [apps] })).toBe(bundled)
-      expect(find({ PATH: "", applications: [] })).toBeUndefined()
+      expect(find({ OPENCODE_AGENTKIT_BRIDGE: path.join(onPath.dir, "gone"), PATH: onPath.dir })).toBeUndefined()
+      expect(find({ PATH: onPath.dir })).toBe(onPath.bin)
+      expect(find({ PATH: "" })).toBeUndefined()
     }),
   )
 
-  it.live("otherwise picks the newest bridge with an ACP mode among the copies LaunchServices knows", () =>
+  it.live("otherwise picks OpenCode Native.app in Applications, else the newest bridge LaunchServices knows", () =>
     Effect.gen(function* () {
-      const root = yield* tmpdirScoped()
-      const fixture = path.join(import.meta.dir, "../fixture/agenthq/fake-acp-agent.ts")
-      /** An `OpenCode Native.app` copy whose bridge has this usage and mtime; `acp` runs the scripted ACP agent. */
-      const app = (name: string, usage: string | undefined, minutesAgo: number) =>
-        Effect.promise(async () => {
-          const bundle = path.join(root, name, "OpenCode Native.app")
-          const bin = path.join(bundle, "Contents", "MacOS", "agentkit-bridge")
-          await fs.mkdir(path.dirname(bin), { recursive: true })
-          if (usage !== undefined) {
-            await fs.writeFile(
-              bin,
-              [
-                "#!/bin/sh",
-                `if [ "$1" = "acp" ]; then touch '${bin}.launched'; exec '${process.execPath}' '${fixture}'; fi`,
-                bridgeScript(usage),
-              ].join("\n"),
-            )
-            await fs.chmod(bin, 0o755)
-            const at = new Date(Date.now() - minutesAgo * 60_000)
-            await fs.utimes(bin, at, at)
-          }
-          return { bundle, bin }
-        })
-      const older = yield* app("older", USAGE, 30)
-      const newer = yield* app("newer", USAGE, 10)
-      const newest = yield* app("no-acp", "usage: agentkit-bridge app-server | mcp | --version", 1)
-      const empty = yield* app("no-bridge", undefined, 0)
+      const root = yield* homeScoped
+      const older = yield* nativeApp(root, "older", USAGE, 30)
+      const newer = yield* nativeApp(root, "newer", USAGE, 10)
+      const newest = yield* nativeApp(root, "no-acp", "usage: agentkit-bridge app-server | mcp | --version", 1)
+      const empty = yield* nativeApp(root, "no-bridge", undefined)
       const finder = Effect.succeed([older.bundle, newest.bundle, empty.bundle, newer.bundle])
       const provider = yield* AgentDetect.agentkit({ PATH: "", applications: [], finder })
       const status = yield* provider.status
-      // The newest copy has no ACP mode and one has no bridge at all: the newer of the other two wins.
+      // The newest copy has no ACP mode and one has no bridge at all: the newer of the other two wins, and the status
+      // says which binary will run.
       expect(status).toMatchObject({ available: true, version: "0.1.0" })
       expect(status.capabilities.notes?.[0]).toBe(`Bridge: ${newer.bin}`)
 
       // A session starts the bridge the provider list chose.
-      const dir = yield* tmpdirScoped()
-      const session = yield* provider.createSession({
-        agent: {
-          id: AgentHQ.AgentID.create(),
-          name: "Kit",
-          avatar: { kind: "initials", value: "K" },
-          provider: "agentkit",
-          projectDirectory: dir,
-          createdAt: 0,
-          updatedAt: 0,
-        },
-        emit: () => {},
-      })
+      const session = yield* provider.createSession({ agent: kit(yield* tmpdirScoped()), emit: () => {} })
       yield* Effect.addFinalizer(() => session.close)
-      expect(existsSync(`${newer.bin}.launched`)).toBe(true)
-      expect(existsSync(`${older.bin}.launched`)).toBe(false)
+      expect(yield* Effect.promise(newer.runs)).toEqual(["--help", "--version", "acp"])
+      expect(yield* Effect.promise(older.runs)).toEqual(["--help", "--version"])
+
+      // A copy in an Applications folder comes before LaunchServices' newer ones.
+      const installed = yield* AgentDetect.agentkit({ PATH: "", applications: [path.join(root, "older")], finder })
+      expect((yield* installed.status).capabilities.notes?.[0]).toBe(`Bridge: ${older.bin}`)
 
       // Nothing indexed, or an index that fails, finds nothing.
       for (const none of [Effect.succeed([]), Effect.fail(new Error("mdfind failed")), Effect.die("mdfind crashed")])
@@ -179,10 +191,147 @@ describe("agenthq agentkit (agentkit-bridge acp)", () => {
         )
     }),
   )
+
+  it.live("never runs a found copy that is quarantined, on a mounted image, outside home, or not the human's own", () =>
+    Effect.gen(function* () {
+      const root = yield* homeScoped
+      const good = yield* nativeApp(root, "good", USAGE, 30)
+      // The newest copy: it wins unless the check stops it, so a run of it would show in its log.
+      const bad = yield* nativeApp(root, "bad", USAGE, 1)
+      const finder = Effect.succeed([good.bundle, bad.bundle])
+      const chosen = (env: Partial<AgentDetect.AgentKitEnv> = {}) =>
+        Effect.gen(function* () {
+          const provider = yield* AgentDetect.agentkit({ PATH: "", applications: [], finder, ...env })
+          return (yield* provider.status).capabilities.notes?.[0]
+        })
+      const stat = (uid: (file: string) => number | undefined) => (file: string) => {
+        const facts = statSync(file)
+        return {
+          uid: uid(file) ?? facts.uid,
+          mode: facts.mode,
+          size: facts.size,
+          mtimeMs: facts.mtimeMs,
+          ino: facts.ino,
+        }
+      }
+
+      // Quarantined (downloaded, never opened): the app or only its bridge.
+      for (const marked of [bad.bundle, bad.bin])
+        expect(yield* chosen({ quarantined: (paths) => Effect.succeed(paths.includes(marked)) })).toBe(
+          `Bridge: ${good.bin}`,
+        )
+      // On a mounted image, even one that holds the home folder: skipped before anything else is asked of it.
+      const asked: string[] = []
+      const mounted = {
+        realpath: (file: string) => `/Volumes/Image${realpathSync(file)}`,
+        stat: (file: string) => statSync(file.replace(/^\/Volumes\/Image/, "")),
+      }
+      const onImage = yield* AgentDetect.agentkit({
+        PATH: "",
+        applications: [],
+        finder,
+        files: mounted,
+        quarantined: (paths) => Effect.sync(() => (asked.push(...paths), false)),
+      })
+      expect(yield* onImage.status).toMatchObject({ available: false, reason: "AgentKit bridge not found" })
+      expect(asked).toEqual([])
+      // Owned by someone else.
+      expect(
+        yield* chosen({
+          files: { realpath: realpathSync, stat: stat((file) => (file === bad.bin ? 4242 : undefined)) },
+        }),
+      ).toBe(`Bridge: ${good.bin}`)
+      // Writable by others, or its folder writable by the group.
+      for (const [file, mode, restore] of [
+        [bad.bin, 0o757, 0o755],
+        [path.dirname(bad.bin), 0o775, 0o755],
+      ] as const) {
+        yield* Effect.promise(() => fs.chmod(file, mode))
+        expect(yield* chosen()).toBe(`Bridge: ${good.bin}`)
+        yield* Effect.promise(() => fs.chmod(file, restore))
+      }
+      // Outside the home folder and /Applications.
+      const away = yield* nativeApp(yield* tmpdirScoped(), "away", USAGE, 0)
+      expect(yield* chosen({ finder: Effect.succeed([good.bundle, away.bundle]) })).toBe(`Bridge: ${good.bin}`)
+      expect(yield* Effect.promise(away.runs)).toEqual([])
+      expect(yield* Effect.promise(bad.runs)).toEqual([])
+
+      // A chosen copy is checked again right before a session runs it.
+      let quarantine = false
+      const provider = yield* AgentDetect.agentkit({
+        PATH: "",
+        applications: [],
+        finder: Effect.succeed([good.bundle]),
+        quarantined: () => Effect.sync(() => quarantine),
+      })
+      expect((yield* provider.status).capabilities.notes?.[0]).toBe(`Bridge: ${good.bin}`)
+      quarantine = true
+      const refused = yield* provider
+        .createSession({ agent: kit(yield* tmpdirScoped()), emit: () => {} })
+        .pipe(Effect.flip)
+      expect(refused).toMatchObject({ message: "AgentKit bridge not found" })
+      expect(yield* Effect.promise(good.runs)).not.toContain("acp")
+
+      // The control: with nothing wrong, the bad copy is the one chosen and asked.
+      expect(yield* chosen()).toBe(`Bridge: ${bad.bin}`)
+      expect(yield* Effect.promise(bad.runs)).toEqual(["--help", "--version"])
+    }),
+  )
+
+  it.live("asks a bridge about itself once per binary, until it changes", () =>
+    Effect.gen(function* () {
+      const root = yield* homeScoped
+      const only = yield* nativeApp(root, "only", USAGE, 5)
+      const provider = yield* AgentDetect.agentkit({
+        PATH: "",
+        applications: [],
+        finder: Effect.succeed([only.bundle]),
+      })
+      for (let i = 0; i < 5; i++) expect(yield* provider.status).toMatchObject({ available: true, version: "0.1.0" })
+      expect(yield* Effect.promise(only.runs)).toEqual(["--help", "--version"])
+      // A new mtime is a new binary.
+      yield* Effect.promise(() => fs.utimes(only.bin, new Date(), new Date()))
+      for (let i = 0; i < 3; i++) expect(yield* provider.status).toMatchObject({ available: true })
+      expect(yield* Effect.promise(only.runs)).toEqual(["--help", "--version", "--help", "--version"])
+      // A session start asks nothing more; it only runs the bridge.
+      const session = yield* provider.createSession({ agent: kit(yield* tmpdirScoped()), emit: () => {} })
+      yield* Effect.addFinalizer(() => session.close)
+      expect(yield* Effect.promise(only.runs)).toEqual(["--help", "--version", "--help", "--version", "acp"])
+    }),
+  )
+
+  const darwin = process.platform === "darwin" ? it.live : it.live.skip
+  darwin("reads the quarantine attribute with the system's xattr, and an unreadable answer counts as quarantined", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      // A plain data file: nothing ever opens or runs it.
+      const file = path.join(dir, "download.txt")
+      yield* Effect.promise(() => fs.writeFile(file, "data"))
+      expect(yield* AgentDetect.quarantined([dir, file])).toBe(false)
+      yield* Effect.promise(() =>
+        $`/usr/bin/xattr -w com.apple.quarantine "0081;00000000;agenthq-test;" ${file}`.quiet(),
+      )
+      expect(yield* AgentDetect.quarantined([dir, file])).toBe(true)
+      expect(yield* AgentDetect.quarantined([path.join(dir, "gone")])).toBe(true)
+    }),
+  )
 })
 
 // The free, read-only check of this Mac's LaunchServices index: no session, only the provider status.
 const realIndex = process.env.SPICY_REAL_AGENTKIT === "index" ? it.live : it.live.skip
+
+/** The real checks see this Mac as the server does outside tests: found copies must be under the user's real home. */
+const realHome = Effect.acquireRelease(
+  Effect.sync(() => {
+    const testHome = process.env.OPENCODE_TEST_HOME
+    delete process.env.OPENCODE_TEST_HOME
+    return testHome
+  }),
+  (testHome) =>
+    Effect.sync(() => {
+      if (testHome !== undefined) process.env.OPENCODE_TEST_HOME = testHome
+    }),
+)
 
 describe("agenthq agentkit (real index, opt-in)", () => {
   realIndex(
@@ -190,6 +339,7 @@ describe("agenthq agentkit (real index, opt-in)", () => {
     () =>
       Effect.gen(function* () {
         // As the server sees it: nothing configured, nothing on PATH.
+        yield* realHome
         const status = yield* (yield* AgentDetect.agentkit({ PATH: "" })).status
         console.log(
           `SPICY_REAL_AGENTKIT index ${JSON.stringify({ available: status.available, version: status.version, reason: status.reason, bridge: status.capabilities.notes?.[0] })}`,
@@ -225,6 +375,7 @@ describe("agenthq agentkit (real, opt-in)", () => {
     "REAL: AgentKit (--local-only) through the Agent HQ HTTP API [skipped unless SPICY_REAL_AGENTKIT=status or 1; $0, local Ollama only]",
     () =>
       Effect.gen(function* () {
+        yield* realHome
         const { resetDatabase } = yield* Effect.promise(() => import("../fixture/db"))
         const { auth, freePort, listener } = yield* Effect.promise(() => import("../fixture/agenthq/listener"))
         const { Server } = yield* Effect.promise(() => import("../../src/server/server"))

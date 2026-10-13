@@ -56,7 +56,7 @@ export default function ActivityPanel() {
   const workbench = useWorkbench()
   const language = useLanguage()
   const investigations = workbench.investigations
-  // Run links name their check ("pytest test") from the run list, which the Output tab loads otherwise.
+  // Run links name their check ("pytest test") from the run list, which the Checks tab loads otherwise.
   onMount(() => void workbench.runs.load())
   const [selected, setSelected] = createSignal<string>()
   const current = createMemo(() => investigations.find(selected()) ?? investigations.state.list[0])

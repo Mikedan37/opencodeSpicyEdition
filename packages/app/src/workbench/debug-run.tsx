@@ -5,12 +5,12 @@ import { Terminal } from "@/components/terminal"
 import { useLanguage } from "@/context/language"
 import { isLive, programOutput } from "./debug"
 import { useDebug } from "./debug-context"
-import { DebugToolbar, SessionPicker, sessionLabel } from "./debug-ui"
+import { DebugToolbar, DebugViewSwitch, SessionPicker, sessionLabel } from "./debug-ui"
 import { OutputText } from "./output-panel"
 import { useWorkbench } from "./panel"
 import { PanelState, PLAY_GLYPH, Glyph, TONE_CLASS } from "./ui"
 
-// Bottom panel Run tab: the terminal of the selected session's program when the adapter ran it in one
+// The Debug tab's Program view: the terminal of the selected session's program when the adapter ran it in one
 // (DebugSessionInfo.ptyID). It stays after the program exits, with the exit code from pty.exited. The /pty routes do
 // not attach to an exited PTY, so a tab that was not attached when the program ended replays the debugger's copy of
 // its output instead.
@@ -23,6 +23,9 @@ export default function DebugRunPanel() {
     <div data-component="workbench-run" class="flex min-h-0 flex-1 flex-col">
       <Switch>
         <Match when={!session()}>
+          <div class="flex h-10 shrink-0 items-center gap-2 px-2">
+            <DebugViewSwitch />
+          </div>
           <PanelState
             icon={<Glyph path={PLAY_GLYPH} />}
             title={language.t("workbench.run.title")}
@@ -35,8 +38,8 @@ export default function DebugRunPanel() {
         </Match>
         <Match when={!session()?.ptyID}>
           <div class="flex h-10 shrink-0 items-center gap-2 px-2">
-            <DebugToolbar />
-            <span class="mx-1 h-4 w-px shrink-0 bg-v2-border-border-muted" />
+            <DebugViewSwitch />
+            <Controls />
             <SessionPicker />
           </div>
           <PanelState
@@ -44,7 +47,7 @@ export default function DebugRunPanel() {
             title={language.t("workbench.run.internal.title")}
             description={language.t("workbench.run.internal.description")}
           >
-            <ButtonV2 size="small" variant="neutral" onClick={() => workbench.open("debug")}>
+            <ButtonV2 size="small" variant="neutral" onClick={() => workbench.open("console")}>
               {language.t("workbench.run.showConsole")}
             </ButtonV2>
           </PanelState>
@@ -67,8 +70,8 @@ export default function DebugRunPanel() {
             return (
               <>
                 <div class="flex h-10 shrink-0 items-center gap-2 px-2">
-                  <DebugToolbar />
-                  <span class="mx-1 h-4 w-px shrink-0 bg-v2-border-border-muted" />
+                  <DebugViewSwitch />
+                  <Controls />
                   <SessionPicker />
                   <span class="flex-1" />
                   <span
@@ -118,6 +121,17 @@ export default function DebugRunPanel() {
         </Match>
       </Switch>
     </div>
+  )
+}
+
+// One set of debug controls on screen: the side Debug tab has them while open.
+function Controls() {
+  const debug = useDebug()
+  return (
+    <Show when={!debug.sideShown()}>
+      <DebugToolbar />
+      <span class="mx-1 h-4 w-px shrink-0 bg-v2-border-border-muted" />
+    </Show>
   )
 }
 

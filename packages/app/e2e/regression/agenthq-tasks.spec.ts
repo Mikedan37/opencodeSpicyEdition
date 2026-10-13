@@ -23,7 +23,7 @@ test("tasks: create with dependencies, start, review gate, approve refusal and m
   await expect(view).toContainText("No tasks yet")
 
   // Create a task for Ada in its own worktree, then one for Bob that waits on it
-  await view.locator('[data-action="task-new"]').click()
+  await page.locator('[data-action="task-new"]').click()
   const dialog = page.locator('[data-component="task-dialog"]')
   await dialog.locator('input[name="title"]').fill("Parse config")
   await dialog.locator('textarea[name="description"]').fill("Read config.toml")
@@ -42,7 +42,7 @@ test("tasks: create with dependencies, start, review gate, approve refusal and m
     },
   })
 
-  await view.locator('[data-action="task-new"]').click()
+  await page.locator('[data-action="task-new"]').click()
   await dialog.locator('input[name="title"]').fill("Write docs")
   await dialog.locator('select[name="assignee"]').selectOption("agt_bob")
   await dialog.locator('[data-depends-on="tsk_1"]').check()

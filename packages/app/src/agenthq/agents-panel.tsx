@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, lazy, Match, Show, Suspense, Switch } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Portal } from "solid-js/web"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -24,7 +24,11 @@ import { AgentAvatar } from "./avatar"
 import { AgentDialog, createAgentDraft } from "./agent-dialog"
 import { useAgentHQ } from "./context"
 import { agentAttention, agentSessions, RUNNING_STATUSES, type FeedItem } from "./store"
-import { MessageThread, TasksView, ViewSwitch } from "./tasks-panel"
+import { MessageThread, SurfaceHeader, TaskDialog, TasksView } from "./tasks-panel"
+
+// The Activity and Tools views load with their first opening.
+const ActivityPanel = lazy(() => import("@/workbench/activity-panel"))
+const ToolsPanel = lazy(() => import("@/workbench/tools-panel"))
 
 type Agent = AgentHQ.AgentIdentity
 type MessageItem = Extract<FeedItem, { kind: "message" }>
@@ -52,49 +56,101 @@ const ATTENTION_DOT = {
   completed: "bg-v2-state-fg-success",
 } as const
 
+// The Agents tab (UX #7): Agents | Tasks | Activity | Tools. An agent's workspace opens over the view it was opened
+// from. Expand shows the whole of it full height; the panel then only says so, so each session has one view.
 export default function AgentsPanel() {
   const agenthq = useAgentHQ()
   const language = useLanguage()
+  return (
+    <div data-component="agenthq-panel" class="flex min-h-0 flex-1 flex-col">
+      <Show
+        when={!agenthq.ui.expanded}
+        fallback={
+          <PanelState title={language.t("agenthq.expanded")}>
+            <ButtonV2 size="small" variant="neutral" onClick={() => agenthq.setExpanded(false)}>
+              {language.t("agenthq.collapse")}
+            </ButtonV2>
+          </PanelState>
+        }
+      >
+        <Surface />
+      </Show>
+      <Show when={agenthq.ui.expanded}>
+        <Expanded />
+      </Show>
+    </div>
+  )
+}
+
+function Surface(props: { expanded?: boolean }) {
+  const agenthq = useAgentHQ()
+  const workbench = useWorkbench()
+  const language = useLanguage()
   const dialog = useDialog()
   const selected = createMemo(() => agenthq.state.agents.find((agent) => agent.id === agenthq.ui.agentID))
-
+  const view = () => workbench.agentsView()
   // The draft outlives the dialog: the directory picker replaces the dialog stack and the form is shown again after.
   const openDialog = (agent?: Agent) => {
     const draft = createAgentDraft(agent, agenthq.directory)
     const show = () => dialog.show(() => <AgentDialog agent={agent} draft={draft} reopen={show} />)
     show()
   }
-
+  const loading = () => <PanelState icon={<LoaderV2 />} title={language.t("common.loading")} />
+  // One header for every view, so a view switch keeps keyboard focus on its tab.
   return (
-    <div data-component="agenthq-panel" class="flex min-h-0 flex-1 flex-col">
-      <Switch fallback={agenthq.ui.view === "tasks" ? <TasksView /> : <Roster onCreate={() => openDialog()} />}>
+    <>
+      <SurfaceHeader>
+        <Show when={!selected() && view() === "agents" && agenthq.state.agents.length > 0}>
+          <ButtonV2
+            size="small"
+            variant="neutral"
+            icon="plus"
+            // spicy: stable selector for scripts/spicy-smoke.ts
+            data-action="agenthq-new"
+            onClick={() => openDialog()}
+          >
+            {language.t("agenthq.new")}
+          </ButtonV2>
+        </Show>
+        <Show when={!selected() && view() === "tasks"}>
+          <ButtonV2
+            size="small"
+            variant="neutral"
+            icon="plus"
+            data-action="task-new"
+            disabled={agenthq.state.agents.length === 0 || agenthq.tasks.state.list === "unavailable"}
+            title={agenthq.state.agents.length === 0 ? language.t("agenthq.task.needsAgent") : undefined}
+            onClick={() => dialog.show(() => <TaskDialog onSaved={(saved) => agenthq.selectTask(saved.id)} />)}
+          >
+            {language.t("agenthq.task.new")}
+          </ButtonV2>
+        </Show>
+      </SurfaceHeader>
+      <Switch fallback={<Roster onCreate={() => openDialog()} />}>
+        <Match when={selected()} keyed>
+          {(agent) => <AgentWorkspace agent={agent} expanded={props.expanded} onEdit={() => openDialog(agent)} />}
+        </Match>
+        <Match when={view() === "activity"}>
+          <Suspense fallback={loading()}>
+            <ActivityPanel />
+          </Suspense>
+        </Match>
+        <Match when={view() === "tools"}>
+          <Suspense fallback={loading()}>
+            <ToolsPanel />
+          </Suspense>
+        </Match>
         <Match when={agenthq.ui.status === "error" && agenthq.state.agents.length === 0}>
           <RequestErrorState error={agenthq.ui.error} onRetry={() => void agenthq.reload()} />
         </Match>
         <Match when={agenthq.ui.status === "loading" && agenthq.state.agents.length === 0}>
           <PanelState icon={<LoaderV2 />} title={language.t("agenthq.loading")} />
         </Match>
-        <Match when={selected()} keyed>
-          {(agent) => (
-            <Show
-              when={!agenthq.ui.expanded}
-              fallback={
-                <PanelState title={language.t("agenthq.expanded", { name: agent.name })}>
-                  <ButtonV2 size="small" variant="neutral" onClick={() => agenthq.setExpanded(false)}>
-                    {language.t("agenthq.collapse")}
-                  </ButtonV2>
-                </PanelState>
-              }
-            >
-              <AgentWorkspace agent={agent} onEdit={() => openDialog(agent)} />
-            </Show>
-          )}
+        <Match when={view() === "tasks"}>
+          <TasksView />
         </Match>
       </Switch>
-      <Show when={agenthq.ui.expanded && selected()} keyed>
-        {(agent) => <ExpandedWorkspace agent={agent} onEdit={() => openDialog(agent)} />}
-      </Show>
-    </div>
+    </>
   )
 }
 
@@ -103,20 +159,6 @@ function Roster(props: { onCreate: () => void }) {
   const language = useLanguage()
   return (
     <div class="flex min-h-0 flex-1 flex-col">
-      <div class="flex h-10 shrink-0 items-center gap-2 px-3">
-        <ViewSwitch />
-        <span class="flex-1" />
-        <ButtonV2
-          size="small"
-          variant="neutral"
-          icon="plus"
-          // spicy: stable selector for scripts/spicy-smoke.ts
-          data-action="agenthq-new"
-          onClick={props.onCreate}
-        >
-          {language.t("agenthq.new")}
-        </ButtonV2>
-      </div>
       <Show
         when={agenthq.state.agents.length > 0}
         fallback={
@@ -260,14 +302,12 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
   return (
     <div data-component="agenthq-workspace" class="flex min-h-0 flex-1 flex-col">
       <div class="flex h-11 shrink-0 items-center gap-2 border-b border-v2-border-border-muted px-2">
-        <Show when={!props.expanded}>
-          <IconButton
-            icon="arrow-left"
-            variant="ghost"
-            aria-label={language.t("agenthq.back")}
-            onClick={() => agenthq.selectAgent(undefined)}
-          />
-        </Show>
+        <IconButton
+          icon="arrow-left"
+          variant="ghost"
+          aria-label={language.t("agenthq.back")}
+          onClick={() => agenthq.selectAgent(undefined)}
+        />
         <AgentAvatar avatar={props.agent.avatar} name={props.agent.name} size={24} />
         <span class="truncate text-[13px] font-[530] text-v2-text-text-base">{props.agent.name}</span>
         <ProviderChip provider={props.agent.provider} />
@@ -294,12 +334,6 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
           {language.t("agenthq.messages")}
         </ButtonV2>
         <IconButton icon="edit" variant="ghost" aria-label={language.t("agenthq.edit")} onClick={props.onEdit} />
-        <IconButton
-          icon={props.expanded ? "collapse" : "expand"}
-          variant="ghost"
-          aria-label={props.expanded ? language.t("agenthq.collapse") : language.t("agenthq.expand")}
-          onClick={() => agenthq.setExpanded(!props.expanded)}
-        />
       </div>
       <Show when={store.messages}>
         <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3" aria-label={language.t("agenthq.messages")}>
@@ -373,10 +407,11 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
   )
 }
 
-// Large view: the same workspace in a full-window layer, so no route or session-page layout changes are needed.
-function ExpandedWorkspace(props: { agent: Agent; onEdit: () => void }) {
+// Large view: the whole Agents tab in a full-window layer, so no route or session-page layout changes are needed.
+function Expanded() {
   const agenthq = useAgentHQ()
   const dialog = useDialog()
+  const language = useLanguage()
   return (
     <Portal>
       <div
@@ -394,12 +429,12 @@ function ExpandedWorkspace(props: { agent: Agent; onEdit: () => void }) {
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={props.agent.name}
+          aria-label={language.t("workbench.tab.agents")}
           tabIndex={-1}
           ref={(el) => queueMicrotask(() => el.focus())}
           class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[12px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] outline-none"
         >
-          <AgentWorkspace agent={props.agent} expanded onEdit={props.onEdit} />
+          <Surface expanded />
         </div>
       </div>
     </Portal>

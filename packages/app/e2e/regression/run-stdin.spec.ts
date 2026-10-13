@@ -69,6 +69,8 @@ test("run tab: typing in the program's terminal reaches the program", async ({ p
     })
     expect(started.status).toBe(200)
     debugID = ((await started.json()) as { id: string }).id
+    // Program is the Debug tab's view of a program's terminal (UX #7)
+    await page.locator('[data-workbench-tab="debug"]').click()
     await page.locator('[data-workbench-tab="run"]').click({ timeout: 30_000 })
     await expect.poll(printed, { timeout: 30_000 }).toContain("ready for input")
 

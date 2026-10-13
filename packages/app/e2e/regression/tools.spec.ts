@@ -67,6 +67,8 @@ test("tools: review, approve, run, disable, delete; stale reviews refused; draft
     await page.goto(`/server/${base64Encode(server.url)}/session/${session.id}`)
     await expect(page.getByRole("textbox", { name: "Prompt" })).toBeVisible({ timeout: 30_000 })
     await page.keyboard.press("Control+Backquote")
+    // Tools is a view of the Agents tab (UX #7)
+    await page.locator('[data-workbench-tab="agents"]').click()
     const tab = page.locator('[data-workbench-tab="tools"]')
     await tab.click()
     const panel = page.locator('[data-component="workbench-tools"]')

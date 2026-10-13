@@ -171,7 +171,9 @@ test("tools: review, approve, run, disable, delete; stale reviews refused; draft
       200,
     )
     await expect.poll(listed).toContain("word_count")
+    // The Agents tab comes back on Tools; its Agents view has the roster
     await page.locator('[data-workbench-tab="agents"]').click()
+    await page.locator('[data-agenthq-view="agents"]').click()
     await page.locator(`[data-component="agenthq-card"][data-agent="${agent.id}"]`).click()
     const drafted = page.locator('[data-component="agenthq-workspace"] [data-slot="tool-drafted"]')
     await expect(drafted).toContainText("Drafted tool word_count — review in Tools")

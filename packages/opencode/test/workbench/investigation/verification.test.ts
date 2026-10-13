@@ -12,6 +12,8 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { which } from "@opencode-ai/core/util/which"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { Effect, Layer, Stream } from "effect"
 import { Agent } from "@/agent/agent"
@@ -325,5 +327,55 @@ describe("verification feeds investigations", () => {
         expect(record.attempts[0].errorFingerprints[0]).toContain("main.go")
       }),
     60_000,
+  )
+
+  it.instance("INV-03 after a compaction the investigation is still on record and the agent re-reads it", () =>
+    Effect.gen(function* () {
+      const { llm, prompt, session, investigations, investigation } = yield* start()
+      const tools = (messages: SessionV1.WithParts[]) =>
+        messages.flatMap((message) =>
+          message.parts.flatMap((part) =>
+            part.type === "tool" && part.tool === "debug" && part.state.status === "completed"
+              ? [part.state.output]
+              : [],
+          ),
+        )
+      // Before the compaction the agent writes down a hypothesis.
+      yield* llm.tool("debug", { action: "note", text: "an empty list divides by zero" })
+      yield* llm.text("noted")
+      yield* prompt.loop({ sessionID: session.id })
+      expect(tools(yield* MessageV2.filterCompactedEffect(session.id))).toEqual([
+        `investigation ${investigation.id} diagnosing · 1 notes (inferred, not evidence)`,
+      ])
+
+      const compaction = yield* SessionCompaction.Service
+      yield* compaction.create({
+        sessionID: session.id,
+        agent: "build",
+        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+        auto: false,
+      })
+      yield* llm.text("summary: debugging the average")
+      yield* prompt.loop({ sessionID: session.id })
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "where are we?" }],
+      })
+      yield* llm.tool("debug", { action: "status" })
+      yield* llm.text("still debugging")
+      yield* prompt.loop({ sessionID: session.id })
+
+      // The compaction dropped the earlier turn from what the model sees; the status comes from the store.
+      expect(tools(yield* MessageV2.filterCompactedEffect(session.id))).toEqual([
+        `no debug sessions\ninvestigation ${investigation.id} diagnosing: the check fails · 1 evidence · 1 notes`,
+      ])
+      const full = yield* investigations.full(investigation.id)
+      expect(full.investigation.status).toBe("diagnosing")
+      expect(full.evidence.map((item) => [item.kind, item.class])).toEqual([["exception", "observed"]])
+      expect(full.investigation.notes.map((note) => note.text)).toEqual(["an empty list divides by zero"])
+    }),
   )
 })

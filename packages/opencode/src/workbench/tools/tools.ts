@@ -125,6 +125,13 @@ const layer = Layer.effect(
         : events.publish(Workbench.Event.ToolRemoved, { name })
       ).pipe(Effect.ignore)
 
+    // Writes the bytes the user reviewed (their hash was checked on these very bytes), never a file that may have
+    // changed since: a temp file next to it, then a rename. The registry ignores *.tmp.
+    const install = (file: string, source: string) => {
+      const temp = `${file}.${process.pid}.${Date.now()}.tmp`
+      return fs.writeWithDirs(temp, source).pipe(Effect.andThen(fs.rename(temp, file)), Effect.orDie)
+    }
+
     const missing = (name: string, what: string) =>
       new ToolError({ kind: "not_found", message: `no ${what} named ${name}` })
 
@@ -212,7 +219,7 @@ const layer = Layer.effect(
           add: [{ name: "@opencode-ai/plugin", version: InstallationLocal ? undefined : InstallationVersion }],
         })
         .pipe(Effect.mapError((error) => new ToolError({ kind: "invalid", message: error.message })))
-      yield* fs.writeWithDirs(where.enabled, tool.source).pipe(Effect.orDie)
+      yield* install(where.enabled, tool.source)
       const failed = yield* load(where.enabled).pipe(Effect.flip, Effect.option)
       if (failed._tag === "Some") {
         yield* fs.remove(where.enabled).pipe(Effect.ignore)
@@ -255,12 +262,14 @@ const layer = Layer.effect(
       if (!tool) return yield* missing(name, "disabled tool")
       if (tool.hash !== hash)
         return yield* new ToolError({ kind: "conflict", message: "the tool changed since you reviewed it" })
-      yield* fs.rename(where.disabled, where.enabled).pipe(Effect.orDie)
+      // The bytes whose hash matched, not whatever the disabled file holds by now.
+      yield* install(where.enabled, tool.source)
       const failed = yield* load(where.enabled).pipe(Effect.flip, Effect.option)
       if (failed._tag === "Some") {
-        yield* fs.rename(where.enabled, where.disabled).pipe(Effect.ignore)
+        yield* fs.remove(where.enabled).pipe(Effect.ignore)
         return yield* new ToolError({ kind: "invalid", message: `it failed to load: ${failed.value}` })
       }
+      yield* fs.remove(where.disabled).pipe(Effect.ignore)
       const enabled = yield* read(name, where.enabled, "enabled")
       yield* publish(enabled, name)
       return enabled!

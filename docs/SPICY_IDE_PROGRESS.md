@@ -55,6 +55,15 @@ Merged tree (`deb25c286`, waves 1–4): `bun test` in packages/opencode 3839 pas
 | Tool creator | integration-tested end to end (backend `433f71a9c`, Tools tab `61fbb6663`) | Agents (`tool_create`, also on the MCP bridge) or the user draft `.opencode/tool-drafts/<name>.ts`; static checks only (TypeScript transpile + default `tool(` export), never imported before approval (marker-file test); approve/enable carry the reviewed sha256; approved tools load live as `custom_<name>` and ask before every call (`custom_*: ask`); external agents list and call them through the bridge with the same asks; `test:httpapi` 269/269. Tools tab: drafts/enabled/disabled/invalid, source in CodeMirror, Approve sends the reviewed hash (409 → "review again" + reload), test-run form from the JSON Schema, New tool template, Agent HQ shows "Drafted tool … review in Tools"; e2e `tools.spec.ts` against a real server |
 | Editable editor | integration-tested (merged `a44244bce`); CodeMirror 6 chosen over Monaco (modular, ~124 KB gzip editor chunk loaded on first open, no workers) | Text files in side-panel tabs edit in CodeMirror (TS/JS, Python, Rust, C/C++, Go, JSON, Markdown, Swift), one gutter for breakpoints (click toggles) and Problems lint, Cmd+S through `GET/PUT /workbench/file` (exact bytes, sha256 `baseHash` → 409 on conflict with Reload/Overwrite, atomic temp+rename, project-confined after symlink resolution); e2e `editor-save.spec.ts`, route test with negative controls; files with pending agent changes keep the review diff. Unsaved protection (merged `d24f2cbce`): `beforeunload` while any buffer is dirty, desktop `will-prevent-unload` dialog (Quit anyway / Discard / Cancel), Cmd+S as an app command saving the active file tab |
 
+## Validation (2026-10-12)
+
+Independent test-plan validation (`docs/spicy/VALIDATION.md`, merged `1ed4cb1cb`): 135 IDs, 111 pass, 13 partial,
+7 blocked (Developer Mode off; js-debug/Delve not installed), 3 not built (SEC-06 adapter checksums, UI-07 "fix with
+agent", CON-10 PTY stdin e2e). The one failure, REG-07 (plugin tool progress dropped), is fixed in `0d73bfa46`.
+Real AgentKit 0.14.3 (`--local-only`): 20/20 original checks; open on AgentKit's side: cleanup on SIGTERM and SwiftPM
+lock files in $TMPDIR. AgentKit discovery runs a found bridge only if it isn't quarantined or on /Volumes, is the
+user's own and not group/world-writable, and lives under home or /Applications (`666f1c4ae`).
+
 ## Environment blockers (owner action)
 
 - macOS Developer Mode off: lldb-dap cannot launch (Swift/C/C++/Rust debugging, E2E-02/03, DAP-18).

@@ -6,6 +6,8 @@ export const dict = {
   "workbench.tab.debug": "Debug",
   "workbench.tab.agents": "Agents",
   "workbench.tabs.more": "More tabs",
+  "workbench.undo.turn": "Undo this turn",
+  "workbench.undo.back": "Undo back to here",
   "workbench.command.problems": "Show problems",
   "workbench.command.output": "Show checks",
   "workbench.command.debug": "Show debug console",

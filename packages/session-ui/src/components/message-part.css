@@ -257,7 +257,9 @@
   }
 
   &:hover [data-slot="text-part-copy-wrapper"],
-  &:focus-within [data-slot="text-part-copy-wrapper"] {
+  &:focus-within [data-slot="text-part-copy-wrapper"],
+  /* spicy: the latest finished turn keeps its actions (its ↶ undo) in view */
+  [data-slot="text-part-copy-wrapper"][data-latest] {
     opacity: 1;
     pointer-events: auto;
   }

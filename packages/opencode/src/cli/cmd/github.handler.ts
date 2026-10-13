@@ -26,6 +26,8 @@ import { MessageID, PartID } from "../../session/schema"
 import { Provider } from "@/provider/provider"
 import { MessageV2 } from "../../session/message-v2"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { Permission } from "@/permission"
+import { Headless } from "@/workbench/headless" // spicy: CI fails fast on a permission ask
 import { EventV2 } from "@opencode-ai/core/event"
 import { SessionPrompt } from "@/session/prompt"
 import { Git } from "@/git"
@@ -385,6 +387,17 @@ export const githubRun = Effect.fn("Cli.github.run")(function* (args: { event?: 
   const events = yield* EventV2Bridge.Service
   const runLocalEffect = <A, E>(effect: Effect.Effect<A, E>) =>
     Effect.runPromise(effect.pipe(Effect.provideService(InstanceRef, ctx)))
+  // spicy: CI can't answer a permission ask. Each one is rejected at once, and the run fails with the first.
+  let blocked: string | undefined
+  yield* Headless.rejectAsks(
+    events,
+    yield* Permission.Service,
+    "CI can't answer asks; allow it in opencode.json",
+    (message) => {
+      blocked ??= message
+      console.error(message)
+    },
+  )
   yield* Effect.promise(async () => {
     const isMock = args.token || args.event
 
@@ -935,6 +948,7 @@ export const githubRun = Effect.fn("Cli.github.run")(function* (args: { event?: 
               ]),
             ],
           })
+          if (blocked) throw new Error(blocked) // spicy: an ask was rejected; the run fails with it
 
           if (result.info.role === "assistant" && result.info.error) {
             const err = result.info.error

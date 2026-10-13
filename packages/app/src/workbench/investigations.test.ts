@@ -14,8 +14,12 @@ const summary = (id: string, patch: Partial<Workbench.InvestigationSummary> = {}
     ...patch,
   }) as Workbench.InvestigationSummary
 
-const detail = (id: string) =>
-  ({ investigation: { id }, evidence: [], report: `report ${id}` }) as unknown as Workbench.InvestigationDetail
+const detail = (id: string, evidence: string[] = []) =>
+  ({
+    investigation: { id },
+    evidence: evidence.map((item) => ({ id: item })),
+    report: `report ${id}`,
+  }) as unknown as Workbench.InvestigationDetail
 
 describe("investigations", () => {
   test("events and the list merge newest first; an older reply never replaces a newer event", async () => {
@@ -75,5 +79,28 @@ describe("investigations", () => {
     await inv.detail("inv_1")
     expect(inv.state.details.inv_1?.status).toBe("ready")
     expect(calls).toBe(3)
+  })
+
+  test("CON-05 focusing evidence the record lacks loads it again; each request counts", async () => {
+    let evidence = ["ev_1"]
+    const inv = createInvestigationsState({
+      investigations: () => Promise.resolve([]),
+      investigation: (id) => Promise.resolve(detail(id, evidence)),
+      resumeInvestigation: () => Promise.reject(new Error("unused")),
+      cancelInvestigation: () => Promise.reject(new Error("unused")),
+    })
+    inv.update(summary("inv_1"))
+    await inv.detail("inv_1")
+    inv.focus("inv_1", "ev_1")
+    expect(inv.state.focus).toEqual({ id: "inv_1", evidenceID: "ev_1", n: 1 })
+    expect(inv.state.details.inv_1?.stale).toBe(false)
+    inv.focus("inv_1", "ev_1")
+    expect(inv.state.focus?.n).toBe(2)
+
+    evidence = ["ev_1", "ev_2"]
+    inv.focus("inv_1", "ev_2")
+    expect(inv.state.details.inv_1?.stale).toBe(true)
+    await inv.detail("inv_1")
+    expect(inv.state.details.inv_1?.detail?.evidence.map((item) => String(item.id))).toEqual(["ev_1", "ev_2"])
   })
 })

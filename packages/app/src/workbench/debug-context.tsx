@@ -10,6 +10,7 @@ import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
 import { useSDK } from "@/context/sdk"
 import { useServerSDK } from "@/context/server-sdk"
+import { useServerSync } from "@/context/server-sync"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { Persist, persisted } from "@/utils/persist"
 import { showToast } from "@/utils/toast"
@@ -32,6 +33,7 @@ function createDebug() {
   const workbench = useWorkbench()
   const sdk = useSDK()
   const serverSDK = useServerSDK()
+  const serverSync = useServerSync()
   const language = useLanguage()
   const command = useCommand()
   const dialog = useDialog()
@@ -64,6 +66,22 @@ function createDebug() {
   const setOwner = (owner: "idle" | "agent" | "human", id?: string) =>
     debug.setOwner(owner, id).catch(fail(language.t("workbench.debug.failed.owner")))
   const end = () => debug.stop().catch(fail(language.t("workbench.debug.failed.stop")))
+
+  // CON-07: the human's raw LLDB command waits for a debug.lldbCommand ask. Its session is synthetic (no page behind
+  // it), so the ask is found by the debug session it names.
+  const lldbAsk = (debugSessionID: string) =>
+    Object.values(serverSync().session.data.permission)
+      .flat()
+      .find((item) => item.permission === "debug.lldbCommand" && item.metadata?.debugSessionID === debugSessionID)
+  const [answering, setAnswering] = createStore<Record<string, boolean>>({})
+  const answer = (requestID: string, reply: "once" | "always" | "reject") => {
+    setAnswering(requestID, true)
+    // The ask leaves on permission.replied; the buttons stay disabled until then unless the reply fails.
+    return workbench.client.replyPermission(requestID, reply).catch((error: unknown) => {
+      setAnswering(requestID, false)
+      fail(language.t("workbench.debug.lldb.failed"))(error)
+    })
+  }
 
   // A stop the human is driving brings its file forward in the side panel, unless the Debug tab is in front (stepping
   // keeps the stack and variables in view) or the user is typing in that panel (a watch, a breakpoint condition, a
@@ -193,6 +211,9 @@ function createDebug() {
     end,
     openStart,
     consoleFilter: { state: consoleFilter, set: setConsoleFilter },
+    lldbAsk,
+    answering: (requestID: string) => !!answering[requestID],
+    answer,
     // Terminal snapshots of program PTYs, so the Run tab restores a terminal it unmounted. `whole`: the snapshot was
     // attached when the program ended, so it holds all of the output.
     terminals: new Map<string, Partial<LocalPTY> & { id: string; whole?: boolean }>(),

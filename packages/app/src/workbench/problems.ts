@@ -26,17 +26,45 @@ export type ProblemRow =
 
 const RANK: Record<Workbench.Severity, number> = { error: 0, warning: 1, info: 2, hint: 3 }
 
+// Every producer (and language-server channel) that reported a problem; servers before DIAG-01 send only `source`.
+export const sourcesOf = (problem: Problem) => (problem.sources?.length ? problem.sources : [problem.source])
+
+// DIAG-01: one entry per tool, language servers as "LSP" with the channels that reported it: "tsc · LSP (push, pull)".
+// A problem with one source keeps its tool's name.
+export function sourceLabel(problem: Problem) {
+  const sources = sourcesOf(problem)
+  if (sources.length === 1) return sources[0]!.tool
+  return [...Map.groupBy(sources, (source) => `${source.kind}\0${source.tool}`).values()]
+    .map((group) => {
+      const channels = [...new Set(group.flatMap((source) => (source.channel ? [source.channel] : [])))]
+      const name = group[0]!.kind === "lsp" ? "LSP" : group[0]!.tool
+      return channels.length ? `${name} (${channels.join(", ")})` : name
+    })
+    .join(" · ")
+}
+
+// DIAG-07: why a stale problem is stale when its language server crashed (the producer failed with the exit reason).
+export function crashReason(problem: Problem, producers: Workbench.ProblemsSnapshot["producers"]) {
+  if (!problem.stale) return
+  return sourcesOf(problem)
+    .filter((source) => source.kind === "lsp")
+    .map((source) => producers.find((item) => item.producer === source.producer && item.state === "failed"))
+    .find((item) => item?.reason)?.reason
+}
+
 export function filterProblems(problems: readonly Problem[], filter: ProblemFilter) {
   const query = filter.query.trim().toLowerCase()
-  return problems.filter(
-    (problem) =>
+  return problems.filter((problem) => {
+    const sources = sourcesOf(problem)
+    return (
       filter.severities[problem.severity] &&
-      (filter.kind === "all" || problem.source.kind === filter.kind) &&
+      (filter.kind === "all" || sources.some((source) => source.kind === filter.kind)) &&
       (!query ||
-        [problem.message, problem.file ?? "", String(problem.code ?? ""), problem.source.tool].some((value) =>
-          value.toLowerCase().includes(query),
-        )),
-  )
+        [problem.message, problem.file ?? "", String(problem.code ?? ""), ...sources.map((source) => source.tool)].some(
+          (value) => value.toLowerCase().includes(query),
+        ))
+    )
+  })
 }
 
 // Files sorted by path (problems without a file last); inside a file, by severity then position.

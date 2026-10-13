@@ -242,6 +242,9 @@ export function createWorkbenchClient(input: {
     debugOwner: (id: string, owner: "idle" | "agent" | "human") =>
       decoded(decoders.debugSession, "POST", `${debug(id)}/owner`, { owner }),
     debugStop: (id: string) => decoded(decoders.debugSession, "DELETE", debug(id)),
+    // Answers a permission ask: the Debug Console's debug.lldbCommand, whose session is synthetic.
+    replyPermission: (id: string, reply: "once" | "always" | "reject") =>
+      call("POST", `/permission/${encodeURIComponent(id)}/reply`, { reply }),
     // Review (spicy-review, docs/spicy/notes-review.md). Every decision returns the updated changeset.
     changesets: () => decoded(decoders.changesets, "GET", "/review/changesets"),
     content: (id: string, path: string) =>

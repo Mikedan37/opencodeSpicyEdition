@@ -58,6 +58,11 @@ export default function ActivityPanel() {
   const investigations = workbench.investigations
   const [selected, setSelected] = createSignal<string>()
   const current = createMemo(() => investigations.find(selected()) ?? investigations.state.list[0])
+  // Another view pointing here (a console row's evidence) selects that investigation.
+  createEffect(() => {
+    const focus = investigations.state.focus
+    if (focus?.n) setSelected(focus.id)
+  })
 
   return (
     <div data-component="workbench-activity" class="flex min-h-0 flex-1 flex-col">
@@ -174,6 +179,16 @@ function Detail(props: { summary: Workbench.InvestigationSummary }) {
     )
   const reveal = (id: string) =>
     evidenceList?.querySelector(`[data-evidence="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest" })
+  const focused = () => {
+    const focus = investigations.state.focus
+    return focus?.id === props.summary.id ? focus.evidenceID : undefined
+  }
+  // The evidence another view pointed at scrolls into view once the record has it, and again on each request.
+  createEffect(() => {
+    const id = focused()
+    void investigations.state.focus?.n
+    if (id && state()?.detail?.evidence.some((item) => item.id === id)) reveal(id)
+  })
 
   return (
     <div
@@ -276,7 +291,9 @@ function Detail(props: { summary: Workbench.InvestigationSummary }) {
                 {language.t("workbench.activity.evidence", { count: state()?.detail?.evidence.length ?? 0 })}
               </h4>
               <ul ref={evidenceList} data-slot="investigation-evidence" class="flex flex-col gap-2">
-                <For each={state()?.detail?.evidence ?? []}>{(item) => <EvidenceRow evidence={item} />}</For>
+                <For each={state()?.detail?.evidence ?? []}>
+                  {(item) => <EvidenceRow evidence={item} focused={item.id === focused()} />}
+                </For>
               </ul>
               <Show when={investigation().attempts.length}>
                 <h4 class={SECTION}>{language.t("workbench.activity.attempts")}</h4>
@@ -397,14 +414,16 @@ function Meta(props: { investigation: Workbench.Investigation; summary: Workbenc
   )
 }
 
-function EvidenceRow(props: { evidence: Evidence }) {
+function EvidenceRow(props: { evidence: Evidence; focused: boolean }) {
   const language = useLanguage()
   const refs = () => props.evidence.refs
   return (
     <li
       data-evidence={props.evidence.id}
       data-class={props.evidence.class}
+      aria-current={props.focused ? "true" : undefined}
       class="rounded-[6px] px-2 py-1.5 text-[12px] shadow-[inset_0_0_0_0.5px_var(--v2-border-border-muted)]"
+      classList={{ "bg-v2-background-bg-layer-02": props.focused }}
     >
       <div class="flex min-w-0 flex-wrap items-center gap-2">
         <span

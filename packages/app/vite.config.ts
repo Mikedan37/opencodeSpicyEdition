@@ -30,4 +30,15 @@ export default defineConfig({
     target: "esnext",
     sourcemap: true,
   },
+  // spicy: packages Vite would only find when a page first renders Markdown (the renderer's worker and lazy parser);
+  // finding them mid-run makes the dev server re-optimize and reload every open page, which broke cold e2e runs
+  optimizeDeps: {
+    include: [
+      "marked",
+      "marked-shiki",
+      "@opencode-ai/ui > katex",
+      "@opencode-ai/session-ui > remend",
+      "@opencode-ai/session-ui > @shikijs/stream",
+    ],
+  },
 })

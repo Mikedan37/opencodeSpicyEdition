@@ -28,8 +28,17 @@ export type Info = NonNullable<Awaited<ReturnType<typeof create>>>
 
 export type Diagnostic = VSCodeDiagnostic
 
-// spicy: one file's merged push + pull diagnostics after either replaces them (Workbench problem store)
-export type DiagnosticsEvent = { serverID: string; root: string; file: string; diagnostics: Diagnostic[]; at: number }
+// spicy: one file's push and pull diagnostics after either replaces them (Workbench problem store). `exited` is set
+// once the server died: its lists are being cleared, and the store keeps the last report marked stale (DIAG-07).
+export type DiagnosticsEvent = {
+  serverID: string
+  root: string
+  file: string
+  push: Diagnostic[]
+  pull: Diagnostic[]
+  exited?: string
+  at: number
+}
 
 export class InitializeError extends Schema.TaggedErrorClass<InitializeError>()("LSPInitializeError", {
   serverID: Schema.String,
@@ -162,13 +171,15 @@ export async function create(input: {
   const diagnosticListeners = new Set<(input: { path: string; serverID: string }) => void>()
   const mergedDiagnostics = (filePath: string) =>
     dedupeDiagnostics([...(pushDiagnostics.get(filePath) ?? []), ...(pullDiagnostics.get(filePath) ?? [])])
-  // spicy: report the merged list after every push or pull replacement
+  // spicy: report both lists after every push or pull replacement
   const emitDiagnostics = (file: string) =>
     input.onDiagnostics?.({
       serverID: input.serverID,
       root: input.root,
       file,
-      diagnostics: mergedDiagnostics(file),
+      push: pushDiagnostics.get(file) ?? [],
+      pull: pullDiagnostics.get(file) ?? [],
+      exited: exitReason,
       at: Date.now(),
     })
   const updatePushDiagnostics = (filePath: string, next: Diagnostic[]) => {
@@ -573,6 +584,8 @@ export async function create(input: {
       const next = await Promise.race([
         pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
         waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
+        // spicy: a server that dies mid-wait ends the wait now instead of at the timeout (REG-09)
+        exited.then(() => "exited" as const),
       ])
       if (next !== "registration") return
     }
@@ -601,6 +614,8 @@ export async function create(input: {
       const next = await Promise.race([
         pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
         waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
+        // spicy: a server that dies mid-wait ends the wait now instead of at the timeout (REG-09)
+        exited.then(() => "exited" as const),
       ])
       if (next !== "registration") return
     }

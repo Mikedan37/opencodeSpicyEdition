@@ -53,6 +53,15 @@ export type SourceKind = typeof SourceKind.Type
 
 export const Related = Schema.Struct({ file: Schema.String, range: optional(Range), message: Schema.String })
 
+export const ProblemSource = Schema.Struct({
+  kind: SourceKind,
+  tool: Schema.String, // "clangd", "tsc", "cargo", "pytest", "debugpy"
+  producer: Schema.String, // store slice key, e.g. "lsp:clangd:/repo" or "check:tsc:/repo/app/tsconfig.json"
+  runID: optional(RunID),
+  channel: optional(Schema.Literals(["push", "pull"])), // language servers: how the server reported it
+}).annotate({ identifier: "WorkbenchProblemSource" })
+export interface ProblemSource extends Schema.Schema.Type<typeof ProblemSource> {}
+
 export const Problem = Schema.Struct({
   id: Schema.String, // stable: hash(producer, file, code, message, start line)
   file: optional(Schema.String), // absolute path
@@ -62,14 +71,13 @@ export const Problem = Schema.Struct({
   code: optional(Schema.Union([Schema.String, Schema.Finite])),
   codeHref: optional(Schema.String),
   related: optional(Schema.Array(Related)),
-  source: Schema.Struct({
-    kind: SourceKind,
-    tool: Schema.String, // "clangd", "tsc", "cargo", "pytest", "debugpy"
-    producer: Schema.String, // store slice key, e.g. "lsp:clangd:/repo" or "check:tsc:/repo/app/tsconfig.json"
-    runID: optional(RunID),
-  }),
-  observedAt: Schema.Finite,
-  stale: Schema.Boolean, // file content changed since this was observed
+  source: ProblemSource, // the first of `sources`
+  // Every producer (and language-server channel) that reported this problem, `source` first. When push and pull,
+  // or a language server and a checker, report the same error there is one problem listing all of them.
+  sources: optional(Schema.Array(ProblemSource)),
+  observedAt: Schema.Finite, // the latest observation among `sources`
+  // the file changed since this was observed, or its language server crashed and has not reported again
+  stale: Schema.Boolean,
 }).annotate({ identifier: "WorkbenchProblem" })
 export interface Problem extends Schema.Schema.Type<typeof Problem> {}
 
@@ -94,6 +102,8 @@ export const ProblemsSnapshot = Schema.Struct({
       updatedAt: Schema.Finite,
     }),
   ),
+  // "off" when the project's config leaves language servers off (no "lsp" key, or "lsp": false)
+  lsp: optional(Schema.Literals(["on", "off"])),
 }).annotate({ identifier: "WorkbenchProblemsSnapshot" })
 export interface ProblemsSnapshot extends Schema.Schema.Type<typeof ProblemsSnapshot> {}
 

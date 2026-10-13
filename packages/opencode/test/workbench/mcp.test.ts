@@ -131,6 +131,8 @@ describe("workbench MCP bridge", () => {
       const problems = yield* call(mcp, "workbench_problems", { severity: "error" })
       expect(text(problems)).toStartWith("1 errors, 0 warnings, 0 info, 0 hints")
       expect(text(problems)).toContain("error link [clang]")
+      // DIAG-12: the project leaves language servers off
+      expect(text(problems)).toContain('Language servers are off: set "lsp": true in opencode.json')
     }),
   )
 

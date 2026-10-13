@@ -109,4 +109,13 @@ describe("workbench routes", () => {
       ])
     }),
   )
+
+  it.live("DIAG-12 GET /workbench/problems says whether language servers are on", () =>
+    Effect.gen(function* () {
+      const lsp = (dir: string) =>
+        call(dir, "/workbench/problems").pipe(Effect.map((result) => (result.body as Workbench.ProblemsSnapshot).lsp))
+      expect(yield* lsp(yield* tmpdirScoped({ git: true }))).toBe("off")
+      expect(yield* lsp(yield* tmpdirScoped({ git: true, config: { lsp: true } }))).toBe("on")
+    }),
+  )
 })

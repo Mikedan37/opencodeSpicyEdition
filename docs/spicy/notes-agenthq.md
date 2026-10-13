@@ -910,3 +910,34 @@ Codex and AgentKit checks), 0 fail; `bun test --timeout 30000 test/server test/s
 0 fail; `bun run typecheck` clean. `packages/app` typecheck is clean after `bun install --frozen-lockfile --offline`.
 
 No upstream-owned files were edited in wave 7.
+
+# Wave 8: finding OpenCode Native's bridge without setup
+
+On this Mac OpenCode Native is in neither Applications folder and `agentkit-bridge` is not on PATH (a GUI-launched
+server does not see `~/.local/bin` either), so the provider said "AgentKit bridge not found". The last lookup step is
+now LaunchServices' index:
+
+- `mdfind "kMDItemCFBundleIdentifier == 'local.opencode.spicy.native'"` lists every copy of OpenCode Native. The
+  bundle id lives in one constant, `AGENTKIT_BUNDLE_ID`. Spotlight's index is read-only, has no network and shows no
+  UI. The query has a 3-second timeout, any failure finds nothing, and it runs on macOS only.
+- Of each copy's `Contents/MacOS/agentkit-bridge` that exists, the ones whose `--help` usage lists `acp` qualify, and
+  the newest by the binary's mtime wins.
+- The choice is kept per process. Each provider list chooses again, and a session start uses the last choice (it
+  only runs the search when there is none yet). The status names the bridge in its first note, `Bridge: <path>`.
+- Order: the identity's `launch`; `OPENCODE_AGENTKIT_BRIDGE` (alone when set); PATH; `/Applications` and
+  `~/Applications`; LaunchServices.
+
+On this Mac the index returns four copies: the outputs build (bridge 17:36 with ACP), two work/package copies
+without a bridge, and `~/OpenCodeCode/OpenCodeNative-agentkit` (bridge 01:18, no ACP). The outputs build wins.
+
+Tests: with an injected finder, the newer of two bridges with ACP wins over an older one; a newer bridge without
+ACP and a copy without a bridge are skipped; a session starts the chosen bridge; and an empty, failing or crashing
+finder gives "AgentKit bridge not found". Earlier detection tests now inject an empty finder, so Spotlight on the test
+machine cannot change them. The real check (`SPICY_REAL_AGENTKIT=index`, status only, no session):
+`{"available":true,"version":"0.1.0","bridge":"Bridge: /Users/mdanylchuk/Documents/Codex/2026-10-10/so-w/outputs/OpenCodeNative/OpenCode Native.app/Contents/MacOS/agentkit-bridge"}`.
+
+Results (from `packages/opencode`): `bun test --timeout 120000 test/agenthq` 43 pass, 4 skip (the opt-in real checks),
+0 fail; `bun test --timeout 30000 test/server test/session` 721 pass, 9 skip, 1 todo, 1 fail: the upstream
+`httpapi-v2-pty` timing flake, which passed 3 of 3 alone right after; `bun run typecheck` clean.
+
+No upstream-owned files were edited in wave 8.

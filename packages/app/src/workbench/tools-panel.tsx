@@ -181,12 +181,12 @@ function ToolRow(props: { tool: Tool; selected: boolean; onSelect: () => void })
         <span class="min-w-0 flex-1 truncate font-mono text-[12px] font-[530] text-v2-text-text-base">
           {props.tool.name}
         </span>
-        <span class="shrink-0 text-[11px] text-v2-text-text-faint">{ago(props.tool.updatedAt)}</span>
+        <span class="shrink-0 text-[11px] text-v2-text-text-muted">{ago(props.tool.updatedAt)}</span>
       </span>
       <span class="truncate text-[11px] text-v2-text-text-muted" title={props.tool.description}>
         {props.tool.description}
       </span>
-      <span class="flex min-w-0 items-center gap-1 text-[11px] text-v2-text-text-faint">
+      <span class="flex min-w-0 items-center gap-1 text-[11px] text-v2-text-text-muted">
         <Author by={props.tool.createdBy} />
       </span>
     </button>
@@ -280,7 +280,7 @@ function ToolDetail(props: { tool: Tool }) {
         </Switch>
       </div>
       <p class="mt-1 select-text text-[12px] leading-[18px] text-v2-text-text-base">{props.tool.description}</p>
-      <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 text-[11px] text-v2-text-text-faint">
+      <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 text-[11px] text-v2-text-text-muted">
         <Author by={props.tool.createdBy} />
         <span>{ago(props.tool.updatedAt)}</span>
         <span class="min-w-0 truncate font-mono" title={props.tool.path}>
@@ -292,7 +292,7 @@ function ToolDetail(props: { tool: Tool }) {
         <div
           role="alert"
           data-slot="tool-stale"
-          class="mt-3 rounded-[6px] bg-v2-state-bg-warning px-3 py-2 text-[12px] leading-[18px] text-v2-state-fg-warning"
+          class="mt-3 rounded-[6px] bg-v2-state-bg-warning px-3 py-2 text-[12px] leading-[18px] text-[var(--spicy-fg-warning)]"
         >
           {language.t("workbench.tools.stale")}
         </div>
@@ -323,7 +323,7 @@ function ToolDetail(props: { tool: Tool }) {
       <h4 class={SECTION}>{language.t("workbench.tools.args")}</h4>
       <Show
         when={props.tool.args.length > 0}
-        fallback={<p class="text-[12px] text-v2-text-text-faint">{language.t("workbench.tools.args.none")}</p>}
+        fallback={<p class="text-[12px] text-v2-text-text-muted">{language.t("workbench.tools.args.none")}</p>}
       >
         <table data-slot="tool-args" class="w-full border-collapse text-left text-[12px]">
           <thead class="text-[11px] text-v2-text-text-muted">
@@ -453,7 +453,7 @@ function TestRun(props: { tool: Tool }) {
               <Field.Label>
                 <span class="font-mono">{field.name}</span>
                 <Show when={!field.required}>
-                  <span class="ml-1.5 text-v2-text-text-faint">{language.t("workbench.tools.run.optional")}</span>
+                  <span class="ml-1.5 text-v2-text-text-muted">{language.t("workbench.tools.run.optional")}</span>
                 </Show>
                 <Show when={field.description}>
                   <span class="ml-1.5 text-v2-text-text-muted">{field.description}</span>
@@ -557,7 +557,7 @@ function NewTool(props: { onCancel: () => void; onSaved: (tool: Tool) => void })
             placeholder="greet"
             onInput={(event) => setDraft("name", event.currentTarget.value)}
           />
-          <span class="text-[11px] text-v2-text-text-faint">{language.t("workbench.tools.form.name.hint")}</span>
+          <span class="text-[11px] text-v2-text-text-muted">{language.t("workbench.tools.form.name.hint")}</span>
         </Field>
         <Field>
           <Field.Label>{language.t("workbench.tools.form.description")}</Field.Label>

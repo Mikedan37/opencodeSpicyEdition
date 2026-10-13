@@ -44,7 +44,7 @@ import { createInvestigationsState } from "./investigations"
 import { createRunsState, isFinished } from "./runs"
 import { createToolsState } from "./tools"
 import { latestRun, PROBLEM_CONTEXT, problemSnapshot, problemSummary, shortPath } from "./snapshot"
-import { PanelState, TONE_CLASS } from "./ui"
+import { PanelState, TAB_FOCUS, TONE_CLASS } from "./ui"
 
 const AgentsPanel = lazy(() => import("@/agenthq/agents-panel"))
 const ProblemsPanel = lazy(() => import("./problems-panel"))
@@ -386,6 +386,7 @@ export function WorkbenchTabTriggers() {
           <Tabs.Trigger
             value={PREFIX + tab}
             data-workbench-tab={tab}
+            class={TAB_FOCUS}
             // Mouse selects on press like the terminal tabs; click covers keyboard and touch activation.
             onPointerDown={(event) => event.pointerType === "mouse" && event.button === 0 && workbench.open(tab)}
             onClick={() => workbench.open(tab)}

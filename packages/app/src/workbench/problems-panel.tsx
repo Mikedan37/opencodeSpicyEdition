@@ -289,6 +289,14 @@ function Row(props: {
 }) {
   const language = useLanguage()
   const workbench = useWorkbench()
+  const rowName = (problem: Workbench.Problem, line: number, column: number) => {
+    const head = `${language.t(`workbench.problems.level.${problem.severity}`)}: ${problem.message.split("\n")[0]}`
+    if (!problem.file) return head
+    const file = getFilename(problem.file)
+    return problem.range
+      ? language.t("workbench.problems.row", { head, file, line, column })
+      : language.t("workbench.problems.rowFile", { head, file })
+  }
   // The file's folder, project-relative (UX #15): "src/lib/" for <project>/src/lib/a.ts, nothing at the root.
   const folder = (file: string | undefined) => {
     const path = file ? shortPath(workbench.directory, file) : ""
@@ -311,7 +319,7 @@ function Row(props: {
               <span class="shrink-0 font-[530] text-v2-text-text-base">
                 {row().file ? getFilename(row().file) : language.t("workbench.problems.noFile")}
               </span>
-              <span class="min-w-0 truncate text-v2-text-text-faint">{folder(row().file)}</span>
+              <span class="min-w-0 truncate text-v2-text-text-muted">{folder(row().file)}</span>
               <span class="ml-auto shrink-0 rounded-full bg-v2-background-bg-layer-02 px-1.5 text-[11px] tabular-nums text-v2-text-text-muted">
                 {row().count}
               </span>
@@ -337,27 +345,25 @@ function Row(props: {
                 data-row="problem"
                 data-problem={problem().id}
                 disabled={!problem().file}
-                aria-label={
-                  problem().file
-                    ? language.t("workbench.problems.open", { file: getFilename(problem().file), line: line() })
-                    : undefined
-                }
+                // The row's content as its name (UX a11y): "Error: Type 'string'…, broken.ts line 1, column 14"
+                aria-label={rowName(problem(), line(), column())}
                 class="flex h-full min-w-0 flex-1 items-center gap-2 pl-8 pr-1 text-left text-[12px] outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)]"
                 onClick={() => props.onOpen(problem())}
               >
                 <span
+                  aria-hidden="true"
                   class={`size-2 shrink-0 rounded-full ${SEVERITY_DOT[problem().severity]}`}
-                  title={language.t(`workbench.problems.severity.${problem().severity}`)}
+                  title={language.t(`workbench.problems.level.${problem().severity}`)}
                 />
                 <span class="min-w-0 truncate text-v2-text-text-base" title={problem().message}>
                   {problem().message}
                 </span>
                 <Show when={problem().code !== undefined}>
-                  <span class="shrink-0 font-mono text-[11px] text-v2-text-text-faint">{String(problem().code)}</span>
+                  <span class="shrink-0 font-mono text-[11px] text-v2-text-text-muted">{String(problem().code)}</span>
                 </Show>
                 <span
                   data-slot="problem-sources"
-                  class="shrink-0 text-[11px] text-v2-text-text-faint"
+                  class="shrink-0 text-[11px] text-v2-text-text-muted"
                   title={sourcesOf(problem())
                     .map((source) => `${source.tool}: ${source.kind}${source.channel ? ` (${source.channel})` : ""}`)
                     .join("\n")}

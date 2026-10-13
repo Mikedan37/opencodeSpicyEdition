@@ -131,7 +131,7 @@ function Status() {
   }
   const exception = () => debug.selected()?.stop?.exception
   return (
-    <div class="shrink-0 px-3 py-1.5" data-slot="debug-status">
+    <div role="status" class="shrink-0 px-3 py-1.5" data-slot="debug-status">
       <Show
         when={debug.selected() || debug.state.list === "unavailable"}
         fallback={
@@ -150,7 +150,7 @@ function Status() {
           class="select-text text-[12px] leading-[18px]"
           classList={{
             "text-v2-state-fg-danger": debug.selected()?.state === "failed",
-            "text-v2-state-fg-warning": debug.selected()?.state === "stopped",
+            "text-[var(--spicy-fg-warning)]": debug.selected()?.state === "stopped",
             "text-v2-text-text-muted": debug.selected()?.state !== "failed" && debug.selected()?.state !== "stopped",
           }}
         >
@@ -196,7 +196,7 @@ function CallStack() {
                     classList={{ "bg-v2-state-fg-warning": current(), "bg-transparent": !current() }}
                   />
                   <span class="min-w-0 truncate font-mono text-v2-text-text-base">{frame.name}</span>
-                  <span class="ml-auto shrink-0 font-mono text-[11px] text-v2-text-text-faint">
+                  <span class="ml-auto shrink-0 font-mono text-[11px] text-v2-text-text-muted">
                     {frame.file ? `${getFilename(frame.file)}:${frame.line ?? ""}` : ""}
                   </span>
                 </button>
@@ -340,7 +340,7 @@ function Watches() {
                   fallback={
                     <div class={`${ROW} font-mono`} title={value()?.text}>
                       <span class="shrink-0 text-v2-text-text-accent">{expression}</span>
-                      <span class="shrink-0 text-v2-text-text-faint">=</span>
+                      <span class="shrink-0 text-v2-text-text-muted">=</span>
                       <span
                         class="min-w-0 truncate"
                         classList={{
@@ -454,7 +454,7 @@ function Breakpoints() {
             <div data-breakpoint-file={file}>
               <div class="flex h-[22px] items-center gap-1.5 px-3 text-[12px]" title={file}>
                 <span class="shrink-0 font-[530] text-v2-text-text-base">{getFilename(file)}</span>
-                <span class="min-w-0 truncate text-v2-text-text-faint">
+                <span class="min-w-0 truncate text-v2-text-text-muted">
                   {file.includes("/") ? getDirectory(file) : ""}
                 </span>
               </div>
@@ -496,7 +496,7 @@ function Breakpoints() {
                               .join(" · ")}
                           </span>
                           <Show when={state()?.verified === false}>
-                            <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-faint">
+                            <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-muted">
                               {language.t("workbench.debug.breakpoints.unverified")}
                             </span>
                           </Show>

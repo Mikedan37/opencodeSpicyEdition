@@ -141,7 +141,7 @@ function MarkedFile<T>(props: { debug: DebugContextValue; text: TextFileProps<T>
         "mx-3 my-0.5 whitespace-pre-wrap break-words rounded-[4px] bg-v2-state-bg-danger px-2 font-mono text-[11px] leading-[18px] text-v2-state-fg-danger",
       )
     if (meta.values)
-      row("values", meta.values, "truncate px-3 font-mono text-[11px] leading-5 text-v2-state-fg-warning")
+      row("values", meta.values, "truncate px-3 font-mono text-[11px] leading-5 text-[var(--spicy-fg-warning)]")
     return box
   }
 
@@ -225,7 +225,7 @@ function decorate(root: ShadowRoot, marks: Marks) {
     node.dataset.spicyExec = ""
     node.style.backgroundColor = fill
     node.style.boxShadow = `inset 3px 0 0 ${tone}`
-    node.style.color = tone
+    node.style.color = marks.exception ? tone : "var(--spicy-fg-warning)"
   }
 }
 

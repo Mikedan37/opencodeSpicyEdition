@@ -75,7 +75,7 @@ export function WorkbenchStatusStrip() {
         <span class="font-[530] text-v2-text-text-base">{language.t("workbench.tab.agents")}</span>
         <Show when={workbench.needsYou()}>
           {(count) => (
-            <span class="rounded-full bg-v2-state-bg-warning px-1.5 font-[530] text-v2-state-fg-warning">
+            <span class="rounded-full bg-v2-state-bg-warning px-1.5 font-[530] text-[var(--spicy-fg-warning)]">
               {language.plural("workbench.status.needsYou", count())}
             </span>
           )}
@@ -84,7 +84,7 @@ export function WorkbenchStatusStrip() {
       <Show when={session()}>
         <button type="button" data-status="debug" class={ITEM} onClick={() => workbench.show("debug")}>
           <span class="font-[530] text-v2-text-text-base">{language.t("workbench.status.debug")}</span>
-          <span classList={{ "text-v2-state-fg-warning": session()?.state === "stopped" }}>{debugText()}</span>
+          <span classList={{ "text-[var(--spicy-fg-warning)]": session()?.state === "stopped" }}>{debugText()}</span>
         </button>
       </Show>
       <Show when={running()}>
@@ -104,7 +104,7 @@ export function WorkbenchStatusStrip() {
         onClick={() => command.trigger(PANEL_KEY)}
       >
         {language.t("workbench.status.panel")}
-        <kbd class="font-sans text-v2-text-text-faint">{command.keybind(PANEL_KEY)}</kbd>
+        <kbd class="font-sans text-v2-text-text-muted">{command.keybind(PANEL_KEY)}</kbd>
       </button>
     </nav>
   )

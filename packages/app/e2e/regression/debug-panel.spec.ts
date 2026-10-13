@@ -65,6 +65,7 @@ test("debug side panel: start errors verbatim, stack, lazy variables, watches, o
   const debug = panel.locator('[data-component="workbench-debug"]')
   await expect(debug).toBeVisible()
   await expect(debug.locator('[data-slot="debug-status"]')).toHaveText("Paused: breakpoint")
+  await expect(debug.getByRole("status").first()).toHaveText("Paused: breakpoint")
   await expect(debug.locator("[data-frame]")).toHaveCount(2)
   await expect(debug.locator('[data-frame="1"] [data-slot="frame"]')).toHaveAttribute("aria-current", "true")
   await expect(debug.locator('[data-frame="1"] [data-slot="frame"]')).toContainText("main")

@@ -172,7 +172,7 @@ function Line(props: {
         <span
           aria-hidden="true"
           class="shrink-0 font-[530]"
-          classList={{ "text-v2-state-fg-success": props.ok, "text-v2-state-fg-danger": !props.ok }}
+          classList={{ "text-[var(--spicy-fg-success)]": props.ok, "text-v2-state-fg-danger": !props.ok }}
         >
           {props.ok ? MARK.ok : MARK.missing}
         </span>

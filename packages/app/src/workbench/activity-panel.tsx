@@ -144,7 +144,7 @@ function ListRow(props: { summary: Workbench.InvestigationSummary; selected: boo
         <span class="min-w-0 flex-1 truncate text-[12px] font-[530] text-v2-text-text-base">{props.summary.title}</span>
         <InvestigationStatusPill status={props.summary.status} />
       </span>
-      <span class="flex min-w-0 items-center gap-2 text-[11px] text-v2-text-text-faint">
+      <span class="flex min-w-0 items-center gap-2 text-[11px] text-v2-text-text-muted">
         <AgentName agentID={props.summary.agentID} />
         <span class="shrink-0">{language.plural("workbench.activity.evidenceCount", props.summary.evidenceCount)}</span>
         <span class="ml-auto shrink-0">{ago(props.summary.updatedAt)}</span>
@@ -274,7 +274,7 @@ function Detail(props: { summary: Workbench.InvestigationSummary }) {
                       class="flex min-w-0 flex-wrap items-center gap-2 text-[12px]"
                     >
                       <InvestigationStatusPill status={checkpoint.status} />
-                      <span class="shrink-0 text-[11px] text-v2-text-text-faint">{ago(checkpoint.at)}</span>
+                      <span class="shrink-0 text-[11px] text-v2-text-text-muted">{ago(checkpoint.at)}</span>
                       <Reason {...checkpoint} onEvidence={reveal} />
                     </li>
                   )}
@@ -311,7 +311,7 @@ function Detail(props: { summary: Workbench.InvestigationSummary }) {
                         <span class="text-v2-text-text-muted">
                           {language.plural("workbench.activity.attempt.errors", attempt.errorCount)}
                         </span>
-                        <span class="min-w-0 truncate font-mono text-[11px] text-v2-text-text-faint">
+                        <span class="min-w-0 truncate font-mono text-[11px] text-v2-text-text-muted">
                           {attempt.changes.map((change) => getFilename(change.file)).join(", ")}
                         </span>
                       </li>
@@ -336,7 +336,7 @@ function Detail(props: { summary: Workbench.InvestigationSummary }) {
               </Show>
               <Show when={investigation().unverified.length}>
                 <h4 class={SECTION}>{language.t("workbench.activity.unverified")}</h4>
-                <ul class="flex flex-col gap-0.5 font-mono text-[11px] text-v2-state-fg-warning">
+                <ul class="flex flex-col gap-0.5 font-mono text-[11px] text-[var(--spicy-fg-warning)]">
                   <For each={investigation().unverified}>
                     {(file) => (
                       <li class="truncate" title={file}>
@@ -429,8 +429,8 @@ function EvidenceRow(props: { evidence: Evidence; focused: boolean }) {
         <span class="shrink-0 font-[530] text-v2-text-text-base">
           {language.t(`workbench.activity.kind.${props.evidence.kind}`)}
         </span>
-        <span class="shrink-0 font-mono text-[10px] text-v2-text-text-faint">{props.evidence.id}</span>
-        <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-faint">{ago(props.evidence.at)}</span>
+        <span class="shrink-0 font-mono text-[10px] text-v2-text-text-muted">{props.evidence.id}</span>
+        <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-muted">{ago(props.evidence.at)}</span>
       </div>
       <p class="mt-0.5 select-text text-v2-text-text-base">{props.evidence.summary}</p>
       <div class="mt-0.5 flex flex-wrap items-center gap-3 text-[11px]">
@@ -545,7 +545,7 @@ function SessionLink(props: { sessionID?: string; agentID?: string }) {
   return (
     <Show when={props.sessionID}>
       {(id) => (
-        <Show when={agent()} fallback={<span class="font-mono text-[11px] text-v2-text-text-faint">{id()}</span>}>
+        <Show when={agent()} fallback={<span class="font-mono text-[11px] text-v2-text-text-muted">{id()}</span>}>
           {(agentID) => (
             <button
               type="button"

@@ -32,6 +32,10 @@ test("DIAG-01 a merged problem lists all its sources and the kind filter matches
   await expect(merged).toHaveText("tsc · LSP (push, pull)")
   await expect(merged).toHaveAttribute("title", "tsc: typecheck\ntypescript: lsp (push)\ntypescript: lsp (pull)")
   await expect(panel.locator('[data-problem="p_tsc"] [data-slot="problem-sources"]')).toHaveText("tsc")
+  // A row's name is its content (UX a11y), not just where it opens
+  await expect(
+    panel.getByRole("button", { name: "Error: Cannot find name 'foo'., app.ts line 9, column 5", exact: true }),
+  ).toBeVisible()
   await page.screenshot({ path: test.info().outputPath("diag01-sources.png") })
 
   // Its first source is tsc, yet the language-server filter keeps it: the filter looks at every source.

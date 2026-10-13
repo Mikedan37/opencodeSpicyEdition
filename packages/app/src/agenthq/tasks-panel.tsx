@@ -70,7 +70,7 @@ export function ViewSwitch() {
             onClick={() => agenthq.setView(view)}
           >
             {language.t(`agenthq.view.${view}`)}
-            <span class="text-[12px] font-normal tabular-nums text-v2-text-text-faint">
+            <span class="text-[12px] font-normal tabular-nums text-v2-text-text-muted">
               {view === "agents" ? agenthq.state.agents.length : agenthq.tasks.state.tasks.length}
             </span>
             <Show when={view === "tasks" && review()}>
@@ -185,7 +185,7 @@ function TaskRow(props: { task: Task; depth: number; selected: boolean; onSelect
     >
       <span class="flex min-w-0 items-center gap-2">
         <Show when={props.depth > 0}>
-          <span class="shrink-0 text-[11px] text-v2-text-text-faint" aria-hidden="true">
+          <span class="shrink-0 text-[11px] text-v2-text-text-muted" aria-hidden="true">
             ↳
           </span>
         </Show>
@@ -216,7 +216,7 @@ function TaskRow(props: { task: Task; depth: number; selected: boolean; onSelect
         </span>
       </Show>
       <Show when={waitsForApproval(agenthq, props.task)}>
-        <span data-slot="task-approval" class="truncate text-[11px] text-v2-state-fg-warning">
+        <span data-slot="task-approval" class="truncate text-[11px] text-[var(--spicy-fg-warning)]">
           {language.t("agenthq.task.needsApproval")}
         </span>
       </Show>
@@ -321,7 +321,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
         {(session) => (
           <p
             data-slot="task-approval"
-            class="mt-2 flex items-center gap-2 rounded-[6px] bg-v2-state-bg-warning px-2 py-1 text-[12px] text-v2-state-fg-warning"
+            class="mt-2 flex items-center gap-2 rounded-[6px] bg-v2-state-bg-warning px-2 py-1 text-[12px] text-[var(--spicy-fg-warning)]"
           >
             {language.t("agenthq.task.needsApproval.detail")}
             <button
@@ -340,7 +340,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
           class="mt-2 select-text rounded-[6px] px-2 py-1 text-[12px]"
           classList={{
             "bg-v2-state-bg-danger text-v2-state-fg-danger": props.task.status === "failed",
-            "bg-v2-state-bg-warning text-v2-state-fg-warning": props.task.status === "blocked",
+            "bg-v2-state-bg-warning text-[var(--spicy-fg-warning)]": props.task.status === "blocked",
             "bg-v2-background-bg-layer-02 text-v2-text-text-muted":
               props.task.status !== "failed" && props.task.status !== "blocked",
           }}
@@ -364,7 +364,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
         <dd class="flex min-w-0 flex-wrap items-center gap-1">
           <Show
             when={dependencies().length}
-            fallback={<span class="text-v2-text-text-faint">{language.t("agenthq.task.none")}</span>}
+            fallback={<span class="text-v2-text-text-muted">{language.t("agenthq.task.none")}</span>}
           >
             <For each={dependencies()}>
               {(dependency) => (
@@ -402,7 +402,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
             {(worktree) => (
               <span class="flex min-w-0 flex-col">
                 <span class="font-mono text-[11px]">{worktree().branch}</span>
-                <span class="truncate font-mono text-[11px] text-v2-text-text-faint" title={worktree().path}>
+                <span class="truncate font-mono text-[11px] text-v2-text-text-muted" title={worktree().path}>
                   {worktree().path}
                 </span>
               </span>
@@ -545,7 +545,7 @@ function ReviewGate(props: { task: Task }) {
               <Show when={!review().clean || !review().mergeable}>
                 <p
                   data-slot="review-refusal"
-                  class="select-text rounded-[6px] bg-v2-state-bg-warning px-2 py-1 text-v2-state-fg-warning"
+                  class="select-text rounded-[6px] bg-v2-state-bg-warning px-2 py-1 text-[var(--spicy-fg-warning)]"
                 >
                   {review().reason ??
                     language.t(review().clean ? "agenthq.task.review.notMergeable" : "agenthq.task.review.dirty")}
@@ -582,7 +582,7 @@ function ReviewGate(props: { task: Task }) {
                           onClick={() => show(file.path)}
                         >
                           <span class="min-w-0 flex-1 truncate text-v2-text-text-base">{file.path}</span>
-                          <span class="shrink-0 text-v2-state-fg-success">+{file.additions}</span>
+                          <span class="shrink-0 text-[var(--spicy-fg-success)]">+{file.additions}</span>
                           <span class="shrink-0 text-v2-state-fg-danger">−{file.deletions}</span>
                         </button>
                       </li>
@@ -732,7 +732,7 @@ export function MessageThread(props: { filter: MessageFilter; to?: string }) {
       <Show
         when={messages().length}
         fallback={
-          <p class="text-[12px] text-v2-text-text-faint">
+          <p class="text-[12px] text-v2-text-text-muted">
             {tasks.state.threads[threadKey(props.filter)] === "loading"
               ? language.t("common.loading")
               : language.t("agenthq.message.empty")}
@@ -753,7 +753,7 @@ export function MessageThread(props: { filter: MessageFilter; to?: string }) {
                     </span>
                   </Show>
                   <Show when={message.hops > 0}>
-                    <span class="text-v2-text-text-faint">
+                    <span class="text-v2-text-text-muted">
                       {language.t("agenthq.message.hops", { count: message.hops })}
                     </span>
                   </Show>
@@ -769,7 +769,7 @@ export function MessageThread(props: { filter: MessageFilter; to?: string }) {
                       </button>
                     )}
                   </Show>
-                  <span class="shrink-0 text-v2-text-text-faint">{ago(message.at)}</span>
+                  <span class="shrink-0 text-v2-text-text-muted">{ago(message.at)}</span>
                 </div>
                 <div class="select-text whitespace-pre-wrap break-words text-v2-text-text-base">{message.text}</div>
                 <Show when={message.delivery === "failed" || message.reason}>
@@ -934,7 +934,7 @@ export function TaskDialog(props: { task?: Task; onSaved?: (task: Task) => void 
             </legend>
             <Show
               when={others().length}
-              fallback={<p class="text-[12px] text-v2-text-text-faint">{language.t("agenthq.task.dialog.noOthers")}</p>}
+              fallback={<p class="text-[12px] text-v2-text-text-muted">{language.t("agenthq.task.dialog.noOthers")}</p>}
             >
               <For each={others()}>
                 {(task) => (

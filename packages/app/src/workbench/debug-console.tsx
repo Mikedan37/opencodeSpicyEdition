@@ -23,9 +23,9 @@ const KIND_CLASS: Record<ConsoleRow["kind"], string> = {
   console: "text-v2-text-text-muted",
   eval: "text-v2-text-text-base",
   result: "text-v2-text-text-base",
-  stop: "text-v2-state-fg-warning",
+  stop: "text-[var(--spicy-fg-warning)]",
   exception: "text-v2-state-fg-danger",
-  system: "italic text-v2-text-text-faint",
+  system: "italic text-v2-text-text-muted",
 }
 
 // Bottom panel Debug Console: program output, evaluations and stops of the selected session, plus an input that
@@ -121,7 +121,7 @@ export default function DebugConsolePanel() {
                 </span>
               </Show>
               <Show when={console()?.backlog === "failed"}>
-                <span class="shrink-0 text-[11px] text-v2-text-text-faint">
+                <span class="shrink-0 text-[11px] text-v2-text-text-muted">
                   {language.t("workbench.debug.console.loadFailed")}
                 </span>
               </Show>
@@ -208,7 +208,7 @@ function Line(props: { row: ConsoleRow; chip: boolean; evidence: boolean }) {
       <div class={`min-w-0 flex-1 whitespace-pre-wrap break-words ${KIND_CLASS[props.row.kind]}`}>
         <Switch fallback={text()}>
           <Match when={props.row.kind === "eval"}>
-            <span class="text-v2-text-text-faint">› </span>
+            <span class="text-v2-text-text-muted">› </span>
             {text()}
           </Match>
           <Match when={props.row.kind === "result" && expandable()}>
@@ -226,7 +226,7 @@ function Line(props: { row: ConsoleRow; chip: boolean; evidence: boolean }) {
           <button
             type="button"
             disabled={!debug.relative(location().file)}
-            class="shrink-0 text-[11px] text-v2-text-text-faint enabled:hover:text-v2-text-text-accent enabled:hover:underline"
+            class="shrink-0 text-[11px] text-v2-text-text-muted enabled:hover:text-v2-text-text-accent enabled:hover:underline"
             title={location().file}
             onClick={() => openAt(location().file, location().line, false)}
           >
@@ -276,7 +276,7 @@ function Attempt(props: { sessionID: string }) {
         </span>
       </span>
       <div class="min-w-0 flex-1 whitespace-pre-wrap break-words text-v2-text-text-base">
-        <span class="text-v2-text-text-faint">› </span>
+        <span class="text-v2-text-text-muted">› </span>
         {command()}
         <Show when={ask()}>
           {(value) => (
@@ -460,14 +460,14 @@ function Input() {
               >
                 <span class="min-w-0 truncate">{item.label}</span>
                 <Show when={item.type}>
-                  <span class="ml-auto shrink-0 font-sans text-[11px] text-v2-text-text-faint">{item.type}</span>
+                  <span class="ml-auto shrink-0 font-sans text-[11px] text-v2-text-text-muted">{item.type}</span>
                 </Show>
               </div>
             )}
           </For>
         </div>
       </Show>
-      <span class="shrink-0 font-mono text-[12px] leading-5 text-v2-text-text-faint">›</span>
+      <span class="shrink-0 font-mono text-[12px] leading-5 text-v2-text-text-muted">›</span>
       <textarea
         ref={input}
         data-slot="debug-console-input"

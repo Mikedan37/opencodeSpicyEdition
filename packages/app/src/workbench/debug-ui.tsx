@@ -67,7 +67,7 @@ export function DebugToolbar() {
             disabled={!!blocked(action)}
             class="flex size-7 items-center justify-center rounded-[6px] text-v2-icon-icon-base outline-none enabled:hover:bg-v2-overlay-simple-overlay-hover focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)] disabled:opacity-40"
             classList={{
-              "text-v2-state-fg-success": action === "start" || action === "continue",
+              "text-[var(--spicy-fg-success)]": action === "start" || action === "continue",
               "text-v2-state-fg-danger": action === "stop",
             }}
             onClick={() => press(action)}
@@ -224,14 +224,14 @@ export function VariableNode(props: { variable: Variable; path: string[]; depth?
           <span class="shrink-0 text-v2-text-text-accent">{props.variable.name}</span>
           {/* Groups such as debugpy's "special variables" have no value. */}
           <Show when={props.variable.value}>
-            <span class="shrink-0 text-v2-text-text-faint">=</span>
+            <span class="shrink-0 text-v2-text-text-muted">=</span>
           </Show>
         </Show>
         <span class="min-w-0 truncate text-v2-text-text-base" title={props.variable.value}>
           {props.variable.value}
         </span>
         <Show when={props.variable.type}>
-          <span class="ml-auto shrink-0 pl-2 font-sans text-[11px] text-v2-text-text-faint">{props.variable.type}</span>
+          <span class="ml-auto shrink-0 pl-2 font-sans text-[11px] text-v2-text-text-muted">{props.variable.type}</span>
         </Show>
       </button>
       <Show when={open()}>

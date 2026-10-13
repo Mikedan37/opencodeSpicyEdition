@@ -30,8 +30,8 @@ const STATUS_TONE: Record<Workbench.RunStatus, keyof typeof TONE_CLASS> = {
 const ANSI_COLORS = {
   "--ansi-black": "var(--v2-text-text-base)",
   "--ansi-red": "var(--v2-state-fg-danger)",
-  "--ansi-green": "var(--v2-state-fg-success)",
-  "--ansi-yellow": "var(--v2-state-fg-warning)",
+  "--ansi-green": "var(--spicy-fg-success)",
+  "--ansi-yellow": "var(--spicy-fg-warning)",
   "--ansi-blue": "var(--v2-state-fg-info)",
   "--ansi-magenta": "var(--v2-avatar-bg-pink)",
   "--ansi-cyan": "var(--v2-avatar-bg-cyan)",
@@ -89,14 +89,14 @@ export default function OutputPanel() {
           {runChecks()}
           <Show when={runs.state.report}>
             {(report) => (
-              <span class="truncate text-[12px] text-v2-text-text-muted" data-slot="report">
+              <span role="status" class="truncate text-[12px] text-v2-text-text-muted" data-slot="report">
                 {summaryText(report().summary)}
               </span>
             )}
           </Show>
           <span class="flex-1" />
           <Show when={runs.state.history === "unavailable"}>
-            <span class="shrink-0 text-[11px] text-v2-text-text-faint">
+            <span class="shrink-0 text-[11px] text-v2-text-text-muted">
               {language.t("workbench.output.historyUnavailable")}
             </span>
           </Show>
@@ -183,21 +183,23 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
           {(counts) => (
             <span class="flex shrink-0 items-center gap-2 text-[11px] tabular-nums text-v2-text-text-muted">
               <span title={language.t("workbench.problems.severity.error")} class="flex items-center gap-1">
-                <span class="size-2 rounded-full bg-v2-state-fg-danger" />
+                <span aria-hidden="true" class="size-2 rounded-full bg-v2-state-fg-danger" />
+                <span class="sr-only">{language.t("workbench.problems.severity.error")}</span>
                 {counts().error}
               </span>
               <span title={language.t("workbench.problems.severity.warning")} class="flex items-center gap-1">
-                <span class="size-2 rounded-full bg-v2-state-fg-warning" />
+                <span aria-hidden="true" class="size-2 rounded-full bg-v2-state-fg-warning" />
+                <span class="sr-only">{language.t("workbench.problems.severity.warning")}</span>
                 {counts().warning}
               </span>
             </span>
           )}
         </Show>
         <Show when={duration()}>
-          <span class="shrink-0 text-[11px] tabular-nums text-v2-text-text-faint">{duration()}</span>
+          <span class="shrink-0 text-[11px] tabular-nums text-v2-text-text-muted">{duration()}</span>
         </Show>
         <Show when={info().exitCode !== undefined}>
-          <span class="shrink-0 font-mono text-[11px] text-v2-text-text-faint">
+          <span class="shrink-0 font-mono text-[11px] text-v2-text-text-muted">
             {language.t("workbench.output.exit", { code: info().exitCode ?? 0 })}
           </span>
         </Show>
@@ -205,13 +207,13 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
       <Show when={props.open}>
         <div class="pb-2">
           <div
-            class="select-text truncate px-3 pb-1 font-mono text-[11px] text-v2-text-text-faint"
+            class="select-text truncate px-3 pb-1 font-mono text-[11px] text-v2-text-text-muted"
             title={info().command.join(" ")}
           >
             {info().command.join(" ")}
           </div>
           <Show when={info().reason}>
-            <div class="px-3 pb-1 text-[12px] text-v2-state-fg-warning">{info().reason}</div>
+            <div class="px-3 pb-1 text-[12px] text-[var(--spicy-fg-warning)]">{info().reason}</div>
           </Show>
           <Switch fallback={<RunOutput entry={props.entry} />}>
             <Match when={needsDetail(props.entry) && props.entry.detail === "loading"}>
@@ -221,7 +223,7 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
               </div>
             </Match>
             <Match when={!props.entry.output}>
-              <div class="px-3 py-1 text-[12px] text-v2-text-text-faint">
+              <div class="px-3 py-1 text-[12px] text-v2-text-text-muted">
                 {needsDetail(props.entry) && props.entry.detail === "failed"
                   ? language.t("workbench.output.loadFailed")
                   : language.t("workbench.output.noOutput")}
@@ -229,7 +231,7 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
             </Match>
           </Switch>
           <Show when={props.entry.truncated}>
-            <div class="px-3 pt-1 text-[11px] text-v2-text-text-faint">{language.t("workbench.output.truncated")}</div>
+            <div class="px-3 pt-1 text-[11px] text-v2-text-text-muted">{language.t("workbench.output.truncated")}</div>
           </Show>
         </div>
       </Show>

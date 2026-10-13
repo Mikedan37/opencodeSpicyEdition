@@ -2,11 +2,15 @@ import { For, Show, type JSX } from "solid-js"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { useLanguage } from "@/context/language"
 import { errorText, WorkbenchRequestError } from "./client"
+import "./tokens.css"
+
+// A keyboard focus ring for the fork's tab triggers (upstream's tab bar clears focus styles on the trigger button).
+export const TAB_FOCUS = "has-[:focus-visible]:shadow-[inset_0_0_0_2px_var(--v2-border-border-focus)]!"
 
 export const TONE_CLASS = {
   info: "bg-v2-state-bg-info text-v2-state-fg-info",
-  success: "bg-v2-state-bg-success text-v2-state-fg-success",
-  warning: "bg-v2-state-bg-warning text-v2-state-fg-warning",
+  success: "bg-v2-state-bg-success text-[var(--spicy-fg-success)]",
+  warning: "bg-v2-state-bg-warning text-[var(--spicy-fg-warning)]",
   danger: "bg-v2-state-bg-danger text-v2-state-fg-danger",
   neutral: "bg-v2-background-bg-layer-02 text-v2-text-text-muted",
 } as const

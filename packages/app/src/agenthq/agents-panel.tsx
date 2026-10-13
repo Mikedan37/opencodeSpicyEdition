@@ -1,4 +1,4 @@
-import { createEffect, createMemo, For, Match, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Portal } from "solid-js/web"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -189,7 +189,7 @@ function AgentCard(props: { agent: Agent }) {
           <span class="flex min-w-0 items-center gap-1.5">
             <ProviderChip provider={props.agent.provider} />
             <Show when={props.agent.model}>
-              <span class="truncate text-[11px] text-v2-text-text-faint">{props.agent.model}</span>
+              <span class="truncate text-[11px] text-v2-text-text-muted">{props.agent.model}</span>
             </Show>
           </span>
         </span>
@@ -198,7 +198,7 @@ function AgentCard(props: { agent: Agent }) {
       <span class="w-full truncate text-[12px] text-v2-text-text-muted">
         {latest() ? latest()?.title || language.t("agenthq.session.untitled") : language.t("agenthq.card.noSession")}
       </span>
-      <span class="w-full truncate text-[11px] text-v2-text-text-faint" title={props.agent.projectDirectory}>
+      <span class="w-full truncate text-[11px] text-v2-text-text-muted" title={props.agent.projectDirectory}>
         {[getFilename(props.agent.projectDirectory), props.agent.specialty].filter(Boolean).join(" · ")}
       </span>
     </button>
@@ -328,10 +328,10 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
                   </span>
                   <span class="flex items-center gap-1.5">
                     <StatusPill status={item.status} />
-                    <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-faint">{ago(item.updatedAt)}</span>
+                    <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-muted">{ago(item.updatedAt)}</span>
                   </span>
                   <Show when={item.pendingPermissions > 0}>
-                    <span class="text-[11px] text-v2-state-fg-warning">
+                    <span class="text-[11px] text-[var(--spicy-fg-warning)]">
                       {language.plural("agenthq.session.pending", item.pendingPermissions)}
                     </span>
                   </Show>
@@ -410,8 +410,35 @@ function SessionFeed(props: { sessionID: string; agentName: string }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
   const feed = () => agenthq.state.feeds[props.sessionID]
+  // The conversation for screen readers (UX a11y): each finished reply, new ask and error, once. What a session
+  // already had when it was first shown is not read out.
+  const [said, setSaid] = createSignal("")
+  const seen = new Map<string, Set<string>>()
+  const settled = (item: FeedItem) =>
+    (item.kind === "permission" && !item.outcome) ||
+    (item.kind === "message" && item.final && item.role === "assistant") ||
+    (item.kind === "note" && item.tone === "error")
+  const spoken = (item: FeedItem) => {
+    if (item.kind === "permission")
+      return language.t("agenthq.announce.permission", { name: props.agentName, title: item.title })
+    if (item.kind === "message") return `${props.agentName}: ${item.text.slice(0, 280)}`
+    return language.t("agenthq.announce.error", { message: item.kind === "note" ? item.text : "" })
+  }
+  createEffect(() => {
+    const current = feed()
+    if (!current || current.status === "loading") return
+    const done = current.items.filter(settled)
+    const known = seen.get(props.sessionID)
+    if (!known) return void seen.set(props.sessionID, new Set(done.map((item) => item.key)))
+    const fresh = done.filter((item) => !known.has(item.key))
+    fresh.forEach((item) => known.add(item.key))
+    if (fresh.length) setSaid(fresh.map(spoken).join(". "))
+  })
   return (
     <div class="flex min-h-0 flex-1 flex-col">
+      <div data-slot="feed-announce" class="sr-only" aria-live="polite" aria-atomic="true">
+        {said()}
+      </div>
       <Show when={feed()?.status === "error"}>
         <div class="flex shrink-0 items-center gap-2 bg-v2-state-bg-danger px-3 py-1.5 text-[12px] text-v2-state-fg-danger">
           <span class="min-w-0 flex-1 truncate">
@@ -518,7 +545,7 @@ function ToolRow(props: { tool: ToolItem }) {
     <>
       <Switch fallback={<LoaderV2 width={12} height={12} class="shrink-0" />}>
         <Match when={props.tool.state === "completed"}>
-          <Icon name="circle-check" size="small" class="text-v2-state-fg-success" />
+          <Icon name="circle-check" size="small" class="text-[var(--spicy-fg-success)]" />
         </Match>
         <Match when={props.tool.state === "error"}>
           <Icon name="circle-x" size="small" class="text-v2-state-fg-danger" />
@@ -526,7 +553,7 @@ function ToolRow(props: { tool: ToolItem }) {
       </Switch>
       <span class="shrink-0 font-mono text-[12px] text-v2-text-text-base">{props.tool.tool}</span>
       <span class="min-w-0 flex-1 truncate text-[12px] text-v2-text-text-muted">{props.tool.title}</span>
-      <span class="shrink-0 text-[11px] text-v2-text-text-faint">{language.t(`agenthq.tool.${props.tool.state}`)}</span>
+      <span class="shrink-0 text-[11px] text-v2-text-text-muted">{language.t(`agenthq.tool.${props.tool.state}`)}</span>
     </>
   )
   return (
@@ -557,7 +584,7 @@ function ToolRow(props: { tool: ToolItem }) {
             class="flex min-w-0 items-center gap-1 border-t border-v2-border-border-muted px-2 py-1 text-[12px] text-v2-text-text-base"
           >
             <span class="min-w-0 truncate">{language.t("agenthq.tool.drafted", { name: name() })}</span>
-            <span class="shrink-0 text-v2-text-text-faint">{" — "}</span>
+            <span class="shrink-0 text-v2-text-text-muted">{" — "}</span>
             <button
               type="button"
               data-action="review-tool"
@@ -613,7 +640,7 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
           !!props.permission.outcome,
       }}
     >
-      <div class="flex items-center gap-1.5 text-[12px] font-[530] text-v2-state-fg-warning">
+      <div class="flex items-center gap-1.5 text-[12px] font-[530] text-[var(--spicy-fg-warning)]">
         <Icon name="shield" size="small" />
         {language.t("agenthq.permission")}
       </div>

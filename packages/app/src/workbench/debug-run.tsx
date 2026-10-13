@@ -72,6 +72,7 @@ export default function DebugRunPanel() {
                   <SessionPicker />
                   <span class="flex-1" />
                   <span
+                    role="status"
                     data-slot="run-status"
                     class={`inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[11px] font-[530] ${TONE_CLASS[status().tone]}`}
                   >
@@ -138,7 +139,7 @@ function RunReplay(props: { sessionID: string }) {
         }
       >
         <Match when={output().text}>
-          <div class="shrink-0 px-[14px] pt-2 text-[11px] text-v2-text-text-faint">
+          <div class="shrink-0 px-[14px] pt-2 text-[11px] text-v2-text-text-muted">
             {language.t("workbench.run.replay")}
             <Show when={output().dropped}>
               {(count) => <div>{language.plural("workbench.debug.console.dropped", count())}</div>}

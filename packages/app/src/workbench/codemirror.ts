@@ -112,7 +112,7 @@ export const THEME = EditorView.theme({
   ".cm-spicy-exec": { backgroundColor: PAUSED },
   ".cm-gutterElement.cm-spicy-exec-gutter": {
     backgroundColor: PAUSED,
-    color: "var(--v2-state-fg-warning)",
+    color: "var(--spicy-fg-warning)",
   },
   ".cm-lineNumbers .cm-gutterElement.cm-spicy-exec-gutter": { boxShadow: "inset 3px 0 0 var(--v2-state-fg-warning)" },
   // An exception stop is red, with the exception in a banner under the line (UX #13).
@@ -141,7 +141,7 @@ export const THEME = EditorView.theme({
     padding: "0 12px",
     fontSize: "11px",
     lineHeight: "20px",
-    color: "var(--v2-state-fg-warning)",
+    color: "var(--spicy-fg-warning)",
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",

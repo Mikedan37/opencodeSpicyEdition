@@ -55,6 +55,10 @@ test("agent hq streams, asks for permission, resyncs on a seq gap; problems open
   )
   await expect(workspace.locator('[data-row="message"][data-role="assistant"]')).toContainText("Looking at it")
   await expect(workspace.locator('[data-row="tool"][data-state="running"]')).toContainText("bun test parser")
+  // Screen readers hear the ask (UX a11y); the history the session had when shown is not read out
+  await expect(workspace.locator('[data-slot="feed-announce"]')).toHaveText(
+    "Ada asks for permission: Run bun test parser",
+  )
 
   // Permission: nothing is answered until the user clicks, and the card resolves only on the server's event
   const permission = workspace.locator('[data-row="permission"][data-request="perm_1"]')

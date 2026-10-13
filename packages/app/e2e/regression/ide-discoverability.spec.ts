@@ -79,6 +79,19 @@ test("the status strip is always there, and each item opens its tab with the pan
   await page.screenshot({ path: test.info().outputPath("strip-items.png") })
 })
 
+test("keyboard focus on a Workbench tab shows a ring (UX a11y)", async ({ page }) => {
+  const { open } = await mockWorkbench(page, { directory, title })
+  await open()
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="problems"]').click()
+  const output = page.locator('[data-workbench-tab="output"]').locator("xpath=..")
+  await expect(output).not.toHaveCSS("box-shadow", /0px 0px 0px 2px inset/)
+  await page.keyboard.press("ArrowRight")
+  await expect(page.locator('[data-workbench-tab="output"]')).toBeFocused()
+  await expect(output).toHaveCSS("box-shadow", /0px 0px 0px 2px inset/)
+  await page.screenshot({ path: test.info().outputPath("a11y-tab-focus.png") })
+})
+
 test("the palette has every IDE tab and the IDE's actions", async ({ page }) => {
   const { mock, open } = await mockWorkbench(page, { directory, title })
   mock.runs = [

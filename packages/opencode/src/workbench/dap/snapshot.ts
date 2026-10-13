@@ -8,6 +8,10 @@ import type { DapClient } from "./client"
 
 export const LIMITS = { depth: 2, children: 50, chars: 512, frames: 20, bytes: 2048, expand: 10 }
 
+// Rust's panic machinery and the helpers that call it (unwrap, expect): the frames above the code that panicked.
+const RUST_PANIC =
+  /^(rust_panic|rust_begin_unwind|__rust|std::panicking::|std::panic::|std::sys::backtrace::|core::panicking::|core::panic::|core::result::unwrap_failed|core::option::(expect|unwrap)_failed)/
+
 type Request = DapClient.Client["request"]
 type DapFrame = { id: number; name: string; line?: number; column?: number; source?: { path?: string; name?: string } }
 type DapScope = { name: string; variablesReference: number; expensive?: boolean }
@@ -85,13 +89,16 @@ export const build = Effect.fnUntraced(function* (
     startFrame: 0,
     levels: LIMITS.frames,
   })
-  const frames = trace.stackFrames ?? []
+  const all = trace.stackFrames ?? []
+  const failure = runtimeFailure(all, input.description)
+  const frames = failure ? all.slice(Math.max(0, failure.own)) : all
   const top = frames[0]
   const scopes = top ? ((yield* request<{ scopes?: DapScope[] }>("scopes", { frameId: top.id })).scopes ?? []) : []
   const scope = scopes.find((item) => !item.expensive && item.variablesReference > 0)
   const locals = scope ? yield* variables(request, scope.variablesReference) : []
-  const exception =
-    input.reason === "exception" && input.exceptionInfo
+  const exception = failure
+    ? failure.exception
+    : input.reason === "exception" && input.exceptionInfo
       ? yield* request<{ exceptionId?: string; description?: string }>("exceptionInfo", { threadId: threadID }).pipe(
           Effect.map((body) => ({
             // debugpy appends notes to the id ("ZeroDivisionError   (note: ...)"); class names have no spaces.
@@ -101,13 +108,14 @@ export const build = Effect.fnUntraced(function* (
           Effect.orElseSucceed(() => (input.description ? { description: Redact.text(input.description) } : {})),
         )
       : undefined
+  const description = failure ? failure.description : input.description
   return fit({
-    reason: input.reason,
-    ...(input.description ? { description: Redact.text(input.description) } : {}),
+    reason: failure ? "exception" : input.reason,
+    ...(description ? { description: Redact.text(description) } : {}),
     threadID,
     frames: frames.map((item): Workbench.StopSnapshot["frames"][number] => ({
       id: item.id,
-      name: item.name,
+      name: item.name.replace(/::h[0-9a-f]{16}\b/g, ""), // Rust symbol hashes say nothing to a reader
       ...(item.source?.path ? { file: item.source.path } : {}),
       ...(item.line !== undefined && item.line >= 0 ? { line: item.line } : {}),
       ...(item.column !== undefined && item.column >= 0 ? { column: item.column } : {}),
@@ -117,6 +125,28 @@ export const build = Effect.fnUntraced(function* (
     at: Date.now(),
   })
 })
+
+/**
+ * A language runtime's own error report, which lldb stops at before the program dies: a Rust panic at the rust_panic
+ * breakpoint, a Swift runtime failure ("Fatal error: …") in _swift_runtime_on_report. The snapshot then starts at the
+ * code that failed (`own`), so its locals and the default frame are the program's, and the failure is the exception.
+ */
+function runtimeFailure(frames: readonly DapFrame[], description?: string) {
+  const top = frames[0]?.name
+  if (top?.startsWith("rust_panic"))
+    return {
+      exception: { id: "panic" },
+      description: "the program panicked",
+      own: frames.findIndex((item) => !RUST_PANIC.test(item.name)),
+    }
+  if (top === "_swift_runtime_on_report")
+    return {
+      exception: { id: "Swift runtime failure", ...(description ? { description: Redact.text(description) } : {}) },
+      description,
+      own: frames.findIndex((item) => !item.source?.path?.includes("libswiftCore.dylib")),
+    }
+  return undefined
+}
 
 /** Shrinks a snapshot until its JSON is about 2 KB: fewer frames, fewer locals, shorter values. */
 export function fit(snapshot: Workbench.StopSnapshot): Workbench.StopSnapshot {

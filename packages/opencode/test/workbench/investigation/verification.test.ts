@@ -50,6 +50,8 @@ import { Snapshot } from "@/snapshot"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
 import { Debugpy } from "@/workbench/dap/adapters/debugpy"
+import { Lldb } from "@/workbench/dap/adapters/lldb"
+import { Process } from "@/util/process"
 import { WorkbenchInvestigation } from "@/workbench/investigation/investigation"
 import { WorkbenchCheckers } from "@/workbench/verify/checkers"
 import { WorkbenchGate } from "@/workbench/verify/gate"
@@ -167,6 +169,13 @@ const debugpyMissing = await Debugpy.resolve({ directory: process.cwd() }).then(
   "error" in found ? found.error : which("pytest") ? undefined : "pytest not found",
 )
 const pythonReal = debugpyMissing ? real.instance.skip : real.instance
+// lldb-dap launches need macOS Developer Mode (without it macOS asks for an admin password).
+const lldbMissing = await Lldb.resolve().then(async (found) =>
+  "error" in found ? found.error : (await Lldb.developerMode()) ? undefined : "Developer Mode off",
+)
+const lldbReal = (compiler: string) => (lldbMissing || !which(compiler) ? real.instance.skip : real.instance)
+const lldbSkip = (compiler: string) =>
+  lldbMissing ? ` [skipped: ${lldbMissing}]` : which(compiler) ? "" : ` [skipped: ${compiler} not found]`
 
 const providerConfig = (url: string): Partial<ConfigV1.Info> => ({
   provider: {
@@ -470,5 +479,244 @@ describe("verification feeds investigations", () => {
         for (const item of full.investigation.processes) expect(() => process.kill(item.pid, 0)).toThrow()
       }),
     120_000,
+  )
+
+  // E2E-02 and E2E-03: the same chain for native code under lldb-dap. A crash under the debugger is a stop (no crash
+  // report); after the patch the model rebuilds, the native checker passes and a clean run is the reproduction.
+  const native = (input: {
+    readonly compiler: string
+    readonly source: string
+    readonly buggy: string
+    readonly fixed: string
+    readonly build: string[]
+    readonly crash: RegExp
+  }) =>
+    Effect.gen(function* () {
+      const dir = (yield* TestInstance).directory
+      const llm = yield* TestLLMServer
+      yield* Effect.promise(() =>
+        write(dir, { "opencode.json": JSON.stringify(providerConfig(llm.url)), [input.source]: input.buggy }),
+      )
+      const built = yield* Effect.promise(() => Process.run(input.build, { cwd: dir, nothrow: true }))
+      expect(built.code).toBe(0)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: `e2e-${input.compiler}`,
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "bob's average crashes; find out why and fix it" }],
+      })
+      yield* llm.tool("debug", { action: "start", program: "avg" })
+      yield* llm.tool("debug", { action: "stop" })
+      yield* llm.tool("write", { filePath: input.source, content: input.fixed })
+      yield* llm.tool("bash", { command: input.build.join(" "), description: "rebuild avg" })
+      yield* llm.tool("check", { files: [input.source] })
+      yield* llm.tool("debug", { action: "start", program: "avg" })
+      yield* llm.text("fixed: an empty list averages to 0")
+
+      yield* prompt.loop({ sessionID: session.id })
+      const messages = yield* MessageV2.filterCompactedEffect(session.id)
+      const outputs = messages.flatMap((message) =>
+        message.parts.flatMap((part) =>
+          part.type === "tool" && part.state.status === "completed" ? [[part.tool, part.state.output]] : [],
+        ),
+      )
+      // The first run stopped on the real crash, in the function under test, with the output before it.
+      expect(outputs[0]?.[0]).toBe("debug")
+      expect(outputs[0]?.[1]).toMatch(input.crash)
+      expect(outputs[0]?.[1]).toContain("average")
+      expect(outputs[0]?.[1]).toContain("alice 15")
+      // The second run, after the patch and the rebuild, ran to the end.
+      const rerun = outputs.filter((item) => item[0] === "debug").at(-1)?.[1]
+      expect(rerun).toContain("(exit code 0)")
+      expect(rerun).toContain("bob 0")
+      expect(repairs(messages)).toHaveLength(0)
+      expect(yield* llm.pending).toBe(0)
+
+      const investigations = yield* WorkbenchInvestigation.Service
+      const summary = (yield* investigations.list()).find((item) => item.sessionID === session.id)
+      const full = yield* investigations.full(summary!.id)
+      expect(full.investigation.status).toBe("resolved")
+      expect(full.evidence[0]).toMatchObject({ kind: "exception", class: "observed" })
+      expect(full.evidence.filter((item) => item.class === "verified").map((item) => item.kind)).toEqual([
+        "check-run",
+        "repro-run",
+      ])
+      expect(full.evidence.some((item) => item.kind === "patch")).toBe(true)
+      // Nothing the debugger started is left running.
+      for (const item of full.investigation.processes) expect(() => process.kill(item.pid, 0)).toThrow()
+    })
+
+  lldbReal("cc")(
+    `E2E-02 [lldb-dap, clang] C crash -> debugger stop -> patch -> rebuild -> verification -> resolved${lldbSkip("cc")}`,
+    () =>
+      native({
+        compiler: "cc",
+        source: "avg.c",
+        build: ["cc", "-g", "-O0", "-o", "avg", "avg.c"],
+        crash: /EXC_BAD_ACCESS/,
+        buggy: [
+          "#include <stddef.h>",
+          "#include <stdio.h>",
+          "",
+          "int average(const int *xs, int n) {",
+          "  int total = xs[0]; /* an empty list has no first element */",
+          "  for (int i = 1; i < n; i++) total += xs[i];",
+          "  return total / n;",
+          "}",
+          "",
+          "int main(void) {",
+          "  int alice[] = {10, 20};",
+          '  printf("alice %d\\n", average(alice, 2));',
+          '  printf("bob %d\\n", average(NULL, 0));',
+          "  return 0;",
+          "}",
+          "",
+        ].join("\n"),
+        fixed: [
+          "#include <stddef.h>",
+          "#include <stdio.h>",
+          "",
+          "int average(const int *xs, int n) {",
+          "  if (n == 0) return 0;",
+          "  int total = 0;",
+          "  for (int i = 0; i < n; i++) total += xs[i];",
+          "  return total / n;",
+          "}",
+          "",
+          "int main(void) {",
+          "  int alice[] = {10, 20};",
+          '  printf("alice %d\\n", average(alice, 2));',
+          '  printf("bob %d\\n", average(NULL, 0));',
+          "  return 0;",
+          "}",
+          "",
+        ].join("\n"),
+      }),
+    120_000,
+  )
+
+  lldbReal("swiftc")(
+    `E2E-03 [lldb-dap, swiftc] Swift crash -> debugger stop -> patch -> rebuild -> verification -> resolved${lldbSkip("swiftc")}`,
+    () =>
+      native({
+        compiler: "swiftc",
+        source: "avg.swift",
+        build: ["swiftc", "-g", "-Onone", "-o", "avg", "avg.swift"],
+        crash: /Index out of range|EXC_BREAKPOINT/,
+        buggy: [
+          "func average(_ xs: [Int]) -> Int {",
+          "    var total = xs[0] // an empty list has no first element",
+          "    for x in xs.dropFirst() { total += x }",
+          "    return total / xs.count",
+          "}",
+          "",
+          'print("alice", average([10, 20]))',
+          'print("bob", average([]))',
+          "",
+        ].join("\n"),
+        fixed: [
+          "func average(_ xs: [Int]) -> Int {",
+          "    guard !xs.isEmpty else { return 0 }",
+          "    return xs.reduce(0, +) / xs.count",
+          "}",
+          "",
+          'print("alice", average([10, 20]))',
+          'print("bob", average([]))',
+          "",
+        ].join("\n"),
+      }),
+    180_000,
+  )
+
+  // E2E-04: Rust under lldb-dap with rustc's formatters. The panic stop starts at the code that panicked; the fix is
+  // verified by cargo check and the crate's own test run (the reproduction).
+  lldbReal("cargo")(
+    `E2E-04 [lldb-dap, cargo] Rust panic -> debugger stop -> patch -> cargo check and test -> resolved${lldbSkip("cargo")}`,
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        const llm = yield* TestLLMServer
+        const lib = (body: string) =>
+          [
+            "pub fn average(xs: &[i32]) -> i32 {",
+            body,
+            "}",
+            "",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    #[test]",
+            "    fn empty() {",
+            "        let orders = vec![10, 20];",
+            "        assert_eq!(super::average(&orders[..0]), 0);",
+            "    }",
+            "}",
+            "",
+          ].join("\n")
+        yield* Effect.promise(() =>
+          write(dir, {
+            "opencode.json": JSON.stringify(providerConfig(llm.url)),
+            "Cargo.toml": '[package]\nname = "avg"\nversion = "0.1.0"\nedition = "2021"\n',
+            "src/lib.rs": lib("    let total: i32 = xs.iter().sum();\n    total / xs.len() as i32"),
+          }),
+        )
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({
+          title: "e2e-rust",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "the empty test panics; find out why and fix it" }],
+        })
+        yield* llm.tool("debug", { action: "start", preset: "rust-test", program: ".", args: ["empty"] })
+        yield* llm.tool("debug", { action: "stop" })
+        yield* llm.tool("write", {
+          filePath: "src/lib.rs",
+          content: lib(
+            "    if xs.is_empty() {\n        return 0;\n    }\n    let total: i32 = xs.iter().sum();\n    total / xs.len() as i32",
+          ),
+        })
+        yield* llm.tool("check", { files: ["src/lib.rs"], tests: true })
+        yield* llm.text("fixed: an empty slice averages to 0")
+
+        yield* prompt.loop({ sessionID: session.id })
+        const messages = yield* MessageV2.filterCompactedEffect(session.id)
+        const outputs = messages.flatMap((message) =>
+          message.parts.flatMap((part) =>
+            part.type === "tool" && part.state.status === "completed" ? [[part.tool, part.state.output]] : [],
+          ),
+        )
+        // The stop is the panic, shown from the function that panicked (the panic machinery left out), with its
+        // slice through rustc's formatters ("size=0" instead of raw pointer fields).
+        expect(outputs[0]?.[0]).toBe("debug")
+        expect(outputs[0]?.[1]).toContain("exception panic")
+        expect(outputs[0]?.[1]).toMatch(/^at .* in avg::average$/m)
+        expect(outputs[0]?.[1]).toContain("avg::tests::empty (src/lib.rs:11)")
+        expect(outputs[0]?.[1]).toContain("xs: &[i32] = size=0")
+        expect(outputs[0]?.[1]).not.toContain("rust_panic")
+        expect(repairs(messages)).toHaveLength(0)
+        expect(yield* llm.pending).toBe(0)
+
+        const investigations = yield* WorkbenchInvestigation.Service
+        const summary = (yield* investigations.list()).find((item) => item.sessionID === session.id)
+        const full = yield* investigations.full(summary!.id)
+        expect(full.investigation.status).toBe("resolved")
+        expect(full.evidence[0]).toMatchObject({ kind: "exception", class: "observed" })
+        expect(full.evidence.filter((item) => item.class === "verified").map((item) => item.kind)).toEqual([
+          "check-run",
+          "repro-run",
+        ])
+        for (const item of full.investigation.processes) expect(() => process.kill(item.pid, 0)).toThrow()
+      }),
+    240_000,
   )
 })

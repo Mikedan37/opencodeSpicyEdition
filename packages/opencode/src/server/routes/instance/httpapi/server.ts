@@ -115,6 +115,8 @@ import { WorkbenchProblems } from "@/workbench/problems/store" // spicy: Workben
 import { workbenchDebugHandlers } from "./handlers/workbench-debug" // spicy: Workbench debug routes
 import { workbenchToolsHandlers } from "./handlers/workbench-tools" // spicy: tool creator routes
 import { WorkbenchTools } from "@/workbench/tools/tools" // spicy: tool creator service
+import { workbenchGitHandlers } from "./handlers/workbench-git" // spicy: git panel routes
+import { GitPanel } from "@/workbench/git/panel" // spicy: git panel service
 import { DebugToolNode } from "@/workbench/tool/debug" // spicy: Workbench debug and investigation routes
 import { reviewHandlers } from "./handlers/review" // spicy: review routes
 import { ReviewChanges } from "@/review/changes" // spicy: review service
@@ -185,6 +187,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     workbenchHandlers, // spicy: Workbench problems routes
     workbenchDebugHandlers, // spicy: Workbench debug routes
     workbenchToolsHandlers, // spicy: tool creator routes
+    workbenchGitHandlers, // spicy: git panel routes
     reviewHandlers, // spicy: review routes
   ]),
 )
@@ -290,6 +293,7 @@ const app = LayerNode.group([
   WorkbenchProblems.node, // spicy: Workbench services
   DebugToolNode, // spicy: Workbench debug and investigation routes
   WorkbenchTools.node, // spicy: tool creator service
+  GitPanel.node, // spicy: git panel service
   ReviewChanges.node, // spicy: review service
   WorkbenchVerify.node, // spicy: Workbench services
 ])

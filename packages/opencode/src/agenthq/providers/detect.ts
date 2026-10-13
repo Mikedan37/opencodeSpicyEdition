@@ -76,10 +76,16 @@ export const prober = Effect.fn("AgentHQ.detect.prober")(function* (
   return probe
 })
 
-// Codex through Zed's ACP bridge. `untrusted` makes Codex ask before anything but known-safe reads (every edit, every
-// other command); approved commands still run in its workspace-write sandbox; and every approval goes to the human
-// as `session/request_permission`, never to Codex's own reviewer. Set explicitly, whatever ~/.codex/config.toml says.
-export const CODEX_BRIDGE = "@zed-industries/codex-acp@0.16.0"
+// Codex through its maintained ACP bridge, in its `read-only` mode: Codex's sandbox is read-only, so every edit and every
+// command that writes has to escalate, and escalations go to the human (reviewer "user") as `session/request_permission`.
+// The bridge sends the mode's approval policy, reviewer and sandbox with every turn, whatever ~/.codex/config.toml says.
+// Agent HQ never calls session/set_mode. A mode id it does not know would make the bridge fall back to "agent" (Codex's
+// automatic reviewer), so the id is exact.
+export const CODEX_BRIDGE = "@agentclientprotocol/codex-acp@2.2.2"
+export const CODEX_MODE = { INITIAL_AGENT_MODE: "read-only" } as const
+// The archived Zed bridge, which takes the policy as `-c` overrides: `untrusted` asks before anything but known-safe
+// reads, approved commands run in the workspace-write sandbox, approvals go to the human.
+export const CODEX_LEGACY_BRIDGE = "@zed-industries/codex-acp@0.16.0"
 export const CODEX_POLICY = [
   "-c",
   'approval_policy="untrusted"',
@@ -88,22 +94,28 @@ export const CODEX_POLICY = [
   "-c",
   'approvals_reviewer="user"',
 ]
+// ponytail: the archived bridge stays one switch away until the maintained one has proven itself; drop it after.
+const CODEX_LEGACY = false
 
-/** What to spawn for Codex: `codex-acp` from PATH, else the pinned bridge through npx; undefined when neither runs. */
+/**
+ * What to spawn for Codex: `codex-acp` from PATH, else the pinned bridge through npx; undefined when neither runs. A
+ * `codex-acp` on PATH gets both forms of the policy (the Zed bridge reads `-c`, the maintained one its environment).
+ */
 export function codexLaunch(env: Env = { PATH: process.env.PATH }) {
   const PATH = env.PATH ?? ""
   const own = which("codex-acp", { PATH })
-  if (own) return { command: own, args: CODEX_POLICY }
+  if (own) return { command: own, args: CODEX_POLICY, env: CODEX_MODE }
   const npx = which("npx", { PATH })
-  if (npx) return { command: npx, args: ["-y", CODEX_BRIDGE, ...CODEX_POLICY] }
-  return undefined
+  if (!npx) return undefined
+  if (CODEX_LEGACY) return { command: npx, args: ["-y", CODEX_LEGACY_BRIDGE, ...CODEX_POLICY] }
+  return { command: npx, args: ["-y", CODEX_BRIDGE], env: CODEX_MODE }
 }
 
 const codexCapabilities: AgentHQ.ProviderCapabilities = {
   ...AcpProvider.capabilities,
   notes: [
-    `Runs Zed's ACP bridge (codex-acp from PATH, else npx ${CODEX_BRIDGE})`,
-    "Codex asks before every edit and every command but known-safe reads; approved commands run in its workspace-write sandbox",
+    `Runs the codex-acp bridge (codex-acp from PATH, else npx ${CODEX_BRIDGE}) in its read-only mode`,
+    "Codex works in a read-only sandbox: every edit and every command that writes asks you first, and nothing goes to Codex's automatic reviewer",
     ...(AcpProvider.capabilities.notes ?? []),
   ],
 }
@@ -135,7 +147,7 @@ export const codex = Effect.fn("AgentHQ.detect.codex")(function* (env?: Env) {
         ...found,
         available: false,
         auth: "ok" as const,
-        reason: "Codex needs Zed's codex-acp bridge: put codex-acp or npx on PATH",
+        reason: "Codex needs the codex-acp bridge: put codex-acp or npx on PATH",
       }
     return { ...found, auth: "ok" as const }
   }).pipe(Effect.provideService(AppProcess.Service, proc))

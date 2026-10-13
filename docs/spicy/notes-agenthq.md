@@ -1419,3 +1419,37 @@ loader change the review lists `opencode.json`). The httpapi exercise covers the
 Results: `bun test --timeout 120000 test/agenthq test/config` 287 pass, 8 skip, 0 fail; schema tests 15 pass;
 `bun run test:httpapi` coverage, auth and effect each 271 pass, 0 fail, 0 missing; typecheck clean in
 `packages/opencode` and `packages/app`.
+
+# Codex on the maintained bridge, `@agentclientprotocol/codex-acp@2.2.2`, in read-only mode
+
+The Zed bridge pinned before (0.16.0) is archived, and Codex has retired the `untrusted` approval policy it was run
+with. Agent HQ now runs `npx -y @agentclientprotocol/codex-acp@2.2.2` with `INITIAL_AGENT_MODE=read-only` (through the
+new `Launch.env`). That mode is `on-request` with the human as reviewer and a read-only sandbox without network, and the
+bridge sends it with every turn, whatever `~/.codex/config.toml` says: every edit and every command that writes has to
+escalate, and escalations reach the human as `session/request_permission`. Agent HQ never calls `session/set_mode`. The
+id is exact because an unknown one makes the bridge fall back to `agent` (Codex's automatic reviewer). A `codex-acp` on
+PATH gets both the mode and the old `-c` policy, so either bridge is safe. The 0.16.0 path stays behind
+`CODEX_LEGACY` (false) for now.
+
+Free status check (`SPICY_REAL_CODEX=status`, the owner's codex 0.162.1 as `CODEX_PATH` with file-only credentials):
+codex-acp 2.2.2 initializes (`loadSession`, `resume`, MCP over HTTP), `session/new` needs no authenticate, the mode is
+`read-only`, and the config options offer models gpt-6.1-sol … gpt-5.6-luna and efforts low … ultra.
+
+The one real prompt (`SPICY_REAL_CODEX=1`, approved once by the owner; `CODEX_CONFIG` set the cheapest model and effort
+for it): in a temp git repo, "create hello.txt containing hi" on gpt-5.6-luna, effort low. Codex answered "I'll create
+`hello.txt` in the workspace with the text `hi`" and asked ("Edit files": allow once, allow for these files, reject);
+the test rejected it; the turn ended `cancelled` after 5.9 s; `hello.txt` does not exist and `git status` is empty.
+Tokens, as the bridge reported them (`usage` on the prompt result): 19,553 in total, 8,409 input, 11,008 cached input,
+136 output, 33 reasoning. 2.2.2 is safe in this mode, so it is the default.
+
+The logged exchange showed two things the ACP adapter now handles for every agent:
+
+- Codex sends the edit's diff in the call's `tool_call` update and then asks naming only the call and its locations.
+  The permission preview now falls back to that call's latest content (here `hello.txt`, `+hi`), and to its locations
+  when there is no diff.
+- A diff in a call's content was reported as `file.changed` at once, so a refused edit looked like a change. Now only a
+  call that completed reports its diffs, once per file.
+
+Tests: the launch test records `-y @agentclientprotocol/codex-acp@2.2.2` and `INITIAL_AGENT_MODE=read-only`; a
+`codex-acp` on PATH gets both the mode and the `-c` policy; AHQ-15 replays Codex's exchange with the fake agent
+(`codex-edit`): the preview shows the diff, and the refused edit reports no `file.changed`.

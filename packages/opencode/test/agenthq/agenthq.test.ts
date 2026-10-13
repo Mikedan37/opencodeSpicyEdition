@@ -953,6 +953,26 @@ describe("agenthq", () => {
       yield* sessions.respond(started.id, run.requestID, "no")
       yield* turnCompleted(started.id, 4)
 
+      // Codex's way: the diff arrives before the ask, which names only the call. The preview still shows it, and a
+      // refused edit is no file change.
+      yield* sessions.send(started.id, "codex-edit")
+      const edit = yield* waitHistory(
+        started.id,
+        (history) =>
+          ofType(history, "permission.requested").find(
+            (item) => ![request.requestID, run.requestID].includes(item.requestID),
+          ),
+        "the edit was never asked about",
+      )
+      expect(edit.preview).toMatchObject({ kind: "edit", path: "hello.txt" })
+      expect(edit.preview?.kind === "edit" && edit.preview.diff).toContain("+hi")
+      yield* sessions.respond(started.id, edit.requestID, "cancel")
+      const refusedEdit = yield* turnCompleted(started.id, 5)
+      expect(ofType(refusedEdit, "message").at(-1)?.text).toBe("did not write hello.txt")
+      expect(ofType((yield* sessions.get(started.id)).history, "file.changed").map((item) => item.path)).not.toContain(
+        "hello.txt",
+      )
+
       // Cancel: the agent keeps talking after it, and none of that is recorded.
       yield* sessions.send(started.id, "hang")
       yield* waitHistory(

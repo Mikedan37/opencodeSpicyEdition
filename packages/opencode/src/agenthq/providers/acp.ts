@@ -311,6 +311,9 @@ class ClientState {
   // completed message keeps its own text.
   private readonly segments = new Map<string, number>()
   private readonly tools = new Map<string, { tool: string; title?: string; state?: string }>()
+  // Each call's latest content, and the files a completed call was reported changing.
+  private readonly contents = new Map<string, readonly ToolCallContent[]>()
+  private readonly changed = new Map<string, Set<string>>()
   private block: string | undefined
   private requests = 0
 
@@ -348,7 +351,8 @@ class ClientState {
    * of an `execute` call (from rawInput, else its title), else its title and text.
    */
   private preview(call: RequestPermissionRequest["toolCall"]) {
-    const content = call.content ?? []
+    // Codex sends the diff in the call's update and asks with only its locations.
+    const content = call.content?.length ? call.content : (this.contents.get(call.toolCallId) ?? [])
     const diffs = content.flatMap((item) => (item.type === "diff" ? [item] : []))
     if (diffs.length) {
       const files = diffs.map((item) => this.relative(item.path))
@@ -373,7 +377,8 @@ class ClientState {
     const text = content
       .flatMap((item) => (item.type === "content" && item.content.type === "text" ? [item.content.text] : []))
       .join(" ")
-    return AgentPreview.other([call.title, text].filter(Boolean).join(": ") || "Permission requested")
+    const places = (call.locations ?? []).map((location) => this.relative(location.path)).join(", ")
+    return AgentPreview.other([call.title, text || places].filter(Boolean).join(": ") || "Permission requested")
   }
 
   readonly client: Client = {
@@ -433,9 +438,18 @@ class ClientState {
         const title = update.title ?? known?.title
         const state = update.status ? TOOL_STATE[update.status] : known ? undefined : "started"
         this.tools.set(update.toolCallId, { tool, title, state: state ?? known?.state })
-        update.content
-          ?.flatMap((item) => (item.type === "diff" ? [item.path] : []))
-          .forEach((file) => this.emit({ type: "file.changed", path: this.relative(file) }))
+        // A call's diffs say what it changes, but only a completed call changed anything: Codex sends them before it
+        // asks, and a refused or failed call never wrote them.
+        if (update.content?.length) this.contents.set(update.toolCallId, update.content)
+        if ((state ?? known?.state) === "completed") {
+          const reported = this.changed.get(update.toolCallId) ?? new Set<string>()
+          this.changed.set(update.toolCallId, reported)
+          for (const item of this.contents.get(update.toolCallId) ?? []) {
+            if (item.type !== "diff" || reported.has(item.path)) continue
+            reported.add(item.path)
+            this.emit({ type: "file.changed", path: this.relative(item.path) })
+          }
+        }
         if (!state || state === known?.state) return
         const output =
           state === "completed" || state === "error" ? preview(update.content, update.rawOutput) : undefined

@@ -5,6 +5,8 @@
 //   "crash" → writes to stderr and exits with code 3
 //   "hang"  → says "working", waits for session/cancel, then (out of protocol) says more and ends cancelled
 //   "run"   → asks to execute `npm test` in <cwd>/pkg (rawInput command and cwd) and reports the answer
+//   "codex-edit" → like codex-acp 2.2.2: the diff of hello.txt in a tool_call update, then a request with only its
+//              locations; writes the file only when allowed, else fails the call
 //   "change" → like AgentKit: proposes a change (apply / skip), with its diff; on apply writes src/fixed.txt in the session's cwd and
 //              reports it as a diff with an absolute path and oldText null, then asks about an edit outside the
 //              approved places (keep / undo)
@@ -195,6 +197,42 @@ new AgentSideConnection(
               update: { sessionUpdate: "tool_call_update", toolCallId: "t9", status: "in_progress" },
             })
           }, 30)
+          return { stopReason: "end_turn" }
+        }
+        if (text === "codex-edit") {
+          // Like codex-acp 2.2.2: the diff comes in the call's update, then the request names only the call and its
+          // locations; a refusal fails the call.
+          const file = `${cwd}/hello.txt`
+          await client.sessionUpdate({
+            sessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: "t-codex",
+              title: "Editing files",
+              kind: "edit",
+              status: "in_progress",
+              content: [{ type: "diff", path: file, oldText: null, newText: "hi\n" }],
+            },
+          })
+          const answer = await client.requestPermission({
+            sessionId,
+            toolCall: { toolCallId: "t-codex", title: "Edit files", kind: "edit", locations: [{ path: file }] },
+            options: [
+              { optionId: "allow_once", name: "Yes, proceed", kind: "allow_once" },
+              { optionId: "cancel", name: "No", kind: "reject_once" },
+            ],
+          })
+          const allowed = answer.outcome.outcome === "selected" && answer.outcome.optionId === "allow_once"
+          if (allowed) await Bun.write(file, "hi\n")
+          await client.sessionUpdate({
+            sessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: "t-codex",
+              status: allowed ? "completed" : "failed",
+            },
+          })
+          await say(sessionId, allowed ? "wrote hello.txt" : "did not write hello.txt")
           return { stopReason: "end_turn" }
         }
         if (text === "run") {

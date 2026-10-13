@@ -11,7 +11,14 @@
 // session/load replays one old exchange, which the client must not record again.
 // With FAKE_ACP_RECORD set, session/new writes its params (cwd, mcpServers) to that file.
 // With FAKE_ACP_NO_LOAD set, it advertises no session/load, like AgentKit, and refuses one.
+// With FAKE_ACP_STATE set, like AgentKit it keeps a folder <FAKE_ACP_STATE>/<pid> while it runs and removes it a moment
+// after its input ends; a kill leaves it behind.
 import { AgentSideConnection, ndJsonStream, type Agent } from "@agentclientprotocol/sdk"
+import { mkdirSync, rmSync } from "fs"
+import path from "path"
+
+const state = process.env.FAKE_ACP_STATE && path.join(process.env.FAKE_ACP_STATE, String(process.pid))
+if (state) mkdirSync(state, { recursive: true })
 
 const output = new WritableStream<Uint8Array>({
   write: (chunk) =>
@@ -20,7 +27,10 @@ const output = new WritableStream<Uint8Array>({
 const input = new ReadableStream<Uint8Array>({
   start(controller) {
     process.stdin.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
-    process.stdin.on("end", () => controller.close())
+    process.stdin.on("end", () => {
+      controller.close()
+      if (state) setTimeout(() => rmSync(state, { recursive: true, force: true }), 200)
+    })
   },
 })
 

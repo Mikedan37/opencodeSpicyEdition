@@ -941,3 +941,79 @@ Results (from `packages/opencode`): `bun test --timeout 120000 test/agenthq` 43 
 `httpapi-v2-pty` timing flake, which passed 3 of 3 alone right after; `bun run typecheck` clean.
 
 No upstream-owned files were edited in wave 8.
+
+# Wave 9: AgentKit's state outside the project (OpenCode Native 0.14.3)
+
+The bridge under test is the one the product finds: LaunchServices returned the outputs build of OpenCode Native
+0.14.3 (`agentkit-bridge` 0.1.0, binary of 18:11), so the real test no longer needs `OPENCODE_AGENTKIT_BRIDGE`: it
+reads the bridge from the provider status (`Bridge: <path>`) and puts its `--local-only` shim in front of it.
+`SPICY_REAL_AGENTKIT=1 [SPICY_REAL_AGENTKIT_LOGS=<dir>] bun test --timeout 1800000 test/agenthq/agentkit.test.ts -t
+"REAL:"`.
+
+New checks in the real run: `git status --porcelain` is empty after the declined change; `<project>/.blaze` never
+exists (after skip, cancel, apply and the restart); after apply only `Sources/Math/Math.swift` changed and review
+shows only that file; the daemons' temp state folders (their `BLAZE_STATE_HOME`, read from the process environment)
+are gone at the end; nothing of this run (`agentkit-acp-<bridge pid>`, `ocn-*`, `blaze`) is left in `$TMPDIR` or
+`/tmp`.
+
+## Our side: a session's agent is now allowed to exit on its own
+
+The first run with the new checks (18:14) passed all 20 earlier checks and every new one except "the daemons' temp
+state folders are gone": `$TMPDIR/agentkit-acp-<pid>/` (`daemon.lock`, `daemon.log`, `daemon-home/`, `workspaces/`)
+stayed for both bridges. A free probe (initialize and session/new only) showed why:
+
+| How the bridge is stopped    | Exit       | `agentkit-acp-<pid>` |
+| ---------------------------- | ---------- | -------------------- |
+| end of input                 | 0 in 73 ms | removed              |
+| SIGTERM to the process       | 143        | stays                |
+| SIGTERM to the process group | 143        | stays                |
+
+Agent HQ closed the agent's input and killed its process group in the same breath, so AgentKit never got to clean
+up. Now the session's scope gets a finalizer (`providers/acp.ts`) that closes the agent's input and waits up to 3
+seconds for it to exit before the group is killed. It runs however the session ends: closed, forgotten, after a
+disconnect, or when the server shuts down. Other agents are not slowed: `opencode acp` exits 45 ms after its input
+ends and the fake agent in 0 to 2 ms; AHQ-08 took 3.85 s before and 3.50 s after, AHQ-08b 0.33 s and 0.27 s.
+
+AHQ-16's stand-in bridge now keeps a per-process state folder that it removes 200 ms after its input ends (a kill
+leaves it). After `forget`, the folder of the live process must be gone; with the old close it stayed (checked
+before the fix).
+
+## Run of 2026-10-12 18:26 (qwen2.5-coder:14b on local Ollama, 39 s)
+
+All 20 earlier checks pass. Of the 11 new ones, 10 pass and one fails: two empty SwiftPM lock files are left in
+`$TMPDIR` for the bridge that ran `swift build`.
+
+| Step                        | Result                                                                                                                                                                                      | Latency                              |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| a. status, initialize, new  | available 0.1.0, bridge from LaunchServices; `loadSession: false`; Workbench MCP server sent; private `AgentDaemon` and `ocn-acp-<pid>.sock`                                                | session start 0.67 s                 |
+| c. declined proposal        | apply / skip, `end_turn`, file untouched, nothing else changed, no changeset: pass. New: `git status --porcelain` empty, no `.blaze`: pass                                                  | proposal 0.39 s                      |
+| d. cancel, proposal pending | `cancelled`, nothing after it, file untouched, no stray edits: pass. New: no `.blaze`: pass                                                                                                 |                                      |
+| b. fix applied and accepted | proposal, apply completes, `file.changed` for the file, review lists it (2 hunks), accept, `swift build` passes: pass. New: only that file changed, review shows only it, no `.blaze`: pass | proposal 0.41 s, apply to end 22.8 s |
+| e. IDE server restart       | no `session/load` (initialize 2, session/new 2, session/prompt 4, session/cancel 1), new session, notice recorded, question answered: pass. New: no `.blaze`: pass                          | answer 0.97 s                        |
+| f. cleanup                  | no bridge, daemon or socket left: pass. New: state folders seen (2) and gone, no state folder of ours in `$TMPDIR` or `/tmp`: pass. No SwiftPM lock files of ours: **fail**                 |                                      |
+
+Nothing under `~/Documents/Codex` changed. No crash reports from our processes. The standing `AgentDaemon` and the
+bridges of other sessions were left alone; this run's leftovers (and the earlier runs' state folders) were removed.
+
+## For the AgentKit bridge (b1), after 0.14.3
+
+1. `.blaze` no longer lands in the project, and a declined change leaves the project clean. Confirmed.
+2. The per-process `$TMPDIR/agentkit-acp-<pid>` is removed only when the bridge exits on end of input. SIGTERM (to
+   the process or its group) leaves it. A client that kills instead of closing (or a crash of the client) leaves it
+   every time; cleaning up on SIGTERM and SIGINT too would cover that.
+3. Every session that runs `swift build` leaves two empty files in `$TMPDIR`:
+   `_private_var_folders_<…>_T_agentkit-acp-<pid>_daemon-home_.swiftpm.lock` and
+   `_private_var_folders_<…>_T_agentkit-acp-<pid>_daemon-home_Library_Caches_org.swift.swiftpm_manifests_manifest.db.lock`.
+   SwiftPM puts lock files in the temp folder, named after the locked path. Giving the daemon a `TMPDIR` inside the
+   state folder would take them along.
+4. `--local-only` still starts `~/Developer/ProjectBlaze/AgentDaemon/.build/release/AgentDaemon`, a development build
+   outside the app bundle.
+5. `$TMPDIR` holds many older `agentkit-acp-*`, `agentkit-autopilot-*`, `agentkit-boundary-*` and
+   `agentkit-bridge-checks-*` folders and lock files from earlier runs that are not this session's.
+
+## Tests (wave 9)
+
+From `packages/opencode`: `bun test --timeout 120000 test/agenthq` 43 pass, 4 skip (the opt-in real checks), 0 fail;
+`bun test test/review/review.test.ts test/event-manifest.test.ts` 10 pass; `bun run typecheck` clean.
+
+No upstream-owned files were edited in wave 9.

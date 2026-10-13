@@ -128,13 +128,20 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
       Effect.forkIn(scope),
     )
 
-    const close = Effect.suspend(() => {
-      state.closing = true
-      state.turn++
-      state.settle()
-      Queue.endUnsafe(stdin)
-      return Scope.close(scope, Exit.void)
-    })
+    // However the session ends (closed, or the server shutting down), the agent first gets the end of its input and a
+    // moment to exit on its own before its process group is killed: AgentKit removes its temp state only then. Added
+    // last, so it runs first, while the readers still drain the agent's output.
+    yield* Scope.addFinalizer(
+      scope,
+      Effect.suspend(() => {
+        state.closing = true
+        state.turn++
+        state.settle()
+        Queue.endUnsafe(stdin)
+        return proc.exitCode.pipe(Effect.timeout("3 seconds"), Effect.ignore)
+      }),
+    )
+    const close = Scope.close(scope, Exit.void)
 
     const initialized = yield* call("initialize", () =>
       connection.initialize({

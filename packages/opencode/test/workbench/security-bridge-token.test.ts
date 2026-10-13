@@ -8,6 +8,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { Workbench } from "@opencode-ai/schema/workbench"
+import { $ } from "bun"
 import { Effect, Layer } from "effect"
 import fs from "fs/promises"
 import path from "path"
@@ -61,10 +62,12 @@ const as =
       return { status: response.status, body: (text ? JSON.parse(text) : undefined) as any }
     })
 
-/** A token for the test, ended when it is over. */
-const token = Effect.acquireRelease(Effect.sync(BridgeToken.mint), (minted) =>
-  Effect.sync(() => BridgeToken.revoke(minted)),
-)
+/** A token for `directory`, ended when the test is over. */
+const token = (directory: string) =>
+  Effect.acquireRelease(
+    Effect.sync(() => BridgeToken.mint(directory)),
+    (minted) => Effect.sync(() => BridgeToken.revoke(minted)),
+  )
 
 describe("workbench bridge token", () => {
   it.live("a token always checks as an agent, whatever the body says; the server password checks as the person", () =>
@@ -80,7 +83,7 @@ describe("workbench bridge token", () => {
         as(server.url, dir, authorization)("/workbench/check", { method: "POST", body: { unit: ".", trigger: "user" } })
 
       // The review's bypass, with a token: trigger "user" in the body, and still skipped until the human approves.
-      const agent = yield* check(`Bearer ${yield* token}`)
+      const agent = yield* check(`Bearer ${yield* token(dir)}`)
       expect(agent.status).toBe(200)
       const skipped = (agent.body as Workbench.VerificationReport).checks.map((item) => [
         item.run.status,
@@ -107,7 +110,7 @@ describe("workbench bridge token", () => {
       Effect.gen(function* () {
         const { server } = yield* listener
         const dir = yield* tmpdirScoped({ git: true })
-        const minted = yield* token
+        const minted = yield* token(dir)
         const bridge = as(server.url, dir, `Bearer ${minted}`)
         const person = as(server.url, dir, PASSWORD)
 
@@ -160,6 +163,53 @@ describe("workbench bridge token", () => {
       }),
   )
 
+  it.live("a token reaches only its own directory: another project, a subfolder, a worktree or its parent is 403", () =>
+    Effect.gen(function* () {
+      const { server } = yield* listener
+      const project = yield* tmpdirScoped({ git: true })
+      const other = yield* tmpdirScoped({ git: true })
+      // A worktree of the project, the way an isolated task gets one, and a symlink to the project.
+      const place = yield* tmpdirScoped()
+      const worktree = path.join(place, "worktree")
+      const link = path.join(place, "link")
+      const sub = path.join(project, "src")
+      yield* Effect.promise(async () => {
+        await $`git worktree add -q ${worktree}`.cwd(project).quiet()
+        await fs.symlink(project, link)
+        await fs.mkdir(sub)
+      })
+      const own = yield* token(project)
+      const tree = yield* token(worktree)
+      const check = { method: "POST", body: { files: [] } }
+      const reach = (minted: string, directory: string, route = "/workbench/problems", init = {}) =>
+        as(server.url, directory, `Bearer ${minted}`)(route, init).pipe(Effect.map((result) => result.status))
+
+      // Its own directory, however it is spelled: as given, through a symlink, URI-encoded as the instance decodes it.
+      expect(yield* reach(own, project)).toBe(200)
+      expect(yield* reach(own, project, "/workbench/check", check)).toBe(200)
+      expect(yield* reach(own, link)).toBe(200)
+      expect(yield* reach(own, encodeURIComponent(project))).toBe(200)
+      // Another project, a folder inside its own, a worktree of it; and the worktree's token on the project.
+      expect(yield* reach(own, other)).toBe(403)
+      expect(yield* reach(own, other, "/workbench/check", check)).toBe(403)
+      expect(yield* reach(own, other, "/workbench/session", { method: "POST", body: {} })).toBe(403)
+      expect(yield* reach(own, sub)).toBe(403)
+      expect(yield* reach(own, worktree)).toBe(403)
+      expect(yield* reach(tree, project)).toBe(403)
+      expect(yield* reach(tree, project, "/workbench/check", check)).toBe(403)
+      expect(yield* reach(tree, worktree)).toBe(200)
+      // `?directory=` wins over the header, as in routing; another workspace is never its own; no directory at all is
+      // this server's working directory, not the project.
+      expect(yield* reach(own, project, `/workbench/problems?directory=${encodeURIComponent(other)}`)).toBe(403)
+      expect(yield* reach(own, other, `/workbench/problems?directory=${encodeURIComponent(project)}`)).toBe(200)
+      expect(yield* reach(own, project, "/workbench/problems?workspace=wrk_x")).toBe(403)
+      const bare = yield* Effect.promise(() =>
+        fetch(new URL("/workbench/problems", server.url), { headers: { authorization: `Bearer ${own}` } }),
+      )
+      expect(bare.status).toBe(403)
+    }),
+  )
+
   it.live("Agent HQ gives the bridge a token, never the server password, and ends it with the session", () =>
     Effect.gen(function* () {
       const { server } = yield* listener
@@ -208,6 +258,35 @@ describe("workbench bridge token", () => {
       // Removing the identity closes its session, and the token ends with it.
       expect((yield* person(`/agenthq/agents/${created.body.id}`, { method: "DELETE" })).status).toBe(200)
       expect((yield* bridge("/workbench/problems")).status).toBe(401)
+
+      // An agent that works in a worktree of the project (as an isolated task does) gets a token for the worktree.
+      const place = yield* tmpdirScoped()
+      const worktree = path.join(place, "worktree")
+      yield* Effect.promise(() => $`git worktree add -q ${worktree}`.cwd(dir).quiet())
+      const isolated = yield* person("/agenthq/agents", {
+        method: "POST",
+        body: {
+          name: "Isolated",
+          avatar: { kind: "preset", value: "robot" },
+          provider: "acp",
+          projectDirectory: dir,
+          workingDirectory: worktree,
+          launch: { command: agentScript, args: [] },
+        },
+      })
+      expect(isolated.status).toBe(200)
+      expect((yield* person(`/agenthq/agents/${isolated.body.id}/sessions`, { method: "POST", body: {} })).status).toBe(
+        200,
+      )
+      const [inTree] = JSON.parse(yield* Effect.promise(() => fs.readFile(record, "utf8"))).mcpServers as {
+        args: string[]
+        env: { name: string; value: string }[]
+      }[]
+      expect(inTree.args.at(-1)).toBe(worktree)
+      const treeToken = `Bearer ${inTree.env[0]!.value}`
+      expect((yield* as(server.url, worktree, treeToken)("/workbench/problems")).status).toBe(200)
+      expect((yield* as(server.url, dir, treeToken)("/workbench/problems")).status).toBe(403)
+      expect((yield* person(`/agenthq/agents/${isolated.body.id}`, { method: "DELETE" })).status).toBe(200)
     }),
   )
 })

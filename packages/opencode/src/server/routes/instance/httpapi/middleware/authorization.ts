@@ -124,9 +124,10 @@ export const authorizationLayer = Layer.effect(
     return Authorization.of((effect, options) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
-        // spicy: a Workbench bridge token reaches only the bridge's own endpoints; any other endpoint is 403
-        if (BridgeToken.of(request))
-          return BridgeToken.ROUTES.has(`${options.group.identifier}.${options.endpoint.name}`)
+        // spicy: a Workbench bridge token reaches only the bridge's own endpoints, in its own directory; else 403
+        const grant = BridgeToken.of(request)
+        if (grant)
+          return BridgeToken.reaches(grant, request, `${options.group.identifier}.${options.endpoint.name}`)
             ? yield* effect
             : HttpServerResponse.empty({ status: 403 })
         return yield* credentialFromRequest(request).pipe(

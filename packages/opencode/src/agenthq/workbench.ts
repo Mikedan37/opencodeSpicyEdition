@@ -3,8 +3,8 @@
 // task is isolated). Tool calls go through the agent's own permission flow like any other tool.
 //
 // Credentials: never the server password. Each bridge gets a token of its own (BridgeToken) in its environment, never
-// in its arguments: it reaches only the bridge's endpoints, always as an agent, and ends when the Agent HQ session
-// that got it closes (`release`). Nothing else from this process's environment is passed along.
+// in its arguments: it reaches only the bridge's endpoints in `directory`, always as an agent, and ends when the
+// Agent HQ session that got it closes (`release`). Nothing else from this process's environment is passed along.
 import { Effect } from "effect"
 import { fileURLToPath } from "url"
 import { BridgeToken } from "@/server/bridge-token"
@@ -34,7 +34,7 @@ export const server = Effect.fnUntraced(function* (directory: string) {
     name: NAME,
     command: command[0],
     args: [...command.slice(1), "workbench", "mcp", "--url", url.origin, "--directory", directory],
-    env: { OPENCODE_SERVER_TOKEN: BridgeToken.mint() },
+    env: { OPENCODE_SERVER_TOKEN: BridgeToken.mint(directory) },
   }
   return result
 })

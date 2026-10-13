@@ -1248,9 +1248,7 @@ The allow-list (`BridgeToken.ROUTES`), all the bridge calls:
 
 ## Where the boundary still is
 
-- The token is not bound to a project: with another `x-opencode-directory` it reads that project's problems and
-  doctor, and runs checks there under the same agent rules. Everything that runs code or debugs still asks the human.
-  Binding the token to the session's directory is a small follow-up.
+- (Closed by the follow-up below: the token is bound to its session's directory.)
 - A same-uid agent whose shell command the human approves can still read this server process's own environment (the
   password is in it when the server was started with it) or its memory. Human approval of shell commands stays the
   outer control.
@@ -1280,3 +1278,25 @@ token, where the caller is the person by design; the inverted test above replace
 Results: `bun test test/agenthq test/workbench …` green; `bun test --timeout 60000 test/server test/workbench
 test/session` 895 pass, 11 skip, 1 todo, 1 fail (the upstream `httpapi-v2-pty` timing flake, 3 of 3 alone);
 `bun run test:httpapi` coverage, auth and effect each 270 pass, 0 fail, 0 missing; `bun run typecheck` clean.
+
+## Follow-up: each token is bound to its session's directory
+
+A token is minted for one directory, resolved (realpath): the Agent HQ session's working directory, which for an
+isolated task is its worktree (`AgentWorkbench.server(directory)` → `BridgeToken.mint(directory)`). A token request
+runs only when the directory it targets is that one; otherwise 403, on every allow-listed route
+(`BridgeToken.reaches`, called by the same middleware). The targeted directory is picked as workspace routing and the
+instance context pick it: `?directory=`, else `x-opencode-directory`, else the server's working directory,
+URI-decoded, then resolved; a request that names another workspace (`?workspace=`) is never the token's. A folder
+inside the directory, a worktree of it and its parent are all other directories.
+
+Tests (`security-bridge-token.test.ts`): a project token reads problems, runs a check and gets its session in its own
+directory (also through a symlink and URI-encoded), and gets 403 with another project, a subfolder, a worktree of the
+project, `?directory=` naming another project (it wins over the header, as in routing), `?workspace=` and no directory
+at all; a worktree token gets 200 in the worktree and 403 in the project; through Agent HQ, an identity working in a
+worktree gets a bridge `--directory <worktree>` whose token reaches the worktree and not the project. Removing the
+directory comparison, the query-first order, the URI decoding, the realpath or the workspace refusal each makes the
+test fail.
+
+Results: `bun test test/agenthq test/workbench/{security-bridge-token,mcp,mcp-debug}.test.ts test/workbench/tools
+test/server/{auth,httpapi-instance-route-auth}.test.ts` 80 pass, 4 skip, 0 fail; `bun run test:httpapi` coverage,
+auth and effect each 270 pass, 0 fail, 0 missing; `bun run typecheck` clean.

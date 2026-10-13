@@ -16,7 +16,7 @@ import { getRelativeTime } from "@/utils/time"
 import { showToast } from "@/utils/toast"
 import { VirtualList } from "@/workbench/virtual-list"
 import { errorText } from "@/workbench/client"
-import { PanelState, RequestErrorState, TONE_CLASS } from "@/workbench/ui"
+import { InlineCode, PanelState, RequestErrorState, TONE_CLASS } from "@/workbench/ui"
 import { useWorkbench } from "@/workbench/panel"
 import { draftedTool } from "@/workbench/tools"
 import { PatchView } from "@/workbench/patch-view"
@@ -722,7 +722,7 @@ function NoteRow(props: { note: NoteItem }) {
           data-row="error"
           class={`mx-3 my-1 select-text whitespace-pre-wrap break-words rounded-[8px] px-2.5 py-1.5 text-[12px] ${TONE_CLASS.danger}`}
         >
-          {props.note.text}
+          <InlineCode text={props.note.text} />
         </div>
       </Match>
     </Switch>

@@ -48,12 +48,15 @@ export async function mockWorkbench(
     files: {} as Record<string, string>,
     debugSessions: [] as unknown[],
     doctor: undefined as unknown,
-    // GET /agenthq/agents, /agenthq/agents/:id/sessions, /agenthq/tasks
+    // GET /agenthq/agents, /agenthq/agents/:id/sessions, /agenthq/tasks, /agenthq/providers
     agents: [] as unknown[],
+    providers: [] as unknown[],
     agentSessions: [] as { agentID: string }[],
     tasks: [] as unknown[],
-    // What the app sent: this session's prompts, Agent HQ messages, checks, config changes, permission replies.
+    // What the app sent: this session's prompts, Agent HQ messages and new agents, checks, config changes, permission
+    // replies.
     prompts: [] as { path: string; body: unknown }[],
+    created: [] as Record<string, unknown>[],
     messages: [] as unknown[],
     checks: [] as unknown[],
     config: [] as unknown[],
@@ -158,6 +161,14 @@ export async function mockWorkbench(
     const request = route.request()
     const path = new URL(request.url()).pathname
     if (path === "/agenthq/agents" && request.method() === "GET") return json(route, mock.agents)
+    if (path === "/agenthq/providers") return json(route, mock.providers)
+    if (path === "/agenthq/agents" && request.method() === "POST") {
+      const body = request.postDataJSON() as Record<string, unknown>
+      mock.created.push(body)
+      const agent = { ...body, id: `agt_${mock.created.length}`, createdAt: 2, updatedAt: 2 }
+      mock.agents.push(agent)
+      return json(route, agent)
+    }
     if (path === "/agenthq/tasks" && request.method() === "GET") return json(route, mock.tasks)
     const sessionsOf = path.match(/^\/agenthq\/agents\/([^/]+)\/sessions$/)?.[1]
     if (sessionsOf && request.method() === "GET")

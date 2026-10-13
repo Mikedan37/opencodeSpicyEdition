@@ -510,6 +510,7 @@ export const dict = {
   "agenthq.dialog.provider.auth": "Sign-in required",
   "agenthq.dialog.model": "Model",
   "agenthq.dialog.model.placeholder": "Provider default",
+  "agenthq.dialog.model.default": "Use default",
   "agenthq.dialog.specialty": "Specialty",
   "agenthq.dialog.specialty.placeholder": "Reviews TypeScript changes and writes tests",
   "agenthq.dialog.project": "Project directory",

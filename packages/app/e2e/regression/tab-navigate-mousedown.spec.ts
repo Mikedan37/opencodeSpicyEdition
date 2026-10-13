@@ -2,7 +2,8 @@ import { expect, test, type Page, type Route } from "@playwright/test"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { currentSession } from "../utils/mock-server"
 
-const server = "http://127.0.0.1:4096"
+// spicy: the app's default server is PLAYWRIGHT_SERVER_HOST/PORT (playwright.config.ts), not always 4096
+const server = `http://${process.env.PLAYWRIGHT_SERVER_HOST ?? "127.0.0.1"}:${process.env.PLAYWRIGHT_SERVER_PORT ?? "4096"}`
 const sessionA = session("ses_tab_a", "Tab A session")
 const sessionB = session("ses_tab_b", "Tab B session")
 const sessionC = session("ses_tab_c", "Tab C session")

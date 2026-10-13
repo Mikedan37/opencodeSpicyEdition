@@ -3,8 +3,9 @@ import { expect, test, type Page, type Route } from "@playwright/test"
 import { installSseTransport } from "../utils/sse-transport"
 import { currentSession } from "../utils/mock-server"
 
-const serverA = "http://127.0.0.1:4096"
-const serverB = "http://127.0.0.1:4097"
+// spicy: the app's default server is PLAYWRIGHT_SERVER_HOST/PORT (playwright.config.ts), not always 4096
+const serverA = `http://${process.env.PLAYWRIGHT_SERVER_HOST ?? "127.0.0.1"}:${process.env.PLAYWRIGHT_SERVER_PORT ?? "4096"}`
+const serverB = `http://127.0.0.1:${Number(process.env.PLAYWRIGHT_SERVER_PORT ?? "4096") + 1}`
 const directoryA = "C:/server-a"
 const directoryB = "/home/server-b"
 const sessionA = session("ses_server_a", directoryA, "Server A session")

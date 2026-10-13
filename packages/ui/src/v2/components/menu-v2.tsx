@@ -1,6 +1,15 @@
 import { DropdownMenu } from "@kobalte/core/dropdown-menu"
-import { ContextMenu } from "@kobalte/core/context-menu"
-import { Show, splitProps, type Component, type ComponentProps, type JSX, type ParentProps } from "solid-js"
+import { ContextMenu, type ContextMenuTriggerProps } from "@kobalte/core/context-menu"
+import type { PolymorphicProps } from "@kobalte/core/polymorphic"
+import {
+  Show,
+  splitProps,
+  type Component,
+  type ComponentProps,
+  type JSX,
+  type ParentProps,
+  type ValidComponent,
+} from "solid-js"
 import "./menu-v2.css"
 
 const ChevronRight: Component = () => (
@@ -201,8 +210,30 @@ function MenuV2ContextContent(props: ComponentProps<typeof ContextMenu.Content>)
   )
 }
 
+// spicy: Shift+F10 opens a context menu from the keyboard on every platform. Kobalte opens one only on a `contextmenu`
+// event, and macOS browsers send that for the ContextMenu key (which Mac keyboards lack) but not for Shift+F10.
+function MenuV2ContextTrigger<T extends ValidComponent = "div">(
+  props: PolymorphicProps<T, ContextMenuTriggerProps<T>>,
+) {
+  const [local, rest] = splitProps(props as { onKeyDown?: JSX.EventHandlerUnion<HTMLElement, KeyboardEvent> }, [
+    "onKeyDown",
+  ])
+  const onKeyDown = (event: KeyboardEvent & { currentTarget: HTMLElement; target: Element }) => {
+    if (typeof local.onKeyDown === "function") local.onKeyDown(event)
+    else local.onKeyDown?.[0](local.onKeyDown[1], event)
+    if (event.defaultPrevented || event.key !== "F10" || !event.shiftKey) return
+    // Without this, Windows and Linux would also send their own contextmenu event for the same key.
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    event.currentTarget.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: rect.left, clientY: rect.bottom }),
+    )
+  }
+  return <ContextMenu.Trigger {...(rest as PolymorphicProps<T, ContextMenuTriggerProps<T>>)} onKeyDown={onKeyDown} />
+}
+
 const MenuV2Context = Object.assign(MenuV2ContextRoot, {
-  Trigger: ContextMenu.Trigger,
+  Trigger: MenuV2ContextTrigger, // spicy: keyboard opening on every platform
   Portal: ContextMenu.Portal,
   Content: MenuV2ContextContent,
 })

@@ -142,7 +142,9 @@ export const DebugTool = Tool.define<
               return yield* new DebugError({
                 kind: "not_owner",
                 message: `investigation ${id} is ${record.status}${
-                  record.checkpoints.at(-1)?.reason ? ` (${record.checkpoints.at(-1)?.reason})` : ""
+                  WorkbenchInvestigation.explain(record.checkpoints.at(-1))
+                    ? ` (${WorkbenchInvestigation.explain(record.checkpoints.at(-1))})`
+                    : ""
                 }; stop and tell the user`,
               })
           })

@@ -329,7 +329,10 @@ describe("tool.debug investigations", () => {
           investigations.get(record.id).pipe(Effect.map((item) => (item.status === "needs_human" ? item : undefined))),
           "the step budget never handed the investigation to the user",
         )
-        expect(halted.checkpoints.at(-1)?.reason).toBe("S5: debug step budget of 2 used; the program stays paused")
+        expect(halted.checkpoints.at(-1)).toMatchObject({
+          rule: "S5",
+          reason: "debug step budget of 2 used; the program stays paused",
+        })
         const refused = yield* run({ action: "control", command: "next" }, ctx).pipe(Effect.exit)
         expect(JSON.stringify(refused)).toContain("needs_human")
         const debug = yield* WorkbenchDebug.Service
@@ -351,7 +354,7 @@ describe("tool.debug investigations", () => {
         const investigations = yield* WorkbenchInvestigation.Service
         const record = yield* investigations.current("ses_denied")
         expect(record?.status).toBe("needs_human")
-        expect(record?.checkpoints.at(-1)?.reason).toBe("S7: permission denied: debug.launch")
+        expect(record?.checkpoints.at(-1)).toMatchObject({ rule: "S7", reason: "permission denied: debug.launch" })
         const debug = yield* WorkbenchDebug.Service
         expect(yield* debug.list()).toEqual([])
       }),

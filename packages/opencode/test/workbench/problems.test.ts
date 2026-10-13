@@ -65,8 +65,22 @@ describe("workbench problem store", () => {
         expect(snapshot.producers).toContainEqual(
           expect.objectContaining({ producer: `lsp:fake:${dir}`, kind: "lsp", state: "idle" }),
         )
+        // Both channels really carried the error: pushed after didOpen, pulled by textDocument/diagnostic.
+        const methods = (yield* Effect.promise(() => Bun.file(path.join(dir, "lsp-methods.log")).text())).split("\n")
+        expect(methods).toContain("textDocument/didOpen")
+        expect(methods).toContain("textDocument/diagnostic")
       }),
-    { config: { lsp: { fake: { command: [process.execPath, fakeServer], extensions: [".repro"] } } } },
+    {
+      config: {
+        lsp: {
+          fake: {
+            command: [process.execPath, fakeServer],
+            extensions: [".repro"],
+            env: { FAKE_LSP_LOG: "lsp-methods.log" },
+          },
+        },
+      },
+    },
   )
 
   it.instance(

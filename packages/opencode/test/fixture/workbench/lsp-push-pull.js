@@ -1,5 +1,7 @@
 // Fake language server that reports the same error by push (on open) and by pull (textDocument/diagnostic).
-// It exits (a crash) when a change brings the text CRASH.
+// It exits (a crash) when a change brings the text CRASH. FAKE_LSP_LOG names a file (relative to its cwd, the root)
+// that records every method it receives.
+const { appendFileSync } = require("fs")
 let buffer = Buffer.alloc(0)
 
 const error = {
@@ -17,6 +19,7 @@ function send(message) {
 }
 
 function handle(data) {
+  if (process.env.FAKE_LSP_LOG && data.method) appendFileSync(process.env.FAKE_LSP_LOG, data.method + "\n")
   if (data.method === "initialize")
     return send({ id: data.id, result: { capabilities: { textDocumentSync: 1, diagnosticProvider: {} } } })
   if (data.method === "textDocument/didOpen")

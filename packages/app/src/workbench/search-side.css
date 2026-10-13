@@ -1,0 +1,6 @@
+/* spicy: the side panel's Search tab (search-side.tsx) hides the panel's other tab contents while it is in front;
+   they stay mounted, like under the Debug tab. */
+[data-component="tabs"][data-workbench-search]
+  > :not(.session-review-v2-tabs-bar):not([data-component="workbench-search-side"]) {
+  display: none !important;
+}

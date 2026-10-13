@@ -52,6 +52,54 @@ describe("launch specs", () => {
     expect(DebugLaunch.substitute({ args: ["${env:OPENCODE_LAUNCH_CANARY}"] }, {})).toEqual({ args: ["canary-secret"] })
   })
 
+  // The security review's repro (spicy-security, 2a8d2d441), inverted: ${env:NAME} expanded any server variable into
+  // the program's arguments, whose output reaches the model unredacted.
+  test("SECURITY ${env:NAME} never passes a secret: the start fails naming it; ordinary variables still expand", async () => {
+    const vars = { workspaceFolder: "/proj", userHome: "/home/u", pathSeparator: "/" }
+    process.env.SPICY_SECURITY_PROBE_SECRET = "super-secret-pw-123"
+    try {
+      const out = DebugLaunch.substitute({ type: "python", args: ["${env:SPICY_SECURITY_PROBE_SECRET}"] }, vars)
+      expect(out).toBe("${env:SPICY_SECURITY_PROBE_SECRET} names a secret and is not passed to the program")
+      expect(JSON.stringify(out)).not.toContain("super-secret-pw-123")
+    } finally {
+      delete process.env.SPICY_SECURITY_PROBE_SECRET
+    }
+    // Refused by name, set or not: the server's credentials and provider keys never reach a program.
+    for (const name of [
+      "OPENCODE_SERVER_PASSWORD",
+      "OPENCODE_SERVER_USERNAME",
+      "ANTHROPIC_API_KEY",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SESSION_TOKEN",
+      "GOOGLE_APPLICATION_CREDENTIALS",
+      "DB_PASSWORD",
+      "STRIPE_KEY",
+    ])
+      expect(DebugLaunch.substitute({ env: { X: `\${env:${name}}` } }, vars)).toBe(
+        `\${env:${name}} names a secret and is not passed to the program`,
+      )
+    expect(
+      DebugLaunch.substitute({ args: ["${env:HOME}"], env: { PATH: "${env:PATH}", ME: "${env:USER}" } }, vars),
+    ).toEqual({ args: [process.env.HOME ?? ""], env: { PATH: process.env.PATH ?? "", ME: process.env.USER ?? "" } })
+    // Through launch.json, the start is refused with that error.
+    const directory = await project(
+      JSON.stringify({
+        configurations: [
+          {
+            name: "leak",
+            type: "python",
+            request: "launch",
+            program: "app.py",
+            args: ["${env:OPENCODE_SERVER_PASSWORD}"],
+          },
+        ],
+      }),
+    )
+    expect(await fail({ configuration: "leak" }, directory)).toBe(
+      "${env:OPENCODE_SERVER_PASSWORD} names a secret and is not passed to the program",
+    )
+  })
+
   test("plain programs pick the adapter by type", async () => {
     const directory = await project()
     const py = await ok(

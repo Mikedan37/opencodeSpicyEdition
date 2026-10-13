@@ -674,3 +674,42 @@ For drafts, `description` and `args` are read from the source; once enabled they
 - Typecheck clean in `packages/opencode`, `packages/schema` and `packages/app` (after the cache-only
   `bun install --frozen-lockfile --offline --ignore-scripts`); `bun run generate` in `packages/client`: no diff.
   No lldb launch; DiagnosticReports (without intelligencetasksd) 35 before and after.
+
+## Security fixes (review findings 3 and 4)
+
+### Finding 3: launch.json `${env:NAME}` passed secrets to the program
+
+- `DebugLaunch.substitute` expanded any `${env:NAME}` from the server's environment into the configuration (args,
+  env, …), so a program that prints its arguments handed the opencode server password or a provider key to the model
+  as program output, which value-shape redaction cannot recognize. Approving a configuration never meant "send my
+  environment".
+- Now a name that `Redact.secretEnv` flags is not substituted, and the start fails with
+  `${env:NAME} names a secret and is not passed to the program` (one per refused variable). `secretEnv` is the shared
+  `Redact.secretName` list (password, secret, token, apikey, auth, credential, …) plus, for environment names only,
+  anything containing KEY (API*KEY, ACCESS_KEY_ID, STRIPE_KEY) and `OPENCODE_SERVER*\*`. KEY stays out of the list
+  used for program values, where key, keys and monkey are everyday variable names. Ordinary variables (HOME, PATH,
+  USER, …) still expand, and an unset one is still empty.
+- Test: `test/workbench/dap/launch.test.ts` inverts the review's repro (spicy-security 2a8d2d441, which now fails as
+  intended): the probe secret is refused with that error and never appears; the server's credentials and provider
+  keys are refused by name whether set or not; `${env:HOME}`, `${env:PATH}`, `${env:USER}` expand; a launch.json
+  configuration using `${env:OPENCODE_SERVER_PASSWORD}` fails to start with the error.
+- Still open, outside this fix: adapters are spawned with the server's environment (`Process.spawn` merges
+  `process.env`), and debuggees inherit it, so a program can read and print `OPENCODE_SERVER_PASSWORD` or a provider
+  key by itself. Scrubbing those from the adapter environment is the follow-up.
+
+### Finding 4: enable could load a file swapped after the review
+
+- `enable` hashed the `.ts.disabled` file, compared the hash with the reviewed one, then renamed whatever the file held
+  by then. Now it keeps the bytes it hashed and installs exactly those as `custom_<name>.ts` (a temp file next to it,
+  then a rename; the registry ignores `*.tmp`), loads it, and only then deletes the disabled file (on a failed load the
+  enabled file is removed and the disabled one stays). `approve` installs its in-memory reviewed source the same way.
+- Test: `test/workbench/tools/enable.test.ts` swaps the disabled file right after the service reads it (a file
+  system wrapper); the enabled file and the loaded module are the reviewed ones and the swapped code never ran. The
+  test fails on the previous rename.
+
+### Runs
+
+- `test/workbench` + debug HTTP test: 177 pass / 2 skip (Rust and C launches, "Developer Mode off") / 0 fail.
+- `test/tool test/server test/session test/agent test/permission`: 1270 pass / 13 skip / 1 todo / 0 fail.
+- Typecheck clean in `packages/opencode`. No route changed, so no `test:httpapi` run. DiagnosticReports (without
+  intelligencetasksd) 35 before and after.

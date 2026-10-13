@@ -72,6 +72,30 @@ export const LspQuery = Schema.Struct({
   character: Count.annotate({ description: "0-based UTF-16 column" }),
 })
 
+const Position = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+
+export const LspSyncPayload = Schema.Struct({
+  path: Schema.String.annotate({ description: "A file inside the project: absolute, or relative to the directory" }),
+  text: Schema.optional(Schema.String).annotate({
+    description: "The editor's unsaved text; without it the language servers read the file on disk again",
+  }),
+})
+
+export const LspRenamePayload = Schema.Struct({
+  path: Schema.String.annotate({ description: "A file inside the project: absolute, or relative to the directory" }),
+  line: Position.annotate({ description: "0-based line" }),
+  character: Position.annotate({ description: "0-based UTF-16 column" }),
+  newName: Schema.String.check(Schema.isNonEmpty()),
+  sessionID: SessionID.annotate({ description: "The session whose review changeset holds the edits" }),
+})
+
+export const LspFormatPayload = Schema.Struct({
+  path: Schema.String.annotate({ description: "A file inside the project: absolute, or relative to the directory" }),
+  text: Schema.String.annotate({ description: "The editor's text to format" }),
+  tabSize: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+  insertSpaces: Schema.optional(Schema.Boolean),
+})
+
 export const FileWritten = Schema.Struct({
   hash: Schema.String.annotate({ description: "sha256 of the bytes written" }),
 }).annotate({ identifier: "WorkbenchFileWritten" })
@@ -184,6 +208,57 @@ export const WorkbenchApi = HttpApi.make("workbench")
             summary: "Find references",
             description:
               "The references to the symbol at a position, sorted by file and line, each with its line's text. Empty when no server answers.",
+          }),
+        ),
+        HttpApiEndpoint.post("lspSync", `${root}/lsp/sync`, {
+          query: WorkspaceRoutingQuery,
+          payload: LspSyncPayload,
+          success: described(Schema.Boolean, "The language servers have the text"),
+          error: [ApiNotFoundError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.lsp.sync",
+            summary: "Send the editor's text",
+            description:
+              "Gives the file's language servers the editor's unsaved text (a full didChange), or without text the file on disk again, so completion, hover and diagnostics follow what the editor shows.",
+          }),
+        ),
+        HttpApiEndpoint.get("lspCompletion", `${root}/lsp/completion`, {
+          query: LspQuery,
+          success: described(Workbench.LspCompletionList, "Completion items, at most 1000"),
+          error: [ApiNotFoundError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.lsp.completion",
+            summary: "Completion",
+            description:
+              "What the file's language servers offer at a position, as plain text (snippets flattened). Empty when no server answers.",
+          }),
+        ),
+        HttpApiEndpoint.post("lspRename", `${root}/lsp/rename`, {
+          query: WorkspaceRoutingQuery,
+          payload: LspRenamePayload,
+          success: described(Workbench.LspRename, "The files written and their review changeset"),
+          error: [ApiNotFoundError, ForbiddenError, InvalidRequestError, ConflictError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.lsp.rename",
+            summary: "Rename a symbol",
+            description:
+              "Renames the symbol at a position through the file's language servers: writes the edited files and records them as pending hunks of the session's review changeset, where they are accepted or rejected. Refused when it would change files outside the project or create, rename or delete files, and when the project keeps no snapshots.",
+          }),
+        ),
+        HttpApiEndpoint.post("lspFormat", `${root}/lsp/format`, {
+          query: WorkspaceRoutingQuery,
+          payload: LspFormatPayload,
+          success: described(Workbench.LspFormat, "Edits, the formatted text, or neither"),
+          error: [ApiNotFoundError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.lsp.format",
+            summary: "Format the editor's text",
+            description:
+              "Formats the editor's text with the file's language servers (edits against that text), else with opencode's formatter for the file (the whole text). Nothing is written.",
           }),
         ),
         HttpApiEndpoint.post("session", `${root}/session`, {

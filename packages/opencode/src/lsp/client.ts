@@ -18,6 +18,8 @@ const DIAGNOSTICS_REQUEST_TIMEOUT_MS = 3_000
 const DIAGNOSTICS_WARMUP_MS = 5_000
 
 const INITIALIZE_TIMEOUT_MS = 45_000
+// spicy: how long `shutdown` gets an answer, and then how long the server gets to exit on `exit`, before it is killed
+const SHUTDOWN_STEP_MS = 1_000
 
 // LSP spec constants
 const FILE_CHANGE_CREATED = 1
@@ -304,6 +306,9 @@ export async function create(input: {
             versionSupport: false,
           },
           hover: { contentFormat: ["markdown", "plaintext"] }, // spicy: the IDE editor's hover renders markdown
+          // spicy: the IDE editor's completion (plain text, no snippets) and rename
+          completion: { completionItem: { snippetSupport: false, documentationFormat: ["markdown", "plaintext"] } },
+          rename: {},
         },
       },
     }),
@@ -635,11 +640,12 @@ export async function create(input: {
     // spicy: resolves with a reason when the server process dies (REG-09)
     exited,
     notify: {
-      async open(request: { path: string }) {
+      // spicy: `text` (the IDE editor's unsaved buffer) is sent instead of the file on disk
+      async open(request: { path: string; text?: string }) {
         request.path = Filesystem.normalizePath(
           path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
         )
-        const text = await Filesystem.readText(request.path)
+        const text = request.text ?? (await Filesystem.readText(request.path))
         const extension = path.extname(request.path)
         const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
 
@@ -721,7 +727,14 @@ export async function create(input: {
       }
       await waitForFullDiagnostics({ path: normalizedPath, version: request.version, after: request.after })
     },
+    // spicy: `shutdown` then `exit` first, so the server stops on its own (clangd aborts and leaves a crash report when
+    // it outlives its pipes); one that does not answer or exit in time is killed as before
     async shutdown() {
+      if (exitReason === undefined) {
+        await withTimeout(connection.sendRequest("shutdown"), SHUTDOWN_STEP_MS).catch(() => undefined)
+        await connection.sendNotification("exit").catch(() => undefined)
+        await withTimeout(exited, SHUTDOWN_STEP_MS).catch(() => undefined)
+      }
       connection.end()
       connection.dispose()
       await Process.stop(input.server.process)

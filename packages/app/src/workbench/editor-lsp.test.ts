@@ -3,19 +3,40 @@ import { EditorSelection, EditorState, Text } from "@codemirror/state"
 import { EditorView, runScopeHandlers } from "@codemirror/view"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { createEditorStore, offsetOf, positionOf, type CodePosition } from "./editor"
-import { codeIntelligence, findReferences, goToDefinition, hoverAt, noteOf, type CodeIntelligence } from "./editor-lsp"
+import { CompletionContext, type CompletionResult } from "@codemirror/autocomplete"
+import {
+  codeIntelligence,
+  completionSource,
+  createSync,
+  findReferences,
+  formatDocument,
+  goToDefinition,
+  hoverAt,
+  indentOf,
+  noteOf,
+  type CodeIntelligence,
+} from "./editor-lsp"
 
 const span = (line: number, from: number, to: number) => ({
   start: { line, character: from },
   end: { line, character: to },
 })
 
-function fake(answers: Partial<Pick<CodeIntelligence, "hover" | "definition" | "references">> = {}) {
+function fake(
+  answers: Partial<
+    Pick<CodeIntelligence, "hover" | "definition" | "references" | "completion" | "rename" | "renameBlocked" | "format">
+  > = {},
+) {
   const calls: unknown[][] = []
   const ci: CodeIntelligence = {
     hover: answers.hover ?? (async () => null),
     definition: answers.definition ?? (async () => []),
     references: answers.references ?? (async () => []),
+    completion: answers.completion ?? (async () => ({ items: [], incomplete: false })),
+    rename: answers.rename ?? (async () => ({ files: [], edits: 0 })),
+    renamed: (result) => void calls.push(["renamed", result]),
+    renameBlocked: answers.renameBlocked ?? (() => undefined),
+    format: answers.format ?? (async () => ({})),
     open: (location, from) => void calls.push(["open", location, from]),
     showReferences: (items, from) => void calls.push(["references", items, from]),
     dismiss: () => (calls.push(["dismiss"]), true),
@@ -25,7 +46,7 @@ function fake(answers: Partial<Pick<CodeIntelligence, "hover" | "definition" | "
       calls.push(["render", markdown])
       return () => void calls.push(["disposed"])
     },
-    text: (key, place) => (place ? `${key} ${place}` : key),
+    text: (key, values) => [key, ...Object.values(values ?? {})].join(" "),
   }
   return { ci, calls }
 }
@@ -76,8 +97,10 @@ describe("editor code intelligence", () => {
     answer = () => Promise.reject(new Error("server gone"))
     await goToDefinition(view, 5, ci)
     expect(noteOf(view)).toBe("noDefinition")
-    // the note goes with the next cursor move
-    view.dispatch({ selection: { anchor: 1 } })
+    // the note outlives the editor's own changes, and goes with the person's next cursor move
+    view.dispatch({ changes: { from: 0, insert: "x" } })
+    expect(noteOf(view)).toBe("noDefinition")
+    view.dispatch({ selection: { anchor: 1 }, userEvent: "select" })
     expect(noteOf(view)).toBeUndefined()
     expect(calls).toHaveLength(1)
   })
@@ -156,5 +179,140 @@ describe("editor navigation", () => {
     const rest = [...Array(60)].map(() => store.back()).filter(Boolean)
     expect(rest).toHaveLength(49)
     expect(store.back()).toBeUndefined()
+  })
+})
+
+describe("editor code intelligence, editing", () => {
+  test("the text goes out after a pause, at once on flush, in order; a dropped edit is never sent", async () => {
+    const sent: (string | undefined)[] = []
+    const sync = createSync(async (text) => void sent.push(text), 20)
+    let text = "a"
+    sync.edit(() => text)
+    text = "ab"
+    sync.edit(() => text)
+    expect(sent).toEqual([])
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(sent).toEqual(["ab"])
+
+    text = "abc"
+    sync.edit(() => text)
+    await sync.flush()
+    expect(sent).toEqual(["ab", "abc"])
+    await sync.flush()
+    expect(sent).toEqual(["ab", "abc"])
+
+    sync.edit(() => "dropped")
+    sync.stop()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(sent).toEqual(["ab", "abc"])
+  })
+
+  test("completion offers the servers' items over the word; a server range replaces from its start", async () => {
+    const asked: CodePosition[] = []
+    const { ci } = fake({
+      completion: async (at) => {
+        asked.push(at)
+        return {
+          items: [
+            { label: "helper", kind: "function", insert: "helper(arg)" },
+            { label: "member", range: span(0, 3, 4) },
+          ],
+          incomplete: false,
+        }
+      },
+    })
+    const view = editor("do.he", ci, 5)
+    const source = completionSource(ci)
+    const result = (await source(new CompletionContext(view.state, 5, false))) as CompletionResult
+    expect(asked).toEqual([{ line: 0, character: 5 }])
+    expect(result.from).toBe(3)
+    expect(result.validFor).toEqual(/^[\w$]*$/)
+    expect(result.options.map((option) => [option.label, option.type])).toEqual([
+      ["helper", "function"],
+      ["member", undefined],
+    ])
+    expect(result.options[0].apply).toBe("helper(arg)")
+    const apply = result.options[1].apply as (view: EditorView, completion: unknown, from: number, to: number) => void
+    apply(view, result.options[1], 3, 5)
+    expect(view.state.doc.toString()).toBe("do.member")
+
+    // nothing typed and not after a trigger character: not asked
+    expect(await source(new CompletionContext(EditorState.create({ doc: "do " }), 3, false))).toBeNull()
+    expect(asked).toHaveLength(1)
+  })
+
+  test("F2 asks for the new name over the word; Enter renames for review; refused, blocked or nothing is a note", async () => {
+    const done: Workbench.LspRename = { files: ["/p/a.nav"], edits: 2, changeset: "chg_x" }
+    let answer: () => Promise<Workbench.LspRename> = async () => done
+    let blocked: string | undefined
+    const renamed: [CodePosition, string][] = []
+    const { ci, calls } = fake({
+      rename: (at, name) => (renamed.push([at, name]), answer()),
+      renameBlocked: () => blocked,
+    })
+    const view = editor("use helper\n", ci, 6)
+    expect(key(view, { key: "F2" })).toBe(true)
+    const input = document.querySelector<HTMLInputElement>("[data-lsp-rename]")!
+    expect(input.value).toBe("helper")
+    input.value = "assist"
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }))
+    await settle()
+    expect(renamed).toEqual([[{ line: 0, character: 4 }, "assist"]])
+    expect(document.querySelector("[data-lsp-rename]")).toBeNull()
+    expect(calls).toEqual([["renamed", done]])
+
+    answer = () => Promise.reject(new Error("outside the project"))
+    key(view, { key: "F2" })
+    const again = document.querySelector<HTMLInputElement>("[data-lsp-rename]")!
+    again.value = "other"
+    again.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }))
+    await settle()
+    expect(noteOf(view)).toBe("renameRefused outside the project")
+
+    // Escape cancels without asking
+    key(view, { key: "F2" })
+    document.querySelector("[data-lsp-rename]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))
+    expect(document.querySelector("[data-lsp-rename]")).toBeNull()
+    expect(renamed).toHaveLength(2)
+
+    blocked = "save first"
+    key(view, { key: "F2" })
+    expect(document.querySelector("[data-lsp-rename]")).toBeNull()
+    expect(noteOf(view)).toBe("save first")
+  })
+
+  test("format applies the servers' edits or the formatter's text as one change; stale or none is a note", async () => {
+    let answer: Workbench.LspFormat = { edits: [{ range: span(0, 3, 5), newText: "" }] }
+    const asked: unknown[] = []
+    const { ci } = fake({ format: async (text, options) => (asked.push([text, options]), answer) })
+    const view = editor("one  \n    two\n", ci, 0)
+    await formatDocument(view, ci)
+    expect(view.state.doc.toString()).toBe("one\n    two\n")
+    expect(asked).toEqual([["one  \n    two\n", { tabSize: 4, insertSpaces: true }]])
+
+    answer = { text: "one\n  two\n" }
+    await formatDocument(view, ci)
+    expect(view.state.doc.toString()).toBe("one\n  two\n")
+
+    answer = {}
+    await formatDocument(view, ci)
+    expect(noteOf(view)).toBe("noFormatter")
+
+    // the person typed while the server formatted: nothing is applied
+    const slow = fake({
+      format: async () => {
+        view.dispatch({ changes: { from: 0, insert: "!" } })
+        return { text: "formatted" }
+      },
+    })
+    await formatDocument(view, slow.ci)
+    expect(view.state.doc.toString()).toBe("!one\n  two\n")
+    expect(noteOf(view)).toBe("formatStale")
+  })
+
+  test("indentation is guessed from the text", () => {
+    expect(indentOf("a\n\tb\n")).toEqual({ tabSize: 4, insertSpaces: false })
+    expect(indentOf("a\n  b\n    c\n")).toEqual({ tabSize: 2, insertSpaces: true })
+    expect(indentOf("plain\n")).toEqual({ tabSize: 2, insertSpaces: true })
   })
 })

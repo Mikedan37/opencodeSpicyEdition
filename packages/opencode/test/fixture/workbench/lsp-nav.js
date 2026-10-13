@@ -1,7 +1,9 @@
 // Fake language server for the IDE editor's code intelligence. It knows the root's *.nav files (open documents as the
 // client last sent them, full sync) and answers about the identifier at a position: hover names it, its definition is
 // the `def <name>` line in any file (else its first occurrence in the document), references are every whole-word
-// occurrence. `printf` is defined outside the project; nothing is known about `nothing`. FAKE_LSP_LOG names a file
+// occurrence. Completion offers every word of the root's files plus a `helper(${1:arg})` snippet; rename replaces every
+// whole-word occurrence (renaming `outsider` would also edit a file outside the project); formatting trims trailing
+// spaces. `printf` is defined outside the project; nothing is known about `nothing`. FAKE_LSP_LOG names a file
 // (relative to its cwd, the root) that records every method it receives.
 const { appendFileSync, readdirSync, readFileSync } = require("fs")
 const path = require("path")
@@ -91,6 +93,42 @@ function handle(data) {
   }
   if (data.method === "textDocument/references")
     return send({ id: data.id, result: known ? occurrences(all, known.word) : [] })
+  if (data.method === "textDocument/completion") {
+    const words = [...new Set([...all.values()].flatMap((text) => text.match(/[A-Za-z_]\w*/g) ?? []))]
+    const items = [
+      ...words.map((word) => ({ label: word, kind: 6 })),
+      { label: "helper", kind: 3, detail: "fn helper(arg)", insertText: "helper(${1:arg})", insertTextFormat: 2 },
+    ]
+    return send({ id: data.id, result: { isIncomplete: false, items } })
+  }
+  if (data.method === "textDocument/rename") {
+    if (!known) return send({ id: data.id, result: null })
+    const changes = Map.groupBy(occurrences(all, known.word), (item) => item.uri)
+    const edits = Object.fromEntries(
+      [...changes].map(([uri, items]) => [uri, items.map((item) => ({ range: item.range, newText: params.newName }))]),
+    )
+    if (known.word === "outsider") edits["file:///usr/include/fake-stdio.h"] = []
+    return send({ id: data.id, result: { changes: edits } })
+  }
+  if (data.method === "textDocument/formatting")
+    return send({
+      id: data.id,
+      result: (here ?? "").split("\n").flatMap((line, number) => {
+        const trimmed = line.trimEnd()
+        return trimmed === line
+          ? []
+          : [
+              {
+                range: {
+                  start: { line: number, character: trimmed.length },
+                  end: { line: number, character: line.length },
+                },
+                newText: "",
+              },
+            ]
+      }),
+    })
+  if (data.method === "exit") process.exit(0)
   if (data.id !== undefined && data.method) send({ id: data.id, result: null })
 }
 

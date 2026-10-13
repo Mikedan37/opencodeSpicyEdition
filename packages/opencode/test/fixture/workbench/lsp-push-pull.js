@@ -33,6 +33,7 @@ function handle(data) {
     data.params.contentChanges.some((change) => change.text.includes("CRASH"))
   )
     process.exit(1)
+  if (data.method === "exit") process.exit(0)
   if (data.id !== undefined && data.method) send({ id: data.id, result: null })
 }
 

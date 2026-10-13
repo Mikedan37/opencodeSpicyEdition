@@ -262,6 +262,20 @@ export const TaskReview = Schema.Struct({
 }).annotate({ identifier: "AgentHQTaskReview" })
 export interface TaskReview extends Schema.Schema.Type<typeof TaskReview> {}
 
+/**
+ * The unified diff approving would merge (`base...head`, as `git diff`), for one file of the review or all of them. A
+ * task without a branch of its own has nothing to merge and an empty diff.
+ */
+export const TaskReviewDiff = Schema.Struct({
+  taskID: TaskID,
+  head: optional(Schema.String), // the branch commit diffed: the one asked for, else the branch tip
+  base: optional(Schema.String), // the project's current branch
+  path: optional(Schema.String), // the one file asked for
+  diff: Schema.String,
+  truncated: optional(Schema.Boolean), // cut at 1,000,000 characters
+}).annotate({ identifier: "AgentHQTaskReviewDiff" })
+export interface TaskReviewDiff extends Schema.Schema.Type<typeof TaskReviewDiff> {}
+
 export const AgentMessage = Schema.Struct({
   id: AgentMessageID,
   from: Schema.Union([AgentID, Schema.Literals(["user", "system"])]),

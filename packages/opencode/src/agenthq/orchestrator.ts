@@ -32,6 +32,8 @@ const WAITING = new Set<AgentHQ.TaskStatus>(["pending", "ready", "blocked"])
 const STARTABLE = new Set<AgentHQ.TaskStatus>(["ready", "failed", "cancelled"])
 const WORKING = "The agent is still working; review again when it finishes"
 const CHANGED = "The task changed since you reviewed it; review again"
+// A review diff longer than this is cut and says so.
+const DIFF_LIMIT = 1_000_000
 
 export const CreateTaskInput = Schema.Struct({
   title: Schema.String,
@@ -55,6 +57,14 @@ export type UpdateTaskInput = typeof UpdateTaskInput.Type
 // The branch commit the human reviewed (`TaskReview.head`); a task with a worktree merges only that commit.
 export const ApproveInput = Schema.Struct({ head: Schema.optional(Schema.String) })
 export type ApproveInput = typeof ApproveInput.Type
+
+export const ReviewDiffInput = Schema.Struct({
+  path: Schema.optional(Schema.String).annotate({ description: "One file of the review, relative to the project" }),
+  head: Schema.optional(Schema.String).annotate({
+    description: "The branch commit to diff (the review's `head`); the branch tip by default",
+  }),
+})
+export type ReviewDiffInput = typeof ReviewDiffInput.Type
 
 export const SendInput = Schema.Struct({
   from: Schema.optional(Schema.Union([AgentHQ.AgentID, Schema.Literals(["user", "system"])])),
@@ -87,6 +97,10 @@ export interface Interface {
   >
   readonly cancel: (id: AgentHQ.TaskID) => Effect.Effect<AgentHQ.Task, NotFound>
   readonly review: (id: AgentHQ.TaskID) => Effect.Effect<AgentHQ.TaskReview, NotFound>
+  readonly reviewDiff: (
+    id: AgentHQ.TaskID,
+    input: ReviewDiffInput,
+  ) => Effect.Effect<AgentHQ.TaskReviewDiff, NotFound | Conflict | Invalid>
   readonly approve: (id: AgentHQ.TaskID, head?: string) => Effect.Effect<AgentHQ.Task, NotFound | Conflict>
   readonly messages: (filter: {
     readonly taskID?: AgentHQ.TaskID
@@ -558,6 +572,40 @@ const layer = Layer.effect(
       return merged ? yield* finish(task, project) : task
     })
 
+    /** What approving `head` (the branch tip by default) would merge, as a unified diff of one file or all. */
+    const reviewDiff = Effect.fn("AgentHQOrchestrator.reviewDiff")(function* (
+      id: AgentHQ.TaskID,
+      input: ReviewDiffInput,
+    ) {
+      const task = yield* get(id)
+      if (!task.worktree) return { taskID: id, diff: "" }
+      if (input.head !== undefined && !/^[0-9a-f]{7,40}$/.test(input.head))
+        return yield* new AgentProvider.InvalidInputError({ message: "head must be a commit id" })
+      const project = Option.getOrUndefined(yield* registry.get(task.assignee).pipe(Effect.option))?.projectDirectory
+      if (!project) return yield* conflict("The assignee no longer exists")
+      const branch = yield* tip(project, task.worktree.branch)
+      if (!branch) return yield* conflict("The task's branch is gone")
+      const head = input.head ?? branch
+      // Only commits of the task's own branch: its tip or one before it.
+      if ((yield* git(project, ["merge-base", "--is-ancestor", head, branch])).code !== 0)
+        return yield* conflict(`${head} is not a commit of the task's branch`)
+      const base = (yield* git(project, ["rev-parse", "--abbrev-ref", "HEAD"])).out
+      const diff = (yield* git(project, [
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        `HEAD...${head}`,
+        ...(input.path ? ["--", input.path] : []),
+      ])).raw
+      return {
+        taskID: id,
+        head,
+        base,
+        ...(input.path ? { path: input.path } : {}),
+        ...(diff.length > DIFF_LIMIT ? { diff: diff.slice(0, DIFF_LIMIT), truncated: true } : { diff }),
+      }
+    })
+
     // Merges exactly the commit the human reviewed: never while the agent works, never after the branch moved on.
     const approve = Effect.fn("AgentHQOrchestrator.approve")(function* (id: AgentHQ.TaskID, head?: string) {
       return yield* lock.withPermit(
@@ -821,6 +869,7 @@ const layer = Layer.effect(
       start,
       cancel: withReady(cancel),
       review: withReady(review),
+      reviewDiff: withReady(reviewDiff),
       approve: withReady(approve),
       messages: withReady(messages),
       send: withReady(send),

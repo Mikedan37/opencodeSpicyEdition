@@ -437,6 +437,73 @@ describe("agenthq orchestration", () => {
     }),
   )
 
+  it.live("the merge gate diff: base...head for all files or one, of the task's own commits only", () =>
+    Effect.gen(function* () {
+      const { dir } = yield* project
+      const orchestrator = yield* AgentOrchestrator.Service
+      const editor = yield* agent(dir, "Editor")
+      const made = yield* inReview(dir, editor.id, "Two files", { "a.txt": "alpha\n" })
+      const first = made.head
+      yield* Effect.promise(() => fs.writeFile(path.join(made.worktree, "b.txt"), "beta\n"))
+      yield* git(made.worktree, "git add -A && git commit -q -m second")
+      const head = yield* git(dir, `git rev-parse ${made.branch}`)
+
+      const all = yield* orchestrator.reviewDiff(made.task.id, {})
+      expect(all).toMatchObject({
+        taskID: made.task.id,
+        head,
+        base: yield* git(dir, "git rev-parse --abbrev-ref HEAD"),
+      })
+      expect(all.diff).toContain("+++ b/a.txt")
+      expect(all.diff).toContain("+++ b/b.txt")
+      expect(all.truncated).toBeUndefined()
+      const one = yield* orchestrator.reviewDiff(made.task.id, { path: "b.txt" })
+      expect(one).toMatchObject({ path: "b.txt", head })
+      expect(one.diff).toContain("+beta")
+      expect(one.diff).not.toContain("a.txt")
+      // The reviewed head, not the tip: what that review saw.
+      const earlier = yield* orchestrator.reviewDiff(made.task.id, { head: first })
+      expect(earlier.diff).toContain("+alpha")
+      expect(earlier.diff).not.toContain("b.txt")
+
+      // Not a commit of the task's branch, or not a commit id at all.
+      yield* Effect.promise(() => fs.writeFile(path.join(dir, "main.txt"), "main\n"))
+      yield* git(dir, "git add main.txt && git commit -q -m main")
+      const elsewhere = yield* git(dir, "git rev-parse HEAD")
+      expect(yield* orchestrator.reviewDiff(made.task.id, { head: elsewhere }).pipe(Effect.flip)).toMatchObject({
+        _tag: "AgentHQ.ConflictError",
+      })
+      expect(yield* orchestrator.reviewDiff(made.task.id, { head: "--output=x" }).pipe(Effect.flip)).toMatchObject({
+        _tag: "AgentHQ.InvalidInputError",
+      })
+      // A task without a branch has nothing to merge.
+      const plain = yield* orchestrator.create({ title: "Plain", assignee: editor.id })
+      expect(yield* orchestrator.reviewDiff(plain.id, {})).toEqual({ taskID: plain.id, diff: "" })
+    }),
+  )
+
+  it.live("opencode writes nothing of its own into a task's worktree: the review lists only the agent's file", () =>
+    Effect.gen(function* () {
+      const { llm, dir } = yield* project
+      // A project config without $schema, which opencode adds to configs it loads elsewhere.
+      const config = JSON.parse(yield* read(path.join(dir, "opencode.json")))
+      delete config.$schema
+      yield* Effect.promise(() => fs.writeFile(path.join(dir, "opencode.json"), JSON.stringify(config, null, 2) + "\n"))
+      yield* git(dir, "git commit -q -am 'config without schema'")
+      const orchestrator = yield* AgentOrchestrator.Service
+      const editor = yield* agent(dir, "Editor")
+      const task = yield* orchestrator.create({ title: "Edit", assignee: editor.id, isolated: true })
+      yield* llm.push(reply().tool("write", { filePath: "shared.txt", content: "one\n" }))
+      yield* llm.push(reply().text("wrote one").stop())
+      const running = yield* orchestrator.start(task.id)
+      yield* allowNext(running.result!.sessionID!)
+      yield* waitTask(task.id, "review")
+      const review = yield* orchestrator.review(task.id)
+      expect(review.files.map((file) => file.path)).toEqual(["shared.txt"])
+      expect(JSON.parse(yield* read(path.join(running.worktree!.path, "opencode.json"))).$schema).toBeUndefined()
+    }),
+  )
+
   it.live("an approval whose client goes away mid-merge still finishes: done, merged, worktree and branch gone", () =>
     Effect.gen(function* () {
       const { dir } = yield* project

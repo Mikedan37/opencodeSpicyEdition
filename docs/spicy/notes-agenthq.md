@@ -1395,3 +1395,27 @@ temp path in the diff (AHQ-17); ACP previews "Delete everything", `npm test` in 
 AgentKit-style proposal's diff of `src/fixed.txt` (AHQ-15, AHQ-16); Claude Code previews an Edit of a real file as
 `-one +two` with context, a new file whole, and a Bash command (`claude-code.test.ts`); `preview.test.ts` checks that
 only a leading root leaves the headers and that a long diff is cut and flagged.
+
+## #4 The merge gate diff
+
+`GET /agenthq/tasks/:taskID/review/diff?path=&head=` (`AgentOrchestrator.reviewDiff`, `AgentHQ.TaskReviewDiff`)
+returns the unified diff approving would merge, `git diff HEAD...<head>` in the project, for one file (`path`) or all
+of them. `head` is the review's `head` (the default is the branch tip); it must be a commit id (400 otherwise) and a
+commit of the task's branch (409 otherwise). The result is `{ taskID, head, base, path?, diff, truncated? }`, cut at
+1,000,000 characters with `truncated: true`. A task without a branch has nothing to merge: `{ taskID, diff: "" }`.
+It reads only; unlike the review it commits nothing.
+
+`opencode.json +1 −0` in a merge: opencode's config loader (`config.ts`, `loadConfig`) adds `"$schema"` to every config
+file it loads without one, and the agent's instance loads the project's `opencode.json` in the task's worktree; the
+review then commits that as the agent's change. The loader now writes nothing into worktrees opencode made
+(`<data>/worktree/…`, where Agent HQ's task worktrees live), so the diff holds only the agent's work. The edit is in an
+upstream file, marked `// spicy:`.
+
+Tests (`orchestrator.test.ts`): the diff of all files, of one, and of an earlier reviewed head; a commit of another
+branch is 409 and a non-commit 400; a task without a branch gives an empty diff; a project whose `opencode.json` has
+no `$schema` gets a task review listing only the agent's file, and the worktree's config is untouched (without the
+loader change the review lists `opencode.json`). The httpapi exercise covers the route.
+
+Results: `bun test --timeout 120000 test/agenthq test/config` 287 pass, 8 skip, 0 fail; schema tests 15 pass;
+`bun run test:httpapi` coverage, auth and effect each 271 pass, 0 fail, 0 missing; typecheck clean in
+`packages/opencode` and `packages/app`.

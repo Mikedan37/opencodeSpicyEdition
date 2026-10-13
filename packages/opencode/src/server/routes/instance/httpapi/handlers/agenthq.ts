@@ -103,6 +103,14 @@ export const agenthqHandlers = HttpApiBuilder.group(InstanceHttpApi, "agenthq", 
       .handle("startTask", (ctx) => orchestrator.start(ctx.params.taskID).pipe(Effect.mapError(http)))
       .handle("cancelTask", (ctx) => orchestrator.cancel(ctx.params.taskID).pipe(Effect.mapError(http)))
       .handle("reviewTask", (ctx) => orchestrator.review(ctx.params.taskID).pipe(Effect.mapError(http)))
+      .handle("reviewTaskDiff", (ctx) =>
+        orchestrator
+          .reviewDiff(ctx.params.taskID, {
+            ...(ctx.query.path ? { path: ctx.query.path } : {}),
+            ...(ctx.query.head ? { head: ctx.query.head } : {}),
+          })
+          .pipe(Effect.mapError(http)),
+      )
       .handle("approveTask", (ctx) =>
         orchestrator.approve(ctx.params.taskID, ctx.payload.head).pipe(Effect.mapError(http)),
       )

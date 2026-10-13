@@ -334,7 +334,7 @@ resolved`, plus `blocked`, `needs_human`, `interrupted`, `failed`, `cancelled`. 
 - Permissions: asks go through the permission service with the default agent's rules merged with the session's (as
   `session/tools.ts` does), so `debug.launch`, `debug.attach` and `debug.evaluate` ask by default and `debug.memory`
   stays denied. Neither the route nor the bridge approves anything. The bridge creates one opencode session per
-  bridge process on its first debug call, titled "Workbench MCP: debugging"; its asks appear there in the IDE and its
+  bridge process on its first debug call, titled "Workbench MCP: debugging" ("Workbench MCP" since wave 5); its asks appear there in the IDE and its
   investigations list it. A rejected or denied ask fails the call with 403 "permission denied in the IDE: ..." and
   moves the investigation to `needs_human` (S7).
 - The model cannot pick the session or the action: the bridge sets both after the arguments, rejects unknown
@@ -453,3 +453,156 @@ OpenAPI had lost the descriptions of `configuration`, `program`, `preset`, `exce
   branches, at our HEAD, deleted after `git worktree prune`; stray `packages/opencode/config.json` removed).
 - Typecheck clean in `packages/opencode`, `packages/schema` and `packages/app`; `bun run generate` in
   `packages/client`: no diff. No lldb launch; DiagnosticReports (without intelligencetasksd) 58 before and after.
+
+## Wave 5: tool creator
+
+Agents or the user draft new tools; nothing in a draft runs until the user approves it; approved tools are ordinary
+opencode custom tools (the `{tool,tools}/*.{js,ts}` format, `tool()` from `@opencode-ai/plugin` with zod args), live
+in opencode and in every external agent through the Workbench MCP bridge.
+
+### Lifecycle and files
+
+All under the instance directory's `.opencode/`:
+
+| Status     | File                             | How it gets there                                                     |
+| ---------- | -------------------------------- | --------------------------------------------------------------------- |
+| `draft`    | `tool-drafts/<name>.ts`          | `tool_create` (agents) or `POST /workbench/tools` (the user)          |
+| `invalid`  | `tool-drafts/<name>.ts`          | a draft that fails the static checks, or failed to load when approved |
+| `enabled`  | `tool/custom_<name>.ts`          | approve (moves the draft), or enable                                  |
+| `disabled` | `tool/custom_<name>.ts.disabled` | disable (a rename; the registry only loads `.js`/`.ts`)               |
+
+- The tool is called `custom_<name>`. The registry names a default-export tool after its file, so the approved file
+  is `custom_<name>.ts` (not `<name>.ts`): no created tool can shadow a built-in, and `custom_*` is one permission.
+- The registry never scans `tool-drafts/`. A draft is read and parsed, never imported: `validate.ts` checks the name
+  (lowercase letters, digits, `_`, max 40, so no path tricks), the size (256 KB), that it transpiles
+  (`typescript.transpileModule` with diagnostics; `typescript` comes in with `@opencode-ai/codemode` and is imported
+  lazily) and that the default export is a call to `tool(` (AST, and no named `export const x = tool(...)`, which
+  would load as an unreviewed extra tool). It also reads the description and an args summary from the source.
+  `validate.ts` and `tools.ts` use only Node built-ins and npm packages: the desktop sidecar runs under Node.
+- A name is free while no enabled or disabled tool has it (a new draft replaces an old draft of the same name);
+  approve also refuses a `custom_<name>` that another config folder or a plugin already provides.
+- Who drafted it (`createdBy`), when, and why approving failed are kept in opencode's storage
+  (`workbench/tool/<projectID>/<name>`), not in the project.
+
+### Approval and the live registry
+
+`POST /workbench/tools/:name/approve { hash }`:
+
+1. `hash` must be the sha256 of the draft the user reviewed (every listed tool has it): a draft an agent changed
+   after the review is refused with 409.
+2. The draft must pass the static checks (400 otherwise).
+3. `@opencode-ai/plugin` is installed into that `.opencode` the way config does for every `.opencode` it loads (a
+   no-op when present; the folder may be new).
+4. The file is written to `tool/custom_<name>.ts` and imported once by the service: a tool that throws on import or
+   does not default-export `tool({ description, args, execute })` is removed again and the draft becomes `invalid`
+   with "it failed to load: …". So a broken tool never reaches the registry.
+5. The draft is deleted and the registry is refreshed.
+
+Refresh: `ToolRegistry.refresh()` invalidates the instance's registry `InstanceState`; the next use rebuilds it, so
+the tool is live without a restart (and gone after disable or delete). Module caching: Bun keys loaded modules by path
+and ignores query strings, Node keys them by URL; so the service evicts the file from `require.cache` (Bun) and both
+the service and the registry import created tools from `file://…?v=<mtime>` (Node). A re-created or re-enabled tool
+therefore loads its current file, and the registry gets the very module the service checked. A `custom_*` file that
+still fails to load in the registry is skipped with a warning instead of breaking every tool, and is listed as
+`invalid` ("it did not load").
+
+Enable takes `{ hash }` too (the disabled file may have changed since the review) and loads the file the same way.
+Reject deletes the draft. Delete removes the tool, disabled or not, and its draft.
+
+### Permissions
+
+- `tool_create` asks `edit` for the draft path, like the write tool (allowed by the default rules; denied in plan
+  mode). Drafting never runs anything.
+- Every call of a created tool asks `custom_<name>` (patterns `*`, metadata `{ args }`), in the registry's
+  plugin-tool wrapper, which every caller goes through (sessions, the bridge's agent route). Agent defaults gain
+  `"custom_*": "ask"` after `"*": "allow"`; the last matching rule decides, so the default allow cannot win
+  (`test/workbench/tools/permission.test.ts`). "Always" in the prompt allows that tool from then on; an explicit user
+  rule such as `"custom_hello": "allow"` wins too, and so does a user `"*": "allow"` (merged after the defaults, as for
+  every other ask).
+- Approve, reject, enable, disable, delete and the test run are routes for the IDE only: no agent tool and no MCP tool
+  reaches them, and the agent route runs nothing but `tool_create` and `custom_*` tools. (An agent with unrestricted
+  bash or edit could still write `.opencode/tool/*.ts` itself, as before this feature.)
+- The test run (`POST …/run`) is the user's own call: it does not ask.
+
+### External agents (Workbench MCP bridge)
+
+- `opencode workbench mcp` adds `tool_create` (same fields as the built-in tool) and, on every `tools/list`, each
+  enabled tool as `custom_<name>` with the JSON Schema of its zod args (from `GET /workbench/tools`). Clients that
+  cache the list see new tools when they list again.
+- Calls go to `POST /workbench/tools/agent { sessionID, tool, args }`, which runs the registry's tool as the default
+  agent of the bridge's session, so the `custom_*` asks (and `tool_create`'s edit ask) appear in the IDE; arguments
+  are checked against the tool's schema first (400).
+- The bridge has one opencode session per process for every agent tool, now titled "Workbench MCP"
+  (`src/workbench/mcp/session.ts`; it was "Workbench MCP: debugging", per debug bridge).
+- `WorkbenchBridge.create`/`serve` take `extra` as a list or as a function that lists tools on each request, and a
+  bridge tool may carry a ready `jsonSchema` (the problems branch's `bridge.ts`, marked `spicy:`).
+
+### Contract (`packages/schema/src/workbench.ts`, additive)
+
+| Export              | Identifier                  | Shape                                                                                                                                                                                                                                                                               |
+| ------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CustomToolStatus`  |                             | `"draft" \| "enabled" \| "disabled" \| "invalid"`                                                                                                                                                                                                                                   |
+| `CustomToolArg`     |                             | `{ name, type?, description?, required }`                                                                                                                                                                                                                                           |
+| `CustomToolAuthor`  |                             | `{ by: "agent" \| "user", sessionID?, agent? }`                                                                                                                                                                                                                                     |
+| `CustomTool`        | `WorkbenchCustomTool`       | `{ name, id (custom_<name>), description, args: CustomToolArg[], status, reason?, path (absolute file), source (the TypeScript), hash (sha256 hex of source), createdBy: CustomToolAuthor, createdAt, updatedAt (ms), inputSchema? (JSON Schema of the args, enabled tools only) }` |
+| `CustomToolDraft`   | `WorkbenchCustomToolDraft`  | `{ name, description, source }`                                                                                                                                                                                                                                                     |
+| `CustomToolResult`  | `WorkbenchCustomToolResult` | `{ title, output, metadata }`                                                                                                                                                                                                                                                       |
+| `Event.ToolUpdated` |                             | `workbench.tool.updated` `{ tool: CustomTool }` (the file's view; the list adds the loaded `inputSchema`)                                                                                                                                                                           |
+| `Event.ToolRemoved` |                             | `workbench.tool.removed` `{ name }`                                                                                                                                                                                                                                                 |
+
+For drafts, `description` and `args` are read from the source; once enabled they come from the loaded tool.
+
+### Routes (group `workbench-tools`, instance-scoped, same auth and errors as the debug routes)
+
+| Method | Path                             | Body                        | Returns                                                                                         |
+| ------ | -------------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------- |
+| GET    | `/workbench/tools`               |                             | `CustomTool[]` by name: drafts, enabled (with `inputSchema`) and disabled, with source          |
+| POST   | `/workbench/tools`               | `CustomToolDraft`           | `CustomTool` (the user's draft; `invalid` with `reason` when the checks fail); 409 taken        |
+| POST   | `/workbench/tools/:name/approve` | `{ hash }`                  | `CustomTool` (enabled); 404 no draft, 400 invalid or failed to load, 409 changed or taken       |
+| POST   | `/workbench/tools/:name/reject`  |                             | `true`; 404 no draft                                                                            |
+| POST   | `/workbench/tools/:name/disable` |                             | `CustomTool` (disabled); 404 not enabled                                                        |
+| POST   | `/workbench/tools/:name/enable`  | `{ hash }`                  | `CustomTool` (enabled); 404 not disabled, 409 changed, 400 failed to load                       |
+| DELETE | `/workbench/tools/:name`         |                             | `true`; 404 nothing by that name                                                                |
+| POST   | `/workbench/tools/:name/run`     | `{ args }`                  | `CustomToolResult`; 404 not enabled, 400 bad args or "the tool failed: …"                       |
+| POST   | `/workbench/tools/agent`         | `{ sessionID, tool, args }` | `CustomToolResult`; for the MCP bridge: `tool_create` or `custom_*`; 403 when an ask is refused |
+
+### Files touched (wave 5)
+
+- New: `src/workbench/tools/{validate,tools,create}.ts`, `create.txt`; `src/workbench/mcp/{session,tools}.ts`;
+  `groups/workbench-tools.ts`, `handlers/workbench-tools.ts`, `handlers/workbench-agent.ts` (the agent context and
+  defect mapping the debug and tools agent routes share; `handlers/workbench-debug.ts` uses it now).
+- Upstream, marked `spicy:`: `src/tool/registry.ts` (`tool_create` built in, `refresh()`, the `custom_*` ask in the
+  plugin-tool wrapper, the instance `.opencode` scanned, created tools imported by `WorkbenchTools.url` and skipped
+  when they fail, `WorkbenchTools.node` dep); `src/agent/agent.ts` (`"custom_*": "ask"`);
+  `server/routes/instance/httpapi/api.ts` (+2: the group), `server.ts` (+4: handlers, service);
+  `test/session/tools.test.ts` (`refresh` on its fake registry); `test/server/httpapi-exercise/index.ts` (+9
+  scenarios, one per route).
+- Problems branch, marked `spicy:`: `src/workbench/mcp/bridge.ts` (`Extra`, `jsonSchema`), `src/cli/cmd/workbench.ts`
+  (one bridge session for debug and tools, the dynamic list), `test/workbench/mcp.test.ts` (the stdio test expects
+  `tool_create` too).
+
+### Wave 5 runs
+
+- `test/workbench/tools/validate.test.ts` (4): description and args from the source; reasons for a bad name, a path,
+  a syntax error, a plain object export, a named tool export, a too-large file; no Bun APIs in `validate.ts` or
+  `tools.ts`; the checks run under Node (`node --input-type=module`, Node 22) and agree with Bun.
+- `test/workbench/tools/tools.test.ts` (3, real routes on a local port; `@opencode-ai/plugin` linked into the test
+  project's `.opencode`, so nothing is installed): an agent drafts through the agent route; the draft's marker file
+  (written at import time) is absent through listing, a broken draft (`invalid`, approve 400) and a stale-hash approve
+  (409), and present right after approval; the registry has `custom_hello`; a taken name is 409; the agent's call
+  asks `custom_hello` in its session with the args, and once allowed returns `hello Ada`; bad args 400; the test run
+  does not ask; disable removes it from the registry (run 404), enable needs the current hash; delete removes it.
+  Reject deletes a draft (then 404). The MCP bridge lists `tool_create` (and no approve/enable/reject tool), drafts
+  through it in the "Workbench MCP" session, lists the approved `custom_greet` with its schema, calls it with the ask
+  round trip (allowed → result, rejected → "permission denied in the IDE"), and drops it once disabled.
+- `test/workbench/tools/permission.test.ts` (2): with the defaults, `"*": "allow"` comes first and `custom_*` asks
+  for the build and general agents while other tools are allowed; an explicit `"custom_hello": "allow"` wins.
+- `test/workbench` + debug HTTP test: 165 pass / 2 skip (Rust and C launches, "Developer Mode off") / 0 fail.
+- `test/tool test/server test/session test/agent test/permission` + `permission-task` + `event-manifest`: 1261 pass /
+  11 skip / 1 todo / 0 fail.
+- `bun run test:httpapi`: 269 pass in all three modes (its `opencode/neon-meadow` and `opencode/quiet-pixel` branches,
+  at our HEAD, deleted after `git worktree prune`; stray `packages/opencode/config.json` removed).
+- Typecheck clean in `packages/opencode` and `packages/schema`. `packages/app` reports only `Cannot find module
+'@codemirror/state'` (two lines in the merged editor code): this worktree's `node_modules` predates the CodeMirror
+  dependencies (needs `bun install --frozen-lockfile`); no app file changed here. `bun run generate` in
+  `packages/client`: no diff. DiagnosticReports (without intelligencetasksd) 60 before and after.

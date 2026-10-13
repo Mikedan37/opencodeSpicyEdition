@@ -121,6 +121,8 @@ describe("desktop native locale detection", () => {
     expect(detectDesktopNativeLocale(["zh-TW"])).toBe("zht")
     expect(detectDesktopNativeLocale(["zh-SG"])).toBe("zh")
     expect(detectDesktopNativeLocale(["pa-PK"])).toBe("pa")
+    // spicy: what Apple's ICU makes of pa-PK, on every runtime
+    expect(detectDesktopNativeLocale(["pa-Aran-PK"])).toBe("pa")
     expect(detectDesktopNativeLocale(["pa-IN", "fr"])).toBe("fr")
     expect(detectDesktopNativeLocale(["az-Cyrl", "de"])).toBe("de")
     expect(detectDesktopNativeLocale(["sr-Cyrl"])).toBe("sr")

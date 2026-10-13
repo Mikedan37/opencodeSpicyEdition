@@ -202,7 +202,7 @@ export function detectDesktopNativeLocale(languages: readonly string[]): Desktop
     if (["no", "nb", "nn"].includes(source.language)) return "no"
     const match = DESKTOP_NATIVE_LOCALES.find((candidate) => {
       const target = locale(DESKTOP_NATIVE_LOCALE_TAGS[candidate])
-      return target?.language === source.language && target.script === source.script
+      return target?.language === source.language && script(target) === script(source)
     })
     if (match) return match
   }
@@ -219,6 +219,12 @@ function locale(value: string) {
   } catch {
     return undefined
   }
+}
+
+// spicy: Apple's ICU (Safari, bun on macOS) maximizes pa-PK to "Aran", the Nastaliq style of the Arabic script, where
+// other runtimes say "Arab"; the bundle tags name "Arab".
+function script(value: Intl.Locale) {
+  return value.script === "Aran" ? "Arab" : value.script
 }
 
 export const DESKTOP_NATIVE_ENGLISH = {

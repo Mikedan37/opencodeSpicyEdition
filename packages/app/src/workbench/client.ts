@@ -119,6 +119,9 @@ const decoders = {
   investigation: Schema.decodeUnknownOption(Workbench.InvestigationDetail),
   investigationSummary: Schema.decodeUnknownOption(Workbench.InvestigationSummary),
   fileText: Schema.decodeUnknownOption(FileText),
+  tools: Schema.decodeUnknownOption(Schema.Array(Workbench.CustomTool)),
+  tool: Schema.decodeUnknownOption(Workbench.CustomTool),
+  toolResult: Schema.decodeUnknownOption(Workbench.CustomToolResult),
   fileWritten: Schema.decodeUnknownOption(FileWritten),
 }
 
@@ -173,6 +176,7 @@ export function createWorkbenchClient(input: {
   const agent = (id: string) => `/agenthq/agents/${encodeURIComponent(id)}`
   const session = (id: string) => `/agenthq/sessions/${encodeURIComponent(id)}`
   const changeset = (id: string) => `/review/changesets/${encodeURIComponent(id)}`
+  const tool = (name: string) => `/workbench/tools/${encodeURIComponent(name)}`
 
   return {
     providers: () => decoded(decoders.providers, "GET", "/agenthq/providers"),
@@ -194,6 +198,17 @@ export function createWorkbenchClient(input: {
     readFile: (path: string) => decoded(decoders.fileText, "GET", `/workbench/file?path=${encodeURIComponent(path)}`),
     writeFile: (body: { path: string; content: string; baseHash: string | null }) =>
       decoded(decoders.fileWritten, "PUT", "/workbench/file", body),
+    // Tool creator (groups/workbench-tools.ts). Approve and enable send the hash of the reviewed source: 409 when the
+    // file changed since. The test run is the user's own call and does not ask.
+    tools: () => decoded(decoders.tools, "GET", "/workbench/tools"),
+    createTool: (draft: Workbench.CustomToolDraft) => decoded(decoders.tool, "POST", "/workbench/tools", draft),
+    approveTool: (name: string, hash: string) => decoded(decoders.tool, "POST", `${tool(name)}/approve`, { hash }),
+    enableTool: (name: string, hash: string) => decoded(decoders.tool, "POST", `${tool(name)}/enable`, { hash }),
+    disableTool: (name: string) => decoded(decoders.tool, "POST", `${tool(name)}/disable`),
+    rejectTool: (name: string) => call("POST", `${tool(name)}/reject`),
+    removeTool: (name: string) => call("DELETE", tool(name)),
+    runTool: (name: string, args: Record<string, unknown>) =>
+      decoded(decoders.toolResult, "POST", `${tool(name)}/run`, { args }),
     runs: () => decoded(decoders.runs, "GET", "/workbench/runs"),
     run: (id: string) => decoded(decoders.run, "GET", `/workbench/runs/${encodeURIComponent(id)}`),
     check: (body: CheckInput = {}) => decoded(decoders.report, "POST", "/workbench/check", body),

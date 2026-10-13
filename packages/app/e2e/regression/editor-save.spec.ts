@@ -1,17 +1,14 @@
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { expect, test } from "@playwright/test"
-import { execFileSync, spawn } from "node:child_process"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { createProject, startServer } from "../utils/opencode-server"
 
 // The IDE editor against a real opencode server (isolated XDG dirs): open a file, edit, save with the keyboard and
 // compare the bytes on disk; a save over a file changed on disk is refused (409) until Reload or a confirmed
 // Overwrite; closing a tab with unsaved edits asks first. Run with PLAYWRIGHT_SERVER_PORT set to a free port: the
 // spec starts its server there, so the app's default server is this one too.
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..")
-const port = Number(process.env.PLAYWRIGHT_SERVER_PORT ?? 4096)
 
 // A trailing newline and a blank first line: the editor saves the file's exact text, not the viewer's trimmed one.
 const ORIGINAL = "\nimport sys\n\n\ndef main():\n    return 1\n"
@@ -27,7 +24,7 @@ test("editor: edit, save, conflicts on a file changed on disk, and closing with 
   const file = path.join(project, "app.py")
   await createProject(project)
   await fs.writeFile(file, ORIGINAL)
-  const server = await startServer(root, port)
+  const server = await startServer(root)
   const shot = (name: string) => page.screenshot({ path: info.outputPath(`${name}.png`) })
   const disk = () => fs.readFile(file, "utf8")
   try {
@@ -136,76 +133,3 @@ test("editor: edit, save, conflicts on a file changed on disk, and closing with 
     await fs.rm(root, { recursive: true, force: true })
   }
 })
-
-async function createProject(directory: string) {
-  await fs.mkdir(directory, { recursive: true })
-  const git = (...args: string[]) => execFileSync("git", args, { cwd: directory, stdio: "ignore" })
-  git("init", "-q")
-  git("config", "user.email", "editor-e2e@opencode.test")
-  git("config", "user.name", "Editor E2E")
-  git("config", "commit.gpgsign", "false")
-  await fs.writeFile(
-    path.join(directory, "opencode.json"),
-    JSON.stringify({ formatter: false, lsp: false, share: "disabled" }),
-  )
-  git("add", "opencode.json")
-  git("commit", "-q", "-m", "init")
-}
-
-// A real `opencode serve` from this checkout, with its own data, config, state and cache dirs. The real-server specs
-// (review-agent-changes, editor-save) share the app's default server port, so a busy port is waited for.
-async function startServer(root: string, port: number) {
-  for (let attempt = 0; ; attempt++) {
-    const started = await spawnServer(root, port).catch((error: unknown) => error as Error)
-    if (!(started instanceof Error)) return started
-    if (attempt >= 90 || !/EADDRINUSE|in use|ServeError/i.test(started.message)) throw started
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-  }
-}
-
-async function spawnServer(root: string, port: number) {
-  const env: Record<string, string | undefined> = {
-    ...process.env,
-    XDG_DATA_HOME: path.join(root, "data"),
-    XDG_CONFIG_HOME: path.join(root, "config"),
-    XDG_STATE_HOME: path.join(root, "state"),
-    XDG_CACHE_HOME: path.join(root, "cache"),
-    OPENCODE_DISABLE_MODELS_FETCH: "1",
-    OPENCODE_DISABLE_SHARE: "true",
-    OPENCODE_MODELS_PATH: path.join(repo, "packages/opencode/test/tool/fixtures/models-api.json"),
-    OPENCODE_SERVER_PASSWORD: undefined,
-  }
-  const child = spawn("bun", ["run", "./src/index.ts", "serve", "--port", String(port), "--hostname", "127.0.0.1"], {
-    cwd: path.join(repo, "packages/opencode"),
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  })
-  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()))
-  let output = ""
-  const url = await new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`opencode server did not start:\n${output}`)), 90_000)
-    const onData = (data: Buffer) => {
-      output += data.toString()
-      const match = output.match(/listening on (http:\/\/\S+)/)
-      if (!match) return
-      clearTimeout(timer)
-      resolve(match[1])
-    }
-    child.stdout.on("data", onData)
-    child.stderr.on("data", onData)
-    void exited.then(() => {
-      clearTimeout(timer)
-      reject(new Error(`opencode server exited:\n${output}`))
-    })
-  })
-  return {
-    url,
-    stop: async () => {
-      if (child.exitCode !== null) return
-      child.kill("SIGTERM")
-      const timer = setTimeout(() => child.kill("SIGKILL"), 10_000)
-      await exited
-      clearTimeout(timer)
-    },
-  }
-}

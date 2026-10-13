@@ -17,6 +17,8 @@ import { showToast } from "@/utils/toast"
 import { VirtualList } from "@/workbench/virtual-list"
 import { errorText } from "@/workbench/client"
 import { PanelState, RequestErrorState, TONE_CLASS } from "@/workbench/ui"
+import { useWorkbench } from "@/workbench/panel"
+import { draftedTool } from "@/workbench/tools"
 import { AgentAvatar } from "./avatar"
 import { AgentDialog, createAgentDraft } from "./agent-dialog"
 import { useAgentHQ } from "./context"
@@ -510,6 +512,8 @@ function MessageRow(props: { message: MessageItem; sessionID: string; agentName:
 
 function ToolRow(props: { tool: ToolItem }) {
   const language = useLanguage()
+  const workbench = useWorkbench()
+  const drafted = () => draftedTool(props.tool)
   const summary = () => (
     <>
       <Switch fallback={<LoaderV2 width={12} height={12} class="shrink-0" />}>
@@ -544,6 +548,29 @@ function ToolRow(props: { tool: ToolItem }) {
             {props.tool.output}
           </pre>
         </details>
+      </Show>
+      {/* A drafted tool waits for the user's review in the Tools tab. */}
+      <Show when={drafted()}>
+        {(name) => (
+          <div
+            data-slot="tool-drafted"
+            class="flex min-w-0 items-center gap-1 border-t border-v2-border-border-muted px-2 py-1 text-[12px] text-v2-text-text-base"
+          >
+            <span class="min-w-0 truncate">{language.t("agenthq.tool.drafted", { name: name() })}</span>
+            <span class="shrink-0 text-v2-text-text-faint">{" — "}</span>
+            <button
+              type="button"
+              data-action="review-tool"
+              class="shrink-0 text-v2-text-text-accent hover:underline"
+              onClick={() => {
+                workbench.tools.select(name())
+                workbench.open("tools")
+              }}
+            >
+              {language.t("agenthq.tool.review")}
+            </button>
+          </div>
+        )}
       </Show>
     </div>
   )

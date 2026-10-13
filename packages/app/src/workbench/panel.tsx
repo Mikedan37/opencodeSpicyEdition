@@ -38,6 +38,7 @@ import { EditorProvider } from "./editor-context"
 import { createProblemsState, type ProblemFilter } from "./problems"
 import { createInvestigationsState } from "./investigations"
 import { createRunsState, isFinished } from "./runs"
+import { createToolsState } from "./tools"
 import { PanelState, TONE_CLASS } from "./ui"
 
 const AgentsPanel = lazy(() => import("@/agenthq/agents-panel"))
@@ -46,14 +47,17 @@ const OutputPanel = lazy(() => import("./output-panel"))
 const DebugConsolePanel = lazy(() => import("./debug-console"))
 const DebugRunPanel = lazy(() => import("./debug-run"))
 const ActivityPanel = lazy(() => import("./activity-panel"))
+const ToolsPanel = lazy(() => import("./tools-panel"))
 
 const runEvents = {
   updated: Schema.decodeUnknownOption(Workbench.Event.RunUpdated.data),
   output: Schema.decodeUnknownOption(Workbench.Event.RunOutput.data),
   investigation: Schema.decodeUnknownOption(Workbench.Event.InvestigationUpdated.data),
+  tool: Schema.decodeUnknownOption(Workbench.Event.ToolUpdated.data),
+  toolRemoved: Schema.decodeUnknownOption(Workbench.Event.ToolRemoved.data),
 }
 
-export const WORKBENCH_TABS = ["agents", "problems", "output", "debug", "run", "activity"] as const
+export const WORKBENCH_TABS = ["agents", "problems", "output", "debug", "run", "activity", "tools"] as const
 export type WorkbenchTab = (typeof WORKBENCH_TABS)[number]
 // Tab values share the terminal tab bar with PTY ids, so they carry a prefix no PTY id has.
 const PREFIX = "workbench:"
@@ -86,6 +90,9 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
     const runs = createRunsState(client)
     const investigations = createInvestigationsState(client)
     void investigations.load()
+    const tools = createToolsState(client)
+    onCleanup(tools.dispose)
+    void tools.load()
     const stop = sdk().event.listen((event) => {
       const details = event.details as { type?: string; properties?: unknown }
       if (details.type === "workbench.problems.updated") return problems.invalidate()
@@ -97,6 +104,10 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
         return Option.map(runEvents.investigation(details.properties), (data) =>
           investigations.update(data.investigation),
         )
+      if (details.type === "workbench.tool.updated")
+        return Option.map(runEvents.tool(details.properties), (data) => tools.update(data.tool))
+      if (details.type === "workbench.tool.removed")
+        return Option.map(runEvents.toolRemoved(details.properties), (data) => tools.remove(data.name))
     })
     onCleanup(stop)
     const [problemFilter, setProblemFilter] = createStore({
@@ -184,6 +195,7 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       problems,
       runs,
       investigations,
+      tools,
       problemFilter: { state: problemFilter, set: setProblemFilter },
     }
   },
@@ -220,6 +232,10 @@ export function WorkbenchTabTriggers() {
     if (tab === "output") return running() ? { count: running(), tone: TONE_CLASS.info } : undefined
     if (tab === "activity") {
       const waiting = workbench.investigations.waiting()
+      return waiting ? { count: waiting, tone: TONE_CLASS.warning } : undefined
+    }
+    if (tab === "tools") {
+      const waiting = workbench.tools.waiting()
       return waiting ? { count: waiting, tone: TONE_CLASS.warning } : undefined
     }
     if (tab !== "problems") return
@@ -283,6 +299,9 @@ export function WorkbenchTabContent(props: { tab: WorkbenchTab }) {
           </Match>
           <Match when={props.tab === "activity"}>
             <ActivityPanel />
+          </Match>
+          <Match when={props.tab === "tools"}>
+            <ToolsPanel />
           </Match>
         </Switch>
       </Suspense>

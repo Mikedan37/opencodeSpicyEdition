@@ -2,7 +2,7 @@
 // `codex login status`) with a short timeout. Never reads credentials or the environment: `auth` is "ok" or
 // "required" only where the CLI itself answers, and "unknown" otherwise.
 import { AppProcess } from "@opencode-ai/core/process"
-import { existsSync } from "fs"
+import { existsSync, statSync } from "fs"
 import os from "os"
 import path from "path"
 import { which } from "@opencode-ai/core/util/which"
@@ -167,12 +167,16 @@ export const codex = Effect.fn("AgentHQ.detect.codex")(function* (env?: Env) {
 // AgentKit through its bridge's ACP mode (`agentkit-bridge acp`, shipped inside OpenCode Native). An identity's
 // `launch` replaces the bridge (its args, or `acp` when it has none); otherwise the bridge is found as below.
 export const AGENTKIT_BRIDGE = "agentkit-bridge"
+// OpenCode Native's bundle id (its Info.plist), for LaunchServices' index of every copy on this Mac.
+export const AGENTKIT_BUNDLE_ID = "local.opencode.spicy.native"
 
 export interface AgentKitEnv extends Env {
   /** Explicit bridge binary; when set, nothing else is searched. */
   readonly OPENCODE_AGENTKIT_BRIDGE?: string
   /** Folders holding `OpenCode Native.app` (default /Applications and ~/Applications). */
   readonly applications?: readonly string[]
+  /** OpenCode Native apps wherever they are (default: LaunchServices through mdfind, macOS only). */
+  readonly finder?: Effect.Effect<readonly string[], unknown>
 }
 
 /** The bridge binary: OPENCODE_AGENTKIT_BRIDGE, else PATH, else OpenCode Native's app bundle. */
@@ -191,7 +195,7 @@ export function agentkitBridge(
 const agentkitCapabilities: AgentHQ.ProviderCapabilities = {
   ...AcpProvider.capabilities,
   notes: [
-    "Runs `agentkit-bridge acp` (OPENCODE_AGENTKIT_BRIDGE, PATH, or OpenCode Native.app), or the identity's launch command",
+    "Runs `agentkit-bridge acp` (OPENCODE_AGENTKIT_BRIDGE, PATH, OpenCode Native.app in Applications, or the newest copy LaunchServices knows), or the identity's launch command",
     "Every change is proposed first and applied only when you allow it",
     ...(AcpProvider.capabilities.notes ?? []),
   ],
@@ -201,7 +205,6 @@ const agentkitCapabilities: AgentHQ.ProviderCapabilities = {
 export const agentkit = Effect.fn("AgentHQ.detect.agentkit")(function* (env?: AgentKitEnv) {
   const proc = yield* AppProcess.Service
   const base = { id: "agentkit", name: "AgentKit", auth: "unknown", capabilities: agentkitCapabilities } as const
-  const find = () => agentkitBridge(env)
   const probe = (bin: string, args: string[]) =>
     proc
       .run(ChildProcess.make(bin, args, { stdin: "ignore", env: AgentProvider.agentEnv() }), { timeout: "3 seconds" })
@@ -212,15 +215,56 @@ export const agentkit = Effect.fn("AgentHQ.detect.agentkit")(function* (env?: Ag
         })),
         Effect.orElseSucceed(() => ({ code: -1, text: "" })),
       )
+  // agentkit-bridge 0.1.0 prints its usage, "app-server | mcp | acp [--local-only] | ...", for --help (exit 64).
+  const hasAcp = (bin: string) => probe(bin, ["--help"]).pipe(Effect.map((usage) => /\bacp\b/.test(usage.text)))
+
+  // Read-only and quiet: Spotlight's index, no network, no UI. Any failure finds nothing.
+  const spotlight =
+    process.platform === "darwin"
+      ? proc
+          .run(
+            ChildProcess.make("mdfind", [`kMDItemCFBundleIdentifier == '${AGENTKIT_BUNDLE_ID}'`], {
+              stdin: "ignore",
+              env: AgentProvider.agentEnv(),
+            }),
+            { timeout: "3 seconds" },
+          )
+          .pipe(
+            Effect.map((result) =>
+              result.exitCode === 0 ? result.stdout.toString("utf8").split("\n").filter(Boolean) : [],
+            ),
+          )
+      : Effect.succeed([])
+  // The newest bridge with an ACP mode among every copy of OpenCode Native, chosen again on each provider list.
+  // ponytail: one choice per process; per-identity overrides cover anything finer.
+  let discovered: string | undefined
+  const discover = Effect.gen(function* () {
+    const apps = yield* (env?.finder ?? spotlight).pipe(
+      Effect.catchCause(() => Effect.succeed([] as readonly string[])),
+    )
+    const bridges = apps
+      .map((app) => path.join(app, "Contents", "MacOS", AGENTKIT_BRIDGE))
+      .filter((bin) => existsSync(bin))
+    const usable = yield* Effect.filter(bridges, hasAcp, { concurrency: 4 })
+    discovered = usable.map((bin) => ({ bin, at: statSync(bin).mtimeMs })).toSorted((a, b) => b.at - a.at)[0]?.bin
+    return discovered
+  })
+  const explicit = () => (env ? env.OPENCODE_AGENTKIT_BRIDGE : process.env.OPENCODE_AGENTKIT_BRIDGE)
+  // The env var (alone when set), PATH, Applications, then LaunchServices.
+  const locate = (refresh: boolean) =>
+    Effect.gen(function* () {
+      const local = agentkitBridge(env)
+      if (local || explicit()) return local
+      return refresh || !discovered ? yield* discover : discovered
+    })
+
   const detected: Effect.Effect<AgentHQ.ProviderStatus> = Effect.gen(function* () {
-    const bin = find()
+    const bin = yield* locate(true)
     if (!bin) return { ...base, available: false, reason: "AgentKit bridge not found" }
-    // agentkit-bridge 0.1.0 prints its usage, "app-server | mcp | acp [--local-only] | ...", for --help (exit 64).
-    const usage = yield* probe(bin, ["--help"])
-    if (!/\bacp\b/.test(usage.text))
-      return { ...base, available: false, reason: "this AgentKit bridge has no ACP mode yet" }
+    if (!(yield* hasAcp(bin))) return { ...base, available: false, reason: "this AgentKit bridge has no ACP mode yet" }
     const version = (yield* probe(bin, ["--version"])).text.match(/\d+\.\d+[\w.+-]*/)?.[0]
-    return { ...base, available: true, ...(version ? { version } : {}) }
+    const capabilities = { ...agentkitCapabilities, notes: [`Bridge: ${bin}`, ...(agentkitCapabilities.notes ?? [])] }
+    return { ...base, capabilities, available: true, ...(version ? { version } : {}) }
   }).pipe(Effect.provideService(AppProcess.Service, proc))
   return yield* AcpProvider.make({
     id: "agentkit",
@@ -229,14 +273,12 @@ export const agentkit = Effect.fn("AgentHQ.detect.agentkit")(function* (env?: Ag
       Effect.gen(function* () {
         if (agent.launch?.command)
           return { command: agent.launch.command, args: agent.launch.args.length ? [...agent.launch.args] : ["acp"] }
-        const current = yield* detected
-        const bin = find()
-        if (!current.available || !bin)
-          return yield* new AgentProvider.UnsupportedError({
-            provider: "agentkit",
-            action: "createSession",
-            message: current.reason ?? "AgentKit bridge not found",
-          })
+        // The choice the last provider list made, unless there is none yet.
+        const bin = yield* locate(false)
+        const refuse = (message: string) =>
+          new AgentProvider.UnsupportedError({ provider: "agentkit", action: "createSession", message })
+        if (!bin) return yield* refuse("AgentKit bridge not found")
+        if (!(yield* hasAcp(bin))) return yield* refuse("this AgentKit bridge has no ACP mode yet")
         return { command: bin, args: ["acp"] }
       }),
   })

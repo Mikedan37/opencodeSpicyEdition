@@ -155,7 +155,10 @@ test("git panel: undecided agent changes warn before the commit; Generate uses t
   const api = (route: string, init?: RequestInit) =>
     fetch(`${server.url}${route}?directory=${encodeURIComponent(project)}`, init)
   try {
-    const session = (await (await api("/session", json({}))).json()) as { id: string }
+    // The main chat asks before edits; this spec is about committing the agent's write, so its session allows edits.
+    const session = (await (
+      await api("/session", json({ permission: [{ permission: "edit", pattern: "*", action: "allow" }] }))
+    ).json()) as { id: string }
     const prompt = await api(
       `/session/${session.id}/message`,
       json({

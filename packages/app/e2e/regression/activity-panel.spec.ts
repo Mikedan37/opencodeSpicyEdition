@@ -13,13 +13,15 @@ const server = `http://${process.env.PLAYWRIGHT_SERVER_HOST ?? "127.0.0.1"}:${pr
 
 test.use({ viewport: { width: 1440, height: 900 } })
 
-test("activity: investigation timeline and evidence link to Output, Debug and Agent HQ; resume, cancel, ownership", async ({
+test("activity: investigation timeline and evidence link to Checks, Debug and Agent HQ; resume, cancel, ownership", async ({
   page,
 }) => {
   const mock = await setup(page)
   await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
   await expectSessionTitle(page, title)
   await page.keyboard.press("Control+Backquote")
+  // Activity is a view of the Agents tab (UX #7)
+  await page.locator('[data-workbench-tab="agents"]').click()
   await expect(page.locator('[data-workbench-tab="activity"]')).toHaveText("Activity1")
   await page.locator('[data-workbench-tab="activity"]').click()
   const activity = page.locator('[data-component="workbench-activity"]')
@@ -31,7 +33,7 @@ test("activity: investigation timeline and evidence link to Output, Debug and Ag
   const reason = detail.locator('[data-slot="investigation-reason"]')
   await expect(reason.locator("[data-rule]")).toHaveText("No progress")
   await expect(reason).toContainText("The same error came back after 2 patches")
-  await expect(reason.locator('[data-link="run"]')).toHaveText("Output: pytest test")
+  await expect(reason.locator('[data-link="run"]')).toHaveText("Checks: pytest test")
   await expect(reason.locator('[data-link="evidence"]')).toHaveText("Show evidence")
   await expect(reason).not.toContainText("S2")
   await expect(detail.locator('[data-slot="investigation-timeline"] [data-checkpoint]')).toHaveCount(4)
@@ -53,15 +55,16 @@ test("activity: investigation timeline and evidence link to Output, Debug and Ag
   await expect(detail).toContainText("1 of 2 repair attempts, 12 of 200 debug steps")
   await expect(detail.locator("strong")).toHaveText("observed")
 
-  // A verification run opens in Output, expanded
+  // A verification run opens in Checks, expanded
   await evidence.nth(0).locator('[data-link="run"]').click()
   await expect(page.locator('[data-workbench-tab="output"]')).toHaveAttribute("aria-selected", "true")
   await expect(page.locator('section[data-run="run_1"] [role="region"]')).toBeVisible()
   await expect(page.locator('section[data-run="run_1"]')).toContainText("AssertionError")
 
   // A debug session opens in the side panel's Debug tab; its owner can release it ("Controlled by" menu) or let the
-  // agent drive (Ask an agent menu)
-  await page.locator('[data-workbench-tab="activity"]').click()
+  // agent drive (Ask an agent menu). The Agents tab comes back on Activity.
+  await page.locator('[data-workbench-tab="agents"]').click()
+  await expect(page.locator('[data-workbench-tab="activity"]')).toHaveAttribute("aria-selected", "true")
   await evidence.nth(1).locator('[data-link="debug"]').click()
   const debug = page.locator('#review-panel [data-component="workbench-debug"]')
   await expect(debug).toBeVisible()

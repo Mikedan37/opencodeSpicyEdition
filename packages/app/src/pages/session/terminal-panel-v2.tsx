@@ -319,7 +319,7 @@ export function TerminalPanelV2(props: { stacked?: boolean } = {}) {
                       </TooltipV2>
                     </Show>
                   </div>
-                  {/* spicy: Agents, Problems, Output, Debug Console, Run */}
+                  {/* spicy: Problems, Checks, Debug, Agents (a "»" menu holds what does not fit) */}
                   <WorkbenchTabTriggers />
                 </Tabs.List>
               </Tabs>

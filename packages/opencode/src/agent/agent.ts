@@ -192,12 +192,13 @@ const layer = Layer.effect(
             description: "Plan mode. Disallows all edit tools.",
             options: {},
             permission: Permission.merge(
-              defaults,
+              askFirst, // spicy: plan mode asks first too (MCP tools, other subagents); reads stay allowed
               Permission.fromConfig({
                 question: "allow",
                 plan_exit: "allow",
                 bash: "ask", // spicy: plan mode asks before shell commands too; reads stay allowed
                 task: {
+                  explore: "allow", // spicy: read-only, and its commands ask
                   general: "deny",
                 },
                 external_directory: {

@@ -91,6 +91,20 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Pty") {}
 
+/**
+ * spicy: an environment for shells opencode starts, as its own terminal rather than the Terminal.app window opencode
+ * was started from. With TERM_PROGRAM=Apple_Terminal and that window's TERM_SESSION_ID, macOS's /etc/zshrc and
+ * /etc/bashrc save "session restore" history into ~/.zsh_sessions/<id>.* and ~/.bash_sessions/<id>.*, overwriting
+ * the window's own files. So: no TERM_SESSION_ID (nor Terminal's version), TERM_PROGRAM=opencode (as VS Code sets
+ * vscode), and SHELL_SESSIONS_DISABLE=1.
+ */
+export function ownTerminal(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  const result: Record<string, string | undefined> = { ...env, TERM_PROGRAM: "opencode", SHELL_SESSIONS_DISABLE: "1" }
+  delete result.TERM_SESSION_ID
+  delete result.TERM_PROGRAM_VERSION
+  return result
+}
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -172,12 +186,12 @@ const layer = Layer.effect(
       const command = input.command || Shell.preferred(Config.latest(yield* config.entries(), "shell"))
       const args = Shell.login(command) ? [...(input.args ?? []), "-l"] : [...(input.args ?? [])]
       const cwd = input.cwd || location.directory
-      const env = {
+      const env = ownTerminal({
         ...process.env,
         ...input.env,
         TERM: "xterm-256color",
         OPENCODE_TERMINAL: "1",
-      } as Record<string, string>
+      }) as Record<string, string> // spicy: see ownTerminal
       for (const key of options?.omit ?? []) delete env[key] // spicy: see Interface.create
       if (process.platform === "win32") {
         env.LC_ALL = "C.UTF-8"

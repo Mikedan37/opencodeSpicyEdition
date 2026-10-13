@@ -110,20 +110,25 @@ test("the palette has every IDE tab and the IDE's actions", async ({ page }) => 
   mock.checkSummary = { passed: 2, failed: 1, skipped: 0, unavailable: 0, timedOut: 0 }
   await open()
   const panel = page.locator('[data-component="workbench-panel"]')
-  for (const [command, tab] of [
-    ["Show output", "output"],
-    ["Show debug console", "debug"],
-    ["Show run (program terminal)", "run"],
-    ["Show activity", "activity"],
-    ["Show tools", "tools"],
-    ["Show agents", "agents"],
-    ["Show problems", "problems"],
+  // UX #7: each lands on its place: the surface, the view, and the old tab id as the panel's data-tab
+  for (const [command, surface, tab, view] of [
+    ["Show checks", "checks", "output", undefined],
+    // No program runs in a terminal, so Debug shows no Console | Program switch
+    ["Show debug console", "debug", "debug", undefined],
+    ["Show program terminal", "debug", "run", '[data-debug-view="program"]'],
+    ["Show activity", "agents", "activity", '[data-agenthq-view="activity"]'],
+    ["Show tools", "agents", "tools", '[data-agenthq-view="tools"]'],
+    ["Show tasks", "agents", "agents", '[data-agenthq-view="tasks"]'],
+    ["Show agents", "agents", "agents", '[data-agenthq-view="agents"]'],
+    ["Show problems", "problems", "problems", undefined],
   ] as const) {
     await palette(page, command)
+    await expect(panel).toHaveAttribute("data-surface", surface)
     await expect(panel).toHaveAttribute("data-tab", tab)
+    if (view) await expect(page.locator(view)).toHaveAttribute("aria-selected", "true")
   }
 
-  // Run checks starts them for the whole project and shows Output.
+  // Run checks starts them for the whole project and shows Checks.
   await palette(page, "Run checks")
   await expect.poll(() => mock.checks).toEqual([{ unit: directory }])
   await expect(panel).toHaveAttribute("data-tab", "output")
@@ -132,7 +137,7 @@ test("the palette has every IDE tab and the IDE's actions", async ({ page }) => 
   await expect(panel.locator('section[data-run="run_1"]')).toContainText(directory.split("/").pop()!)
   await expect(panel.locator('section[data-run="run_1"]')).not.toContainText(directory)
 
-  // New tool opens the Tools tab on the form; New agent opens the agent dialog.
+  // New tool opens Agents › Tools on the form; New agent opens the agent dialog.
   await palette(page, "New tool")
   await expect(page.locator('[data-component="workbench-tool-new"]')).toBeVisible()
   await palette(page, "New agent")

@@ -272,6 +272,8 @@ test("run tab: the program's terminal stays after exit with its code; an interna
   await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
   await expectSessionTitle(page, title)
   await page.keyboard.press("Control+Backquote")
+  // Program is the Debug tab's view of a program's terminal (UX #7)
+  await page.locator('[data-workbench-tab="debug"]').click()
   await page.locator('[data-workbench-tab="run"]').click()
   const run = page.locator('[data-component="workbench-run"]')
   const terminal = run.locator(`[data-run-pty="${program}"] [data-component="terminal"]`)
@@ -286,19 +288,20 @@ test("run tab: the program's terminal stays after exit with its code; an interna
   await expect(run.locator('[data-slot="run-status"]')).toHaveText("Exited with code 3")
   await expect(terminal).toBeVisible()
 
-  // Leaving the tab and coming back mounts the terminal again from its saved state
-  await page.locator('[data-workbench-tab="debug"]').click()
+  // Leaving the view and coming back mounts the terminal again from its saved state
+  await page.locator('[data-debug-view="console"]').click()
   await expect(terminal).toHaveCount(0)
   await page.locator('[data-workbench-tab="run"]').click()
   await expect(terminal).toBeVisible()
   await expect.poll(() => sockets.length).toBe(2)
   await expect(run.locator('[data-slot="run-status"]')).toHaveText("Exited with code 3")
 
-  // debugpy's default internal console has no terminal: the tab points to the Debug Console
+  // debugpy's default internal console has no terminal: Program points to the console
   mock.emit(updated({ id: "dbg_two", startedAt: 1_700_000_000_500 }))
-  await expect(run).toContainText("This program writes to the Debug Console")
-  await run.getByRole("button", { name: "Show Debug Console" }).click()
+  await expect(run).toContainText("This program writes to the console")
+  await run.getByRole("button", { name: "Show console" }).click()
   await expect(page.locator('[data-workbench-tab="debug"]')).toHaveAttribute("aria-selected", "true")
+  await expect(page.locator('[data-debug-view="console"]')).toHaveAttribute("aria-selected", "true")
 })
 
 test("run tab after the program ended: replays the debugger's copy of its output, or says it is gone", async ({
@@ -335,14 +338,16 @@ test("run tab after the program ended: replays the debugger's copy of its output
   await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
   await expectSessionTitle(page, title)
   await page.keyboard.press("Control+Backquote")
+  // Program is the Debug tab's view of a program's terminal (UX #7)
+  await page.locator('[data-workbench-tab="debug"]').click()
   await page.locator('[data-workbench-tab="run"]').click()
   const run = page.locator('[data-component="workbench-run"]')
   const terminal = run.locator(`[data-run-pty="${program}"] [data-component="terminal"]`)
   await expect(terminal).toBeVisible()
   await expect.poll(() => state.sockets).toBe(1)
 
-  // The program writes more and ends while another tab is in front
-  await page.locator('[data-workbench-tab="debug"]').click()
+  // The program writes more and ends while the console is in front
+  await page.locator('[data-debug-view="console"]').click()
   await expect(terminal).toHaveCount(0)
   state.exited = true
   mock.emit(
@@ -365,8 +370,8 @@ test("run tab after the program ended: replays the debugger's copy of its output
   mock.backlog = null
   await page.reload()
   await expectSessionTitle(page, title)
-  // The bottom panel and its tab are restored
-  await page.locator('[data-workbench-tab="run"]').click()
+  // The bottom panel, its tab and the view are restored
+  await expect(page.locator('[data-workbench-tab="run"]')).toHaveAttribute("aria-selected", "true")
   await expect(replay).toContainText("Output is no longer available")
   await expect(terminal).toHaveCount(0)
   expect(state.sockets).toBeGreaterThan(1)

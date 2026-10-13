@@ -9,6 +9,8 @@ import { useLanguage } from "@/context/language"
 import { isLive, type DebugSession, type Variable } from "./debug"
 import { useDebug } from "./debug-context"
 import { DEBUG_KEYS } from "./keys"
+import { useWorkbench } from "./panel"
+import { DEBUG_VIEWS } from "./tabs"
 import { DEBUG_GLYPHS, Glyph } from "./ui"
 
 type Action = keyof typeof DEBUG_GLYPHS
@@ -19,6 +21,40 @@ const KEYS: Partial<Record<Action, string>> = {
   stepIn: DEBUG_KEYS.stepIn,
   stepOut: DEBUG_KEYS.stepOut,
   stop: DEBUG_KEYS.stop,
+}
+
+// Console | Program at the start of the Debug tab's row (UX #7). Program is a debugged program's terminal, so the
+// switch shows once a session runs in one (and while Program is open); Program keeps the Run tab's test id.
+export function DebugViewSwitch() {
+  const workbench = useWorkbench()
+  const debug = useDebug()
+  const language = useLanguage()
+  const program = () => workbench.debugView() === "program" || debug.state.sessions.some((item) => item.ptyID)
+  return (
+    <Show when={program()}>
+      <div
+        role="tablist"
+        aria-label={language.t("workbench.debug.views")}
+        class="flex shrink-0 items-center gap-0.5 rounded-[6px] bg-v2-background-bg-layer-02 p-0.5"
+      >
+        <For each={DEBUG_VIEWS}>
+          {(view) => (
+            <button
+              type="button"
+              role="tab"
+              data-debug-view={view}
+              data-workbench-tab={view === "program" ? "run" : undefined}
+              aria-selected={workbench.debugView() === view}
+              class="h-6 rounded-[4px] px-2 text-[12px] font-[530] text-v2-text-text-muted outline-none hover:text-v2-text-text-base focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)] aria-selected:bg-v2-background-bg-base aria-selected:text-v2-text-text-base aria-selected:shadow-[var(--v2-elevation-raised)]"
+              onClick={() => workbench.open(view)}
+            >
+              {language.t(`workbench.debug.view.${view}`)}
+            </button>
+          )}
+        </For>
+      </div>
+    </Show>
+  )
 }
 
 export const sessionLabel = (session: DebugSession) =>

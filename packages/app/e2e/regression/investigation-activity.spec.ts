@@ -93,6 +93,8 @@ test("E2E-01: failing test → stop → patch → verification → resolved; the
     await page.goto(`/server/${base64Encode(server.url)}/session/${session.id}`)
     await expect(page.getByRole("textbox", { name: "Prompt" })).toBeVisible({ timeout: 30_000 })
     await page.keyboard.press("Control+Backquote")
+    // Activity is a view of the Agents tab (UX #7)
+    await page.locator('[data-workbench-tab="agents"]').click()
     await page.locator('[data-workbench-tab="activity"]').click()
     const activity = page.locator('[data-component="workbench-activity"]')
     await activity.locator(`button[data-investigation="${summary.id}"]`).click()
@@ -106,15 +108,15 @@ test("E2E-01: failing test → stop → patch → verification → resolved; the
     await expect(detail.locator(`[data-evidence="${stop.id}"]`)).toContainText("ZeroDivisionError")
     await page.screenshot({ path: info.outputPath("investigation.png") })
 
-    // The verification run opens in Output, focused and expanded.
+    // The verification run opens in Checks, focused and expanded.
     await detail.locator(`[data-evidence="${check.id}"] [data-link="run"]`).click()
     await expect(page.locator('[data-workbench-tab="output"]')).toHaveAttribute("aria-selected", "true")
     const run = page.locator(`[data-component="workbench-output"] [data-run="${check.refs!.runID}"]`)
     await expect(run.locator("button[aria-expanded]").first()).toHaveAttribute("aria-expanded", "true")
     await page.screenshot({ path: info.outputPath("investigation-run.png") })
 
-    // The debug session opens in the side panel's Debug tab, selected.
-    await page.locator('[data-workbench-tab="activity"]').click()
+    // The debug session opens in the side panel's Debug tab, selected. The Agents tab comes back on Activity.
+    await page.locator('[data-workbench-tab="agents"]').click()
     await detail.locator(`[data-evidence="${stop.id}"] [data-link="debug"]`).click()
     const debug = page.locator('#review-panel [data-component="workbench-debug"]')
     await expect(debug).toBeVisible()

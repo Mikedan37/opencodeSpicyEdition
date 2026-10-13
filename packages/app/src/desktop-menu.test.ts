@@ -26,11 +26,12 @@ describe("desktop menu", () => {
     const view = DESKTOP_MENU.find((menu) => menu.id === "view")?.items ?? []
     const ide = view.flatMap((item) => (item.type === "item" && item.command?.startsWith("workbench.") ? [item] : []))
     expect(ide.map((item) => item.command)).toEqual([
-      "workbench.agents",
       "workbench.problems",
       "workbench.output",
       "workbench.debug",
       "workbench.run",
+      "workbench.agents",
+      "workbench.tasks",
       "workbench.activity",
       "workbench.tools",
       "workbench.check",
@@ -40,8 +41,8 @@ describe("desktop menu", () => {
     ])
     const translate = (key: string) => `native:${key}`
     expect(ide.map((item) => desktopMenuLabel(item.labelKey!, translate)).slice(0, 2)).toEqual([
-      "Show agents",
       "Show problems",
+      "Show checks",
     ])
     expect(desktopMenuLabel("desktop.menu.toggleTerminal", translate)).toBe("native:desktop.menu.toggleTerminal")
   })

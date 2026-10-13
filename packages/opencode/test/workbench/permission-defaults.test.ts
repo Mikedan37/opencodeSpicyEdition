@@ -45,12 +45,12 @@ const MCP_TOOL = "github_create_issue"
 const CHANGES = ["edit", "bash", MCP_TOOL, "some.future.tool"]
 
 describe("SEC-01 permission defaults", () => {
-  it.instance("running project code and touching a debuggee ask, memory access is denied, under '*': 'allow'", () =>
+  it.instance("running project code and touching a debuggee ask, memory access is denied", () =>
     Effect.gen(function* () {
       const list = yield* Agent.Service.use((svc) => svc.list())
       const agent = yield* agents
-      // The default the explicit keys must beat: agents other than the main chat still start from "*": "allow".
-      expect(action(agent("plan").permission, "some.future.tool")).toBe("allow")
+      // Plan mode starts from the main chat's ask-first rules too: a tool nobody listed asks.
+      expect(action(agent("plan").permission, "some.future.tool")).toBe("ask")
       for (const key of ["verify.exec", "debug.launch", "debug.attach", "debug.evaluate", "debug.lldbCommand"])
         expect([key, action(agent("build").permission, key)]).toEqual([key, "ask"])
       expect(action(agent("build").permission, "debug.memory")).toBe("deny")
@@ -96,7 +96,9 @@ describe("the main chat asks before it changes anything", () => {
       expect(action(plan, "edit", "src/app.ts")).toBe("deny")
       expect(action(plan, "edit", ".opencode/plans/next.md")).toBe("allow")
       expect(action(plan, "task", "general")).toBe("deny")
-      expect(action(plan, MCP_TOOL)).toBe("allow")
+      // MCP tools and the user's own subagents ask, as in the main chat.
+      expect(action(plan, MCP_TOOL)).toBe("ask")
+      expect(action(plan, "task", "custom")).toBe("ask")
       // Plan mode starts explore without asking, so explore's commands ask too.
       expect(action(plan, "task", "explore")).toBe("allow")
       const explore = agent("explore").permission

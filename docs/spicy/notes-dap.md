@@ -693,9 +693,7 @@ For drafts, `description` and `args` are read from the source; once enabled they
   intended): the probe secret is refused with that error and never appears; the server's credentials and provider
   keys are refused by name whether set or not; `${env:HOME}`, `${env:PATH}`, `${env:USER}` expand; a launch.json
   configuration using `${env:OPENCODE_SERVER_PASSWORD}` fails to start with the error.
-- Still open, outside this fix: adapters are spawned with the server's environment (`Process.spawn` merges
-  `process.env`), and debuggees inherit it, so a program can read and print `OPENCODE_SERVER_PASSWORD` or a provider
-  key by itself. Scrubbing those from the adapter environment is the follow-up.
+- The follow-up: the server's own credentials are no longer inherited either (next section).
 
 ### Finding 4: enable could load a file swapped after the review
 
@@ -713,3 +711,24 @@ For drafts, `description` and `args` are read from the source; once enabled they
 - `test/tool test/server test/session test/agent test/permission`: 1270 pass / 13 skip / 1 todo / 0 fail.
 - Typecheck clean in `packages/opencode`. No route changed, so no `test:httpapi` run. DiagnosticReports (without
   intelligencetasksd) 35 before and after.
+
+### The server's credentials stay out of adapters and debugged programs
+
+- Every process the debugger starts used to inherit the server's whole environment, so a program under debug could
+  read and print `OPENCODE_SERVER_USERNAME`/`OPENCODE_SERVER_PASSWORD`. Now those two are left out, exactly as Agent
+  HQ leaves them out of agent processes: `src/workbench/dap/env.ts` takes the variables that
+  `AgentProvider.agentEnv()` drops (reused, not copied) and keeps them from the adapter (`Process.spawn`, where an
+  undefined value unsets a variable), from the program in its terminal (`Pty.create` gains an `omit` option, a
+  marked upstream edit in `packages/core/src/pty.ts`, since it adds `process.env` itself), and from the project's own
+  Python (the debugpy probe) and build (`cargo test --no-run`), which run project code too.
+- The tradeoff, deliberately: nothing else is removed. Provider keys and other user variables still reach the
+  program, because a program under debug can legitimately need its own API keys and the human launched it. The model
+  can therefore still see such a variable if the program prints it; launch.json `${env:NAME}` refuses secret names
+  (finding 3), but the inherited environment is the user's.
+- Test: `test/workbench/dap/debugpy.test.ts` (real debugpy) runs a program that prints
+  `os.environ.get("OPENCODE_SERVER_PASSWORD")`, the username and an ordinary variable, both spawned by the adapter
+  (internal console) and in a PTY (integrated terminal): the credentials print `None`, the ordinary variable its
+  value. Without the change it printed the probe password.
+- Runs: `test/workbench` + debug HTTP test 178 pass / 2 skip / 0 fail; `test/tool test/server test/session
+test/agenthq` 1115 pass / 13 skip / 1 todo / 0 fail; `packages/core` PTY tests 18 pass; typecheck clean in
+  `packages/opencode` and `packages/core`.

@@ -130,6 +130,100 @@ test("the one-time card points at the strip and the panel; dismissed, it stays g
   await expect(card).toHaveCount(0)
 })
 
+test("an agent's ask and a task ready for review raise OS notifications that open them", async ({ page }) => {
+  // The browser's Notification, recorded, with the window out of focus (notify only fires when it is).
+  await page.addInitScript(() => {
+    const sent: { title: string; body: string }[] = []
+    const scope = window as unknown as Record<string, unknown>
+    scope.__notifications = sent
+    scope.Notification = class {
+      static permission = "granted"
+      static requestPermission = async () => "granted"
+      onclick: (() => void) | null = null
+      constructor(title: string, options?: { body?: string }) {
+        sent.push({ title, body: options?.body ?? "" })
+        scope.__lastNotification = this
+      }
+      close() {}
+    }
+    document.hasFocus = () => false
+  })
+  const { mock, open } = await mockWorkbench(page, { directory, title })
+  mock.agents = [{ ...ada, projectDirectory: directory }]
+  const session = {
+    id: "ags_1",
+    agentID: "agt_ada",
+    provider: "opencode",
+    title: "Notes",
+    status: "working",
+    pendingPermissions: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  mock.agentSessions = [session]
+  const task = {
+    id: "tsk_1",
+    title: "Write the notes",
+    assignee: "agt_ada",
+    dependsOn: [],
+    status: "running",
+    isolated: false,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  mock.tasks = [task]
+  await open()
+  const sent = () => page.evaluate(() => (window as unknown as { __notifications: unknown[] }).__notifications)
+  const strip = page.locator('[data-component="workbench-status"]')
+  await expect(strip.locator('[data-status="agents"]')).toHaveText("Agents")
+
+  // The agent asks: a notification, and the strip counts it.
+  mock.emit(
+    {
+      type: "agenthq.session.event",
+      properties: {
+        envelope: {
+          sessionID: "ags_1",
+          seq: 0,
+          at: 2,
+          event: {
+            type: "permission.requested",
+            requestID: "perm_1",
+            title: "Edit notes.txt",
+            options: [{ id: "once", label: "Allow once", kind: "allow_once" }],
+          },
+        },
+      },
+    },
+    {
+      type: "agenthq.session.updated",
+      properties: { session: { ...session, status: "needs_approval", pendingPermissions: 1, updatedAt: 2 } },
+    },
+  )
+  await expect.poll(sent).toEqual([{ title: "Permission required", body: "Ada asks: Edit notes.txt" }])
+  await expect(strip.locator('[data-status="agents"]')).toHaveText("Agents1 needs you")
+  // Clicking it opens the agent's session in the Agents tab.
+  await page.evaluate(() =>
+    (window as unknown as { __lastNotification: { onclick: () => void } }).__lastNotification.onclick(),
+  )
+  await expect(page.locator('[data-component="workbench-panel"]')).toHaveAttribute("data-tab", "agents")
+  await expect(page.locator('[data-component="agenthq-workspace"] [data-session="ags_1"]')).toHaveAttribute(
+    "aria-current",
+    "true",
+  )
+
+  // The task reaches review: one notification, not one per later update.
+  mock.emit({ type: "agenthq.task.updated", properties: { task: { ...task, status: "review", updatedAt: 3 } } })
+  mock.emit({ type: "agenthq.task.updated", properties: { task: { ...task, status: "review", updatedAt: 4 } } })
+  await expect.poll(sent).toHaveLength(2)
+  expect((await sent())[1]).toEqual({
+    title: "Ready for review",
+    body: "Write the notes by Ada is waiting for your review",
+  })
+  await page.waitForTimeout(500)
+  expect(await sent()).toHaveLength(2)
+})
+
 async function palette(page: Page, command: string) {
   await openPalette(page)
   await page.getByPlaceholder("Search files, commands, and sessions").fill(command)

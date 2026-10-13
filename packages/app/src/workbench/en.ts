@@ -603,4 +603,7 @@ export const dict = {
   "agenthq.message.placeholder": "Write a message",
   "agenthq.message.notDelivered": "Not delivered",
   "agenthq.message.failed": "Message not sent",
+  "agenthq.notify.permission": "{{agent}} asks: {{title}}",
+  "agenthq.notify.review.title": "Ready for review",
+  "agenthq.notify.review": "{{task}} by {{agent}} is waiting for your review",
 }

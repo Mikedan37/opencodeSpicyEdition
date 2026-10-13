@@ -6,6 +6,10 @@ import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { useSDK } from "@/context/sdk"
 import { useServerSDK } from "@/context/server-sdk"
 import { usePlatform } from "@/context/platform"
+import { useCommand } from "@/context/command"
+import { useLanguage } from "@/context/language"
+import { useSettings } from "@/context/settings"
+import { playSoundById } from "@/utils/sound"
 import { Persist, persisted } from "@/utils/persist"
 import { createAgentHQStore } from "./store"
 import { createTasksState } from "./tasks"
@@ -29,6 +33,9 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
     const sdk = useSDK()
     const serverSDK = useServerSDK()
     const platform = usePlatform()
+    const settings = useSettings()
+    const command = useCommand()
+    const language = useLanguage()
     // The session page remounts this provider per workspace, so the directory is fixed for its lifetime.
     const directory = sdk().directory
     const client = createWorkbenchClient({ server: serverSDK().server.http, directory, fetch: platform.fetch })
@@ -74,12 +81,34 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
         (error: unknown) => store.failHistory(sessionID, errorText(error)),
       )
 
+    // UX #6: an agent's permission ask and a task ready for review reach the user like the main session's asks do
+    // (the same sound and OS notification settings); the notification opens it in the Agents tab.
+    const alertUser = (title: string, description: string, open: () => void) => {
+      if (settings.sounds.permissionsEnabled()) void playSoundById(settings.sounds.permissions())
+      if (settings.notifications.permissions())
+        void platform.notify(title, description, () => {
+          open()
+          command.trigger("workbench.agents")
+        })
+    }
+    const agentName = (agentID: string | undefined) =>
+      store.state.agents.find((agent) => agent.id === agentID)?.name ?? agentID ?? ""
+
     // Every project's events: an agent's events carry its own project directory, which may not be the open one.
     const stop = serverSDK().event.listen((event) => {
       const details = event.details as { type?: string; properties?: unknown }
       if (!details.type?.startsWith("agenthq.")) return
       if (details.type === "agenthq.session.event")
         return Option.map(events[details.type](details.properties), (data) => {
+          const asked = data.envelope.event
+          if (asked.type === "permission.requested") {
+            const agentID = store.state.sessions[data.envelope.sessionID]?.agentID
+            alertUser(
+              language.t("notification.permission.title"),
+              language.t("agenthq.notify.permission", { agent: agentName(agentID), title: asked.title }),
+              () => setUi({ view: "agents", agentID, sessionID: data.envelope.sessionID }),
+            )
+          }
           if (store.receive(data.envelope) === "gap") void resync(data.envelope.sessionID)
         })
       if (details.type === "agenthq.session.updated")
@@ -91,7 +120,16 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
       if (details.type === "agenthq.provider.updated")
         return Option.map(events[details.type](details.properties), (data) => store.upsertProvider(data.provider))
       if (details.type === "agenthq.task.updated")
-        return Option.map(events[details.type](details.properties), (data) => tasks.upsert(data.task))
+        return Option.map(events[details.type](details.properties), (data) => {
+          const before = tasks.state.tasks.find((task) => task.id === data.task.id)?.status
+          if (data.task.status === "review" && before !== "review")
+            alertUser(
+              language.t("agenthq.notify.review.title"),
+              language.t("agenthq.notify.review", { task: data.task.title, agent: agentName(data.task.assignee) }),
+              () => setUi({ view: "tasks", taskID: data.task.id, agentID: undefined, sessionID: undefined }),
+            )
+          tasks.upsert(data.task)
+        })
       if (details.type === "agenthq.task.removed")
         return Option.map(events[details.type](details.properties), (data) => tasks.remove(data.id))
       if (details.type === "agenthq.message")

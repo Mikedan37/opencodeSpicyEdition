@@ -100,7 +100,9 @@ test("activity: investigation timeline and evidence link to Checks, Debug and Ag
     "reproducing",
   )
   await expect.poll(() => mock.records).toBeGreaterThan(records)
-  await expect(page.locator('[data-workbench-tab="activity"]')).toHaveText("Activity")
+  // Nothing waits now: the view counts its investigations instead (muted)
+  await expect(page.locator('[data-workbench-tab="activity"]')).toHaveText("Activity2")
+  await expect(page.locator('[data-workbench-tab="activity"] [data-slot="view-count"]')).toBeVisible()
   mock.emit({
     type: "workbench.investigation.updated",
     properties: { investigation: summary("inv_1", "verifying", 50) },

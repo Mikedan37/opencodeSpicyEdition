@@ -55,14 +55,20 @@ export function TaskStatusPill(props: { status: AgentHQ.TaskStatus }) {
   )
 }
 
-// Agents | Tasks | Activity | Tools at the top of the Agents tab (UX #7), each with how many wait for the user.
-// Activity and Tools keep their old tab ids as `data-workbench-tab`.
+// Agents | Tasks | Activity | Tools at the top of the Agents tab (UX #7), each with one number: how many wait for the
+// user when any do (amber), else how many there are (muted). Activity and Tools keep their old tab ids as
+// `data-workbench-tab`.
 export function ViewSwitch() {
   const agenthq = useAgentHQ()
   const workbench = useWorkbench()
   const language = useLanguage()
   const total = (view: AgentView) =>
-    view === "agents" ? agenthq.state.agents.length : view === "tasks" ? agenthq.tasks.state.tasks.length : undefined
+    ({
+      agents: agenthq.state.agents.length,
+      tasks: agenthq.tasks.state.tasks.length,
+      activity: workbench.investigations.state.list.length,
+      tools: workbench.tools.state.list.length,
+    })[view]
   return (
     <div
       role="tablist"
@@ -81,12 +87,17 @@ export function ViewSwitch() {
             onClick={() => workbench.open(view === "agents" ? "agentList" : view)}
           >
             {language.t(`agenthq.view.${view}`)}
-            <Show when={total(view) !== undefined}>
-              <span class="text-[12px] font-normal tabular-nums text-v2-text-text-muted">{total(view)}</span>
-            </Show>
-            <Show when={workbench.attention[view]()}>
+            <Show
+              when={workbench.attention[view]()}
+              fallback={
+                <span data-slot="view-count" class="text-[12px] font-normal tabular-nums text-v2-text-text-muted">
+                  {total(view)}
+                </span>
+              }
+            >
               {(count) => (
                 <span
+                  data-slot="view-waiting"
                   title={
                     view === "tasks"
                       ? language.plural("agenthq.task.waitingReview", count())

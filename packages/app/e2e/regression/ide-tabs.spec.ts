@@ -112,8 +112,10 @@ test("Agents: each view says what waits for you, and the Agents tab adds them up
   await expect(page.locator('[data-component="workbench-status"] [data-status="agents"]')).toContainText("4 need you")
   await page.locator('[data-workbench-tab="agents"]').click()
   const view = (id: string) => page.locator(`[data-agenthq-view="${id}"]`)
-  await expect(view("agents")).toHaveText("Agents11")
-  await expect(view("tasks")).toHaveText("Tasks11")
+  // One number per view: what waits (amber) when anything does
+  await expect(view("agents")).toHaveText("Agents1")
+  await expect(view("tasks")).toHaveText("Tasks1")
+  await expect(page.locator('[data-agenthq-view] [data-slot="view-waiting"]')).toHaveCount(4)
   // Activity and Tools keep their old tab ids
   await expect(page.locator('[data-workbench-tab="activity"]')).toHaveText("Activity1")
   await expect(page.locator('[data-workbench-tab="tools"]')).toHaveText("Tools1")
@@ -190,6 +192,9 @@ test("a panel saved before the regroup opens where its tab went; the last view i
   await open()
   await page.keyboard.press("Control+Backquote")
   await page.locator('[data-workbench-tab="agents"]').click()
+  // Nothing waits: each view shows how many there are, muted
+  await expect(page.locator('[data-agenthq-view="agents"]')).toHaveText("Agents0")
+  await expect(page.locator('[data-agenthq-view] [data-slot="view-count"]')).toHaveCount(4)
   await page.locator('[data-workbench-tab="tools"]').click()
   // The panel's saved state, as the app wrote it
   const saved = () =>

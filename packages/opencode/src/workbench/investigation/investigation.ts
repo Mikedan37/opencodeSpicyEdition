@@ -92,6 +92,7 @@ export type Event =
       readonly debugSessionID: Workbench.DebugSessionID
       readonly expression: string
       readonly result: string
+      readonly evidenceID?: Workbench.EvidenceID // set by the caller when console rows already carry it
     }
   | { readonly type: "patch"; readonly file: string; readonly hash: string }
   | {
@@ -709,6 +710,7 @@ function observe(draft: Draft, event: Event, now: number): Workbench.Evidence | 
         expression: event.expression,
         result: event.result,
       }),
+      ...(event.evidenceID ? { id: event.evidenceID } : {}),
       refs: { debugSessionID: event.debugSessionID },
     }
   if (event.type === "debug.ended" || event.type === "repro") {

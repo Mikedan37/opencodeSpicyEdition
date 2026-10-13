@@ -5,7 +5,7 @@ import path from "path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Effect, Schema } from "effect"
-import type { Workbench } from "@opencode-ai/schema/workbench"
+import { Workbench } from "@opencode-ai/schema/workbench"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Tool } from "@/tool/tool"
@@ -354,8 +354,14 @@ export const DebugTool = Tool.define<
             },
             investigation,
           )
+          // The evaluation is evidence; its console rows carry the evidence id so the console links to it.
+          const evidenceID = investigation ? Workbench.EvidenceID.create() : undefined
           const row = yield* session.evaluate(
-            { expression: args.expression, ...(args.frame !== undefined ? { frameID: args.frame } : {}) },
+            {
+              expression: args.expression,
+              ...(args.frame !== undefined ? { frameID: args.frame } : {}),
+              ...(evidenceID ? { evidenceID } : {}),
+            },
             actor,
           )
           if (investigation)
@@ -365,6 +371,7 @@ export const DebugTool = Tool.define<
                 debugSessionID: session.id,
                 expression: args.expression,
                 result: row.text,
+                ...(evidenceID ? { evidenceID } : {}),
               })
               .pipe(Effect.ignore)
           return reply(

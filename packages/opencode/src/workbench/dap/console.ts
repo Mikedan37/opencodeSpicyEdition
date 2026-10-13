@@ -100,6 +100,8 @@ export const evaluate = Effect.fnUntraced(function* (input: {
   readonly expression: string
   readonly frameID?: number
   readonly context?: Workbench.DebugEvaluateContext
+  // The agent's evaluation evidence: its console rows link to it.
+  readonly evidenceID?: Workbench.EvidenceID
   readonly by: "agent" | "human"
   readonly timeout?: number
 }) {
@@ -108,8 +110,10 @@ export const evaluate = Effect.fnUntraced(function* (input: {
     return yield* new DebugError({ kind: "unsupported", message: "LLDB command mode is not available to the agent" })
   const context = input.context ?? "repl"
   // Watch and hover results go back to the caller only: no console row, so no output event either.
-  const emit = context === "repl" ? input.console.push : detached
-  if (context === "repl") input.console.push({ kind: "eval", by: input.by, text: input.expression })
+  const evidence = input.evidenceID ? { evidenceID: input.evidenceID } : {}
+  const emit = (row: Omit<Workbench.ConsoleRow, "seq" | "at">) =>
+    context === "repl" ? input.console.push({ ...row, ...evidence }) : detached(row)
+  if (context === "repl") input.console.push({ kind: "eval", by: input.by, text: input.expression, ...evidence })
   return yield* input
     .request<{
       result?: string

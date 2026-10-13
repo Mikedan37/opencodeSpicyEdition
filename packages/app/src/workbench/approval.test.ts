@@ -51,6 +51,12 @@ describe("the approval card's title", () => {
       object: "cd src && bun test",
       more: 0,
     })
+    // A long one names its programs; the whole command shows under the title (approvalDetail)
+    const long = `cd src && bun test --coverage --reporter=junit --outfile=report.xml --timeout 20000`
+    expect(
+      approvalTitle({ ...ask("bash", ["cd src", "bun test"], { command: long }), always: ["cd *", "bun test *"] }),
+    ).toEqual({ verb: "run", object: "cd, bun test", more: 0 })
+    expect(approvalTitle(ask("bash", ["a", "b"], { command: "a\nb" }))).toEqual({ verb: "run", object: "a", more: 0 })
     // Without the command (an old server) the patterns stand in
     expect(approvalTitle(ask("bash", ["git status", "git diff"]))).toEqual({
       verb: "run",

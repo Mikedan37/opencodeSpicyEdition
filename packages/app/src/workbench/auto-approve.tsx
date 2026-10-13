@@ -128,7 +128,7 @@ function Pill(props: { sessionID: string }) {
           />
         </MenuV2.Trigger>
         <MenuV2.Portal>
-          <MenuV2.Content data-approval-modes="" class="w-76">
+          <MenuV2.Content data-approval-modes="" class="w-[23rem]">
             <MenuV2.RadioGroup value={mode()}>
               <For each={MODES}>
                 {(item) => (

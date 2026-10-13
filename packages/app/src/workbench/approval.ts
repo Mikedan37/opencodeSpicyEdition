@@ -59,13 +59,24 @@ export function approvalThings(request: Ask) {
 }
 
 /** "Run `bun test`", "Edit `src/app.ts` +2 more", "Use `github_create_issue`": a verb, a thing, and how many more. */
-export function approvalTitle(request: Ask) {
+export function approvalTitle(request: Ask & { always?: string[] }) {
   const verb = VERBS[request.permission] ?? "use"
   const full = command(request)
-  if (full) return { verb, object: full.split("\n")[0]!, more: 0 }
+  // A long command shows whole under the title; the title names its programs ("cd, bun test").
+  if (full && long(full)) return { verb, object: programs(request) || full.split("\n")[0]!, more: 0 }
+  if (full) return { verb, object: full, more: 0 }
   const things = approvalThings(request)
   return { verb, object: things[0] ?? request.permission, more: Math.max(0, things.length - 1) }
 }
+
+const long = (command: string) => command.includes("\n") || command.length > LONG
+
+// A shell ask's always-patterns are its programs ("bun test *").
+const programs = (request: Ask & { always?: string[] }) =>
+  (request.always ?? [])
+    .map((pattern) => pattern.replace(/ \*$/, ""))
+    .filter((pattern) => pattern && pattern !== "*")
+    .join(", ")
 
 /** What shows under the title: a command the title cuts short, an edit's diff, or a subagent's task. */
 export function approvalDetail(request: Ask): { kind: "command" | "diff" | "note"; text: string } | undefined {
@@ -83,7 +94,7 @@ export function approvalDetail(request: Ask): { kind: "command" | "diff" | "note
     return full ? { kind: "command", text: full } : undefined
   }
   const full = command(request)
-  if (full && (full.includes("\n") || full.length > LONG)) return { kind: "command", text: full }
+  if (full && long(full)) return { kind: "command", text: full }
 }
 
 export type ApprovalKind = "command" | "edit" | "tool"

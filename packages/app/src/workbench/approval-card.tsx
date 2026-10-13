@@ -175,15 +175,25 @@ function Card(props: {
             {title().object}
           </code>
           <Show when={title().more}>
-            <button
-              type="button"
-              data-action="approval-more"
-              aria-expanded={store.expanded}
-              class="shrink-0 rounded-[4px] px-1 text-[12px] text-v2-text-text-muted hover:text-v2-text-text-base focus-visible:outline-2 focus-visible:outline-v2-border-border-focus"
-              onClick={() => setStore("expanded", (value) => !value)}
+            {/* An edit's diff below shows every file already */}
+            <Show
+              when={detail()?.kind !== "diff"}
+              fallback={
+                <span class="shrink-0 text-[12px] text-v2-text-text-muted">
+                  {language.t("workbench.approval.more", { count: title().more })}
+                </span>
+              }
             >
-              {language.t("workbench.approval.more", { count: title().more })}
-            </button>
+              <button
+                type="button"
+                data-action="approval-more"
+                aria-expanded={store.expanded}
+                class="shrink-0 rounded-[4px] px-1 text-[12px] text-v2-text-text-muted hover:text-v2-text-text-base focus-visible:outline-2 focus-visible:outline-v2-border-border-focus"
+                onClick={() => setStore("expanded", (value) => !value)}
+              >
+                {language.t("workbench.approval.more", { count: title().more })}
+              </button>
+            </Show>
           </Show>
           <Show when={queue()}>
             <span data-slot="approval-queue" class="ml-auto shrink-0 text-[12px] tabular-nums text-v2-text-text-muted">

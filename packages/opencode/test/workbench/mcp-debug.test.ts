@@ -211,6 +211,18 @@ describe("workbench MCP bridge: debug tools", () => {
         const evaluating = yield* call(mcp, "debug_evaluate", { expression: "len(xs), sum(xs)" }).pipe(Effect.forkChild)
         yield* user.answer("debug.evaluate", "once")
         expect(text(yield* Fiber.join(evaluating))).toContain("result: (0, 0)")
+        // CON-05: the evaluation is evidence of the investigation, and its console rows carry that evidence's id.
+        const rows = (yield* user.request(`/workbench/debug/sessions/${session.id}/output`)).body as {
+          kind: string
+          by: string
+          evidenceID?: string
+        }[]
+        const result = rows.find((row) => row.by === "agent" && row.kind === "result")
+        expect(result?.evidenceID).toStartWith("ev_")
+        const detail = yield* user.request(`/workbench/investigations/${session.investigationID}`)
+        expect(detail.body.evidence).toContainEqual(
+          expect.objectContaining({ id: result!.evidenceID, kind: "console-eval" }),
+        )
 
         // While the user drives, the agent may read but not control.
         yield* user.request(`/workbench/debug/sessions/${session.id}/owner`, {

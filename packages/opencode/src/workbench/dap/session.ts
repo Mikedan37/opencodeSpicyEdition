@@ -658,7 +658,7 @@ export function make(options: Options) {
       read(actor, frame(frameID).pipe(Effect.andThen(DebugSnapshot.scopes(request, frameID)))),
     inspect: (input: { path?: string; ref?: number; frameID?: number; start?: number }, actor: Actor) =>
       read(actor, inspect(input)),
-    evaluate: (input: Workbench.DebugEvaluateInput, actor: Actor) =>
+    evaluate: (input: Workbench.DebugEvaluateInput & { readonly evidenceID?: Workbench.EvidenceID }, actor: Actor) =>
       // Humans may evaluate whoever drives; the agent needs control.
       control.run(
         actor,
@@ -673,6 +673,7 @@ export function make(options: Options) {
               expression: input.expression,
               frameID,
               context: input.context ?? "repl",
+              ...(input.evidenceID ? { evidenceID: input.evidenceID } : {}),
               by: actor.by,
             }),
           ),

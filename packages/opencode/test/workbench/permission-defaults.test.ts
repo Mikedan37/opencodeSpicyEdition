@@ -32,12 +32,12 @@ describe("SEC-01 permission defaults", () => {
       const build = agents.find((agent) => agent.name === "build")!
       // The default the explicit keys must beat.
       expect(action(build, "some.future.tool")).toBe("allow")
-      for (const key of ["verify.exec", "debug.launch", "debug.attach", "debug.evaluate"])
+      for (const key of ["verify.exec", "debug.launch", "debug.attach", "debug.evaluate", "debug.lldbCommand"])
         expect([key, action(build, key)]).toEqual([key, "ask"])
       expect(action(build, "debug.memory")).toBe("deny")
       // No built-in agent may run project code or touch a debuggee without a human.
       for (const agent of agents) {
-        for (const key of ["verify.exec", "debug.launch", "debug.attach", "debug.evaluate"])
+        for (const key of ["verify.exec", "debug.launch", "debug.attach", "debug.evaluate", "debug.lldbCommand"])
           expect([agent.name, key, action(agent, key)]).not.toEqual([agent.name, key, "allow"])
         expect([agent.name, action(agent, "debug.memory")]).toEqual([agent.name, "deny"])
       }

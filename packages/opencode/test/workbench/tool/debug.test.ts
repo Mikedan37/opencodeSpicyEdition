@@ -126,6 +126,32 @@ describe("tool.debug", () => {
     }),
   )
 
+  it.instance("CON-05 an agent's evaluation is evidence and its console rows link to it; a human's are not", () =>
+    Effect.gen(function* () {
+      yield* fake({ profile: "debugpy", stops: [stop(3)] })
+      const debug = yield* WorkbenchDebug.Service
+      const investigations = yield* WorkbenchInvestigation.Service
+      const { ctx } = context()
+      const started = yield* run({ action: "start", configuration: "fake" }, ctx)
+      yield* run({ action: "evaluate", expression: "len(xs)" }, ctx)
+      const session = yield* debug.get(started.metadata.session!.id)
+      const human = yield* session.evaluate({ expression: "xs" }, { by: "human" })
+
+      const rows = session.output().filter((row) => row.kind === "eval" || row.kind === "result")
+      const agent = rows.filter((row) => row.by === "agent")
+      expect(agent.map((row) => row.kind)).toEqual(["eval", "result"])
+      const evidenceID = agent[0].evidenceID
+      expect(evidenceID).toStartWith("ev_")
+      expect(agent[1].evidenceID).toBe(evidenceID)
+      const full = yield* investigations.full(started.metadata.session!.investigationID!)
+      expect(full.evidence).toContainEqual(
+        expect.objectContaining({ id: evidenceID, kind: "console-eval", summary: "len(xs) → <len(xs)>" }),
+      )
+      expect(human.evidenceID).toBeUndefined()
+      expect(rows.filter((row) => row.by === "human").map((row) => row.evidenceID)).toEqual([undefined, undefined])
+    }),
+  )
+
   it.instance("CTL-02 control while the user owns the session is refused with owner and time", () =>
     Effect.gen(function* () {
       yield* fake({ profile: "debugpy", stops: [stop(3), stop(4)] })

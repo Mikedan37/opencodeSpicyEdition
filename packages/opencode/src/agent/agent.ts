@@ -130,6 +130,8 @@ const layer = Layer.effect(
           "verify.exec": "ask",
           "debug.*": "ask",
           "debug.memory": "deny",
+          // spicy: a human's raw LLDB command (platform shell, script) asks too; agents never get command mode
+          "debug.lldbCommand": "ask",
           // spicy: tools created in the tool creator ask on every call; after "*", so "*": "allow" cannot win
           "custom_*": "ask",
           // mirrors github.com/github/gitignore Node.gitignore pattern for .env files

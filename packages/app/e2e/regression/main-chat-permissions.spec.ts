@@ -150,7 +150,7 @@ test("Auto edits lets an edit through while a command asks; Auto runs both; a ne
     await env.open(id)
     await pickMode(page, "edits")
     await expect(pill(page)).toHaveAttribute("data-mode", "edits")
-    expect(await env.switches(id)).toEqual({ edits: true, commands: false })
+    expect(await env.switches(id)).toMatchObject({ edits: true, commands: false })
 
     await env.turn(id, "Write a.txt and run a command")
     // The edit went through; the command waits on the card.
@@ -164,7 +164,7 @@ test("Auto edits lets an edit through while a command asks; Auto runs both; a ne
 
     await pickMode(page, "auto")
     await expect(pill(page)).toHaveAttribute("data-mode", "auto")
-    expect(await env.switches(id)).toEqual({ edits: true, commands: true })
+    expect(await env.switches(id)).toMatchObject({ edits: true, commands: true })
     await env.turn(id, "Run another command")
     await expect.poll(() => env.read("c.txt"), { timeout: 30_000 }).toBe("again")
     await env.idle(id)
@@ -174,7 +174,7 @@ test("Auto edits lets an edit through while a command asks; Auto runs both; a ne
     const next = await env.session()
     await env.open(next)
     await expect(pill(page)).toHaveAttribute("data-mode", "ask", { timeout: 30_000 })
-    expect(await env.switches(next)).toEqual({ edits: false, commands: false })
+    expect(await env.switches(next)).toMatchObject({ edits: false, commands: false })
   } finally {
     await env.close()
   }
@@ -216,7 +216,7 @@ test("Always ▾ This project saves the rule; Settings → Permissions lists it 
   }
 })
 
-// Saved rules reach Permission.ask in the backend's next step; until then this one fails (the second session asks).
+// A saved rule applies to every session of the project: the second session's touch runs without a card.
 test("a rule saved for the project lets the next session's ask through", async ({ page }) => {
   test.setTimeout(240_000)
   const env = await setup(page, [

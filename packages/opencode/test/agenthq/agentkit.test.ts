@@ -12,6 +12,7 @@ import { AppProcess } from "@opencode-ai/core/process"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { $ } from "bun"
 import { Effect } from "effect"
+import { existsSync } from "fs"
 import fs from "fs/promises"
 import path from "path"
 import { AgentDetect } from "../../src/agenthq/providers/detect"
@@ -44,7 +45,8 @@ const fakeBridge = (body?: string) =>
 describe("agenthq agentkit (agentkit-bridge acp)", () => {
   it.live("is available only when the bridge's usage lists an ACP mode", () =>
     Effect.gen(function* () {
-      const nowhere = { PATH: "", applications: [] }
+      // No bridge on PATH, in Applications or in LaunchServices' index, whatever this machine has.
+      const nowhere = { PATH: "", applications: [], finder: Effect.succeed([]) }
       const ready = yield* fakeBridge(bridgeScript(USAGE))
       const status = yield* (yield* AgentDetect.agentkit({ ...nowhere, PATH: ready.dir })).status
       expect(status).toMatchObject({
@@ -110,6 +112,92 @@ describe("agenthq agentkit (agentkit-bridge acp)", () => {
       expect(find({ PATH: "", applications: [apps] })).toBe(bundled)
       expect(find({ PATH: "", applications: [] })).toBeUndefined()
     }),
+  )
+
+  it.live("otherwise picks the newest bridge with an ACP mode among the copies LaunchServices knows", () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      const fixture = path.join(import.meta.dir, "../fixture/agenthq/fake-acp-agent.ts")
+      /** An `OpenCode Native.app` copy whose bridge has this usage and mtime; `acp` runs the scripted ACP agent. */
+      const app = (name: string, usage: string | undefined, minutesAgo: number) =>
+        Effect.promise(async () => {
+          const bundle = path.join(root, name, "OpenCode Native.app")
+          const bin = path.join(bundle, "Contents", "MacOS", "agentkit-bridge")
+          await fs.mkdir(path.dirname(bin), { recursive: true })
+          if (usage !== undefined) {
+            await fs.writeFile(
+              bin,
+              [
+                "#!/bin/sh",
+                `if [ "$1" = "acp" ]; then touch '${bin}.launched'; exec '${process.execPath}' '${fixture}'; fi`,
+                bridgeScript(usage),
+              ].join("\n"),
+            )
+            await fs.chmod(bin, 0o755)
+            const at = new Date(Date.now() - minutesAgo * 60_000)
+            await fs.utimes(bin, at, at)
+          }
+          return { bundle, bin }
+        })
+      const older = yield* app("older", USAGE, 30)
+      const newer = yield* app("newer", USAGE, 10)
+      const newest = yield* app("no-acp", "usage: agentkit-bridge app-server | mcp | --version", 1)
+      const empty = yield* app("no-bridge", undefined, 0)
+      const finder = Effect.succeed([older.bundle, newest.bundle, empty.bundle, newer.bundle])
+      const provider = yield* AgentDetect.agentkit({ PATH: "", applications: [], finder })
+      const status = yield* provider.status
+      // The newest copy has no ACP mode and one has no bridge at all: the newer of the other two wins.
+      expect(status).toMatchObject({ available: true, version: "0.1.0" })
+      expect(status.capabilities.notes?.[0]).toBe(`Bridge: ${newer.bin}`)
+
+      // A session starts the bridge the provider list chose.
+      const dir = yield* tmpdirScoped()
+      const session = yield* provider.createSession({
+        agent: {
+          id: AgentHQ.AgentID.create(),
+          name: "Kit",
+          avatar: { kind: "initials", value: "K" },
+          provider: "agentkit",
+          projectDirectory: dir,
+          createdAt: 0,
+          updatedAt: 0,
+        },
+        emit: () => {},
+      })
+      yield* Effect.addFinalizer(() => session.close)
+      expect(existsSync(`${newer.bin}.launched`)).toBe(true)
+      expect(existsSync(`${older.bin}.launched`)).toBe(false)
+
+      // Nothing indexed, or an index that fails, finds nothing.
+      for (const none of [Effect.succeed([]), Effect.fail(new Error("mdfind failed")), Effect.die("mdfind crashed")])
+        expect(yield* (yield* AgentDetect.agentkit({ PATH: "", applications: [], finder: none })).status).toMatchObject(
+          {
+            available: false,
+            reason: "AgentKit bridge not found",
+          },
+        )
+    }),
+  )
+})
+
+// The free, read-only check of this Mac's LaunchServices index: no session, only the provider status.
+const realIndex = process.env.SPICY_REAL_AGENTKIT === "index" ? it.live : it.live.skip
+
+describe("agenthq agentkit (real index, opt-in)", () => {
+  realIndex(
+    "REAL: the provider finds OpenCode Native's bridge through LaunchServices [skipped unless SPICY_REAL_AGENTKIT=index; status only]",
+    () =>
+      Effect.gen(function* () {
+        // As the server sees it: nothing configured, nothing on PATH.
+        const status = yield* (yield* AgentDetect.agentkit({ PATH: "" })).status
+        console.log(
+          `SPICY_REAL_AGENTKIT index ${JSON.stringify({ available: status.available, version: status.version, reason: status.reason, bridge: status.capabilities.notes?.[0] })}`,
+        )
+        expect(status).toMatchObject({ available: true })
+        expect(status.capabilities.notes?.[0]).toMatch(
+          /^Bridge: .*OpenCode Native\.app\/Contents\/MacOS\/agentkit-bridge$/,
+        )
+      }),
   )
 })
 

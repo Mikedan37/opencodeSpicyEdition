@@ -584,6 +584,8 @@ export async function create(input: {
       const next = await Promise.race([
         pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
         waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
+        // spicy: a server that dies mid-wait ends the wait now instead of at the timeout (REG-09)
+        exited.then(() => "exited" as const),
       ])
       if (next !== "registration") return
     }
@@ -612,6 +614,8 @@ export async function create(input: {
       const next = await Promise.race([
         pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
         waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
+        // spicy: a server that dies mid-wait ends the wait now instead of at the timeout (REG-09)
+        exited.then(() => "exited" as const),
       ])
       if (next !== "registration") return
     }

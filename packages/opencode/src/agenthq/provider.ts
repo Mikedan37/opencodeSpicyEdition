@@ -46,12 +46,13 @@ export interface Session {
 
 /**
  * The environment for every process a provider spawns: this process's environment without the opencode server's
- * credentials. Only the Workbench MCP server gets them, through its own `env`.
+ * credentials. The Workbench MCP server gets a token of its own instead, through its own `env`.
  */
 export function agentEnv() {
   const env = { ...process.env }
   delete env.OPENCODE_SERVER_USERNAME
   delete env.OPENCODE_SERVER_PASSWORD
+  delete env.OPENCODE_SERVER_TOKEN
   return env
 }
 
@@ -61,7 +62,7 @@ export interface McpServer {
   readonly command: string
   /** Never carries a secret. */
   readonly args: readonly string[]
-  /** The opencode server's credentials when it has a password, and nothing else. Never logged or stored. */
+  /** The bridge's own token (OPENCODE_SERVER_TOKEN), never the server password, and nothing else. Never logged or stored. */
   readonly env: Readonly<Record<string, string>>
 }
 

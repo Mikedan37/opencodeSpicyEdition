@@ -1,6 +1,7 @@
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import { SessionID } from "@/session/schema"
 import { Doctor } from "@/workbench/doctor"
 import { ApiNotFoundError, ConflictError, ForbiddenError, InvalidRequestError } from "../errors"
 import { Authorization } from "../middleware/authorization"
@@ -59,6 +60,8 @@ export const FileWritePayload = Schema.Struct({
     description: "hash of the bytes this edit started from; null when the file must not exist yet",
   }),
 })
+
+export const BridgeSession = Schema.Struct({ id: SessionID }).annotate({ identifier: "WorkbenchBridgeSession" })
 
 export const FileWritten = Schema.Struct({
   hash: Schema.String.annotate({ description: "sha256 of the bytes written" }),
@@ -136,6 +139,17 @@ export const WorkbenchApi = HttpApi.make("workbench")
             summary: "Save a file from the editor",
             description:
               "Replaces a file inside the project (symlinks resolved) through a temporary file and a rename, only when its bytes still hash to baseHash; otherwise answers 409 and writes nothing. Language servers are told about the change, so its problems refresh.",
+          }),
+        ),
+        HttpApiEndpoint.post("session", `${root}/session`, {
+          query: WorkspaceRoutingQuery,
+          success: described(BridgeSession, "The session the bridge's agent tools act in"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.session",
+            summary: "Workbench MCP session",
+            description:
+              "A session titled Workbench MCP for the Workbench MCP bridge's agent tools (debug_*, tool_create, custom_*); their permission asks appear there. A bridge token always gets its one session, made on its first call.",
           }),
         ),
         HttpApiEndpoint.get("doctor", `${root}/doctor`, {

@@ -28,6 +28,8 @@ import { Doctor } from "../doctor"
 export type Connection = {
   url: string // opencode server, e.g. http://127.0.0.1:4096
   directory: string // project directory the server routes requests to
+  // spicy: a bridge token (default OPENCODE_SERVER_TOKEN), which Agent HQ gives the bridges it starts; used alone
+  token?: string
   username?: string // basic auth; both default to OPENCODE_SERVER_USERNAME / OPENCODE_SERVER_PASSWORD
   password?: string
 }
@@ -235,9 +237,13 @@ export async function serve(connection: Connection, extra: Extra = []) {
 }
 
 function client(connection: Connection): Api {
+  // A token reaches only the bridge's endpoints; a person who runs the bridge by hand gives the server password.
+  const token = connection.token ?? process.env.OPENCODE_SERVER_TOKEN
   const headers = {
     "x-opencode-directory": connection.directory,
-    ...ServerAuth.headers({ username: connection.username, password: connection.password }),
+    ...(token
+      ? { authorization: `Bearer ${token}` }
+      : ServerAuth.headers({ username: connection.username, password: connection.password })),
   }
   const request = async (route: string, init: RequestInit) => {
     const response = await fetch(new URL(route, connection.url), {

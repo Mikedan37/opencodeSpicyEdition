@@ -123,7 +123,7 @@ describe("agenthq codex (Zed's ACP bridge)", () => {
           name: "opencode-workbench",
           command: "/opt/opencode",
           args: ["workbench", "mcp", "--url", "http://127.0.0.1:4096", "--directory", dir],
-          env: { OPENCODE_SERVER_USERNAME: "opencode", OPENCODE_SERVER_PASSWORD: "s3cret" },
+          env: { OPENCODE_SERVER_TOKEN: "s3cret" },
         }
         const session = yield* provider.createSession({ agent: agent(dir), emit: () => {}, workbench })
         yield* Effect.addFinalizer(() => session.close)
@@ -137,7 +137,7 @@ describe("agenthq codex (Zed's ACP bridge)", () => {
         expect(args.join(" ")).not.toContain("parent-secret")
         // The bridge never gets this server's password; as for every ACP agent it gets a password of its own.
         expect(yield* read("password")).toMatch(/^[0-9a-f-]{36}$/)
-        // The Workbench server goes to the bridge in session/new, credentials only in its env.
+        // The Workbench server goes to the bridge in session/new, its token only in its env.
         const created = JSON.parse(yield* read("session.json"))
         expect(created.cwd).toBe(dir)
         expect(created.mcpServers).toEqual([
@@ -145,10 +145,7 @@ describe("agenthq codex (Zed's ACP bridge)", () => {
             name: "opencode-workbench",
             command: "/opt/opencode",
             args: workbench.args,
-            env: [
-              { name: "OPENCODE_SERVER_USERNAME", value: "opencode" },
-              { name: "OPENCODE_SERVER_PASSWORD", value: "s3cret" },
-            ],
+            env: [{ name: "OPENCODE_SERVER_TOKEN", value: "s3cret" }],
           },
         ])
       }),

@@ -2,11 +2,12 @@
 // opencode and pointed at this process's HTTP server and the session's directory (a task's worktree when the
 // task is isolated). Tool calls go through the agent's own permission flow like any other tool.
 //
-// Secrets: the server password goes only into the MCP server's environment, never into its arguments, and
-// nothing else from this process's environment is passed along.
-import { Flag } from "@opencode-ai/core/flag/flag"
+// Credentials: never the server password. Each bridge gets a token of its own (BridgeToken) in its environment, never
+// in its arguments: it reaches only the bridge's endpoints, always as an agent, and ends when the Agent HQ session
+// that got it closes (`release`). Nothing else from this process's environment is passed along.
 import { Effect } from "effect"
 import { fileURLToPath } from "url"
+import { BridgeToken } from "@/server/bridge-token"
 import type { AgentProvider } from "./provider"
 
 export const NAME = "opencode-workbench"
@@ -29,16 +30,18 @@ export const server = Effect.fnUntraced(function* (directory: string) {
   const url = new URL(Server.url)
   // A server listening on every interface is reached through loopback.
   if (url.hostname === "0.0.0.0" || url.hostname === "[::]") url.hostname = "127.0.0.1"
-  const password = Flag.OPENCODE_SERVER_PASSWORD
   const result: AgentProvider.McpServer = {
     name: NAME,
     command: command[0],
     args: [...command.slice(1), "workbench", "mcp", "--url", url.origin, "--directory", directory],
-    env: password
-      ? { OPENCODE_SERVER_USERNAME: Flag.OPENCODE_SERVER_USERNAME ?? "opencode", OPENCODE_SERVER_PASSWORD: password }
-      : {},
+    env: { OPENCODE_SERVER_TOKEN: BridgeToken.mint() },
   }
   return result
 })
+
+/** Ends the token of a bridge that `server` made; for when the session it was made for closes or never opened. */
+export function release(server: AgentProvider.McpServer | undefined) {
+  BridgeToken.revoke(server?.env.OPENCODE_SERVER_TOKEN)
+}
 
 export * as AgentWorkbench from "./workbench"

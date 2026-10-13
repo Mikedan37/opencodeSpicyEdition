@@ -1200,3 +1200,83 @@ gone in 212 ms; with bridge and watcher killed the daemon stayed until the next 
 
 Nothing under `~/Documents/Codex`, the OpenCode Native repo or the installed app changed. The SwiftPM lock files in
 `$TMPDIR` named `agentkit-acp-2sajeo_2` (17:05) and `agentkit-acp-j90bi3uk` (21:46) are not from this session's runs.
+
+# Security wave: one scoped token per Workbench bridge
+
+Two HIGH findings of the security review, one design fix.
+
+1. External agents got the full server password. `AgentWorkbench.server()` put `OPENCODE_SERVER_PASSWORD` into the
+   Workbench MCP server's `env`, which reaches the agent (ACP `session/new` mcpServers, the Claude SDK's bridge spawn)
+   and the bridge's environment. The server's auth is one global basic-auth check, so whoever held it reached every
+   route: answering its own permission asks, starting the debugger as the person, writing files, sessions.
+2. `POST /workbench/check` trusted `trigger: "user"` from the body, so any password holder ran exec-class checks
+   without the `verify.exec` ask.
+
+## The design
+
+- `src/server/bridge-token.ts` (`BridgeToken`): `mint()` makes a random 256-bit token (base64url) held only in this
+  process's memory; `revoke()` ends it; `of(request)` finds the live token of `Authorization: Bearer <token>`.
+- `AgentWorkbench.server()` gives the bridge `OPENCODE_SERVER_TOKEN` and nothing else: no username, no password, and
+  never in its arguments. The manager (`session.ts`, `withWorkbench`) revokes it when the provider session closes
+  (detach, forget, shutdown), and at once when the session never opens. `AgentProvider.agentEnv()` also strips
+  `OPENCODE_SERVER_TOKEN`.
+- The instance API's `Authorization` middleware (upstream, `// spicy:`): a request with a live token is let through
+  only to the endpoints in `BridgeToken.ROUTES`, matched on the HttpApi group and endpoint the router resolved (not
+  on the path), and answers 403 anywhere else. Routes that do not use that middleware (PTY connect, the v2 `/api`
+  routes, the UI and `/doc`) do not know tokens and answer 401. The server password works as before.
+- A token is always an agent: `POST /workbench/check` runs with trigger `agent` whatever the body says; `user` is
+  honoured only without a token (the server password, the IDE).
+- A token acts only in its own session. The bridge used to create its session with `POST /session`, which accepts a
+  `permission` ruleset; with that, or with a person's session id, `tools/agent` and `debug/agent` would have used
+  allow rules the agent wrote or the person saved. Now the bridge calls `POST /workbench/session` (new; a session
+  titled "Workbench MCP", nothing else accepted), a token gets exactly one such session, and `WorkbenchAgent.runner`
+  refuses (403) any other session for a token.
+- `opencode workbench mcp` sends `Bearer <token>` when it has `OPENCODE_SERVER_TOKEN` (or `Connection.token`), and
+  basic auth with the server password otherwise, so a person can still run it by hand.
+
+The allow-list (`BridgeToken.ROUTES`), all the bridge calls:
+
+| Endpoint                | Route                                                |
+| ----------------------- | ---------------------------------------------------- |
+| `workbench.problems`    | `GET /workbench/problems`                            |
+| `workbench.check`       | `POST /workbench/check` (always trigger `agent`)     |
+| `workbench.doctor`      | `GET /workbench/doctor`                              |
+| `workbench.session`     | `POST /workbench/session` (the token's one session)  |
+| `workbench-debug.agent` | `POST /workbench/debug/agent` (in that session only) |
+| `workbench-tools.list`  | `GET /workbench/tools`                               |
+| `workbench-tools.agent` | `POST /workbench/tools/agent` (in that session only) |
+
+## Where the boundary still is
+
+- The token is not bound to a project: with another `x-opencode-directory` it reads that project's problems and
+  doctor, and runs checks there under the same agent rules. Everything that runs code or debugs still asks the human.
+  Binding the token to the session's directory is a small follow-up.
+- A same-uid agent whose shell command the human approves can still read this server process's own environment (the
+  password is in it when the server was started with it) or its memory. Human approval of shell commands stays the
+  outer control.
+- Without a server password the server is open to anyone on the machine, token or not; the token then only keeps the
+  bridge's own requests to trigger `agent` and its own session.
+
+## Tests
+
+- `test/workbench/security-bridge-token.test.ts`, against a real listener with a password: the review's repro
+  inverted (a token with `trigger: "user"` is skipped with "needs approval in the IDE" and writes no marker; the
+  password still runs the check); a token gets 200 on its endpoints, 403 on `/agenthq/sessions/…/permissions/…`,
+  `/agenthq/agents`, `POST /workbench/debug/sessions`, `GET` and `PUT /workbench/file`, `/workbench/runs`,
+  `POST /workbench/tools`, `GET` and `POST /session`, `/session/…/permissions/…`, `/permission`, `/global/health`, and
+  403 for `tools/agent` and `debug/agent` in a session of the person's, while its own session passes; a revoked or
+  made-up token gets 401; Agent HQ's `session/new` gives the bridge only `OPENCODE_SERVER_TOKEN` (the password nowhere
+  in the params), the token works on the bridge's routes and gets 401 after the identity is removed.
+- AHQ-08 (`acp.test.ts`, real `opencode acp`): the running bridge's environment (`ps -E`) holds a token and not the
+  password; the token gets 200 on `/workbench/problems`, 403 on `/agenthq/agents`, and 401 once the identity is removed.
+- `claude-code.test.ts` and `codex.test.ts`: the Workbench server's env is the token alone; the claude process gets
+  no token; the real Claude check now expects the token in the bridge's environment and never the password.
+- `mcp.test.ts`: a bridge with a token sends `Bearer <token>` and nothing else. The httpapi exercise covers
+  `POST /workbench/session`.
+
+The review's repro on `spicy-security` (`security-trigger-bypass.test.ts`) runs without a password and without a
+token, where the caller is the person by design; the inverted test above replaces it.
+
+Results: `bun test test/agenthq test/workbench …` green; `bun test --timeout 60000 test/server test/workbench
+test/session` 895 pass, 11 skip, 1 todo, 1 fail (the upstream `httpapi-v2-pty` timing flake, 3 of 3 alone);
+`bun run test:httpapi` coverage, auth and effect each 270 pass, 0 fail, 0 missing; `bun run typecheck` clean.

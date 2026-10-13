@@ -229,6 +229,24 @@ describe("agenthq acp", () => {
         const command = yield* bridge
         expect(command).toContain(`--directory ${dir}`)
         expect(command).not.toContain(auth.password)
+        // The bridge's environment holds a token of its own, never this server's password; the token reaches the
+        // bridge's routes and nothing else.
+        const bridgePid = command.split(/\s+/)[0]!
+        const bridgeEnvironment =
+          process.platform === "linux"
+            ? (yield* Effect.promise(() => fs.readFile(`/proc/${bridgePid}/environ`, "utf8"))).replaceAll("\0", " ")
+            : Bun.spawnSync(["ps", "-E", "-ww", "-p", bridgePid, "-o", "command="]).stdout.toString()
+        const token = bridgeEnvironment.match(/(?:^|\s)OPENCODE_SERVER_TOKEN=(\S+)/)?.[1]
+        expect(token).toMatch(/^[\w-]{43}$/)
+        expect(bridgeEnvironment).not.toContain(auth.password)
+        const asBridge = (route: string) =>
+          Effect.promise(() =>
+            fetch(new URL(route, server.url), {
+              headers: { authorization: `Bearer ${token}`, "x-opencode-directory": dir },
+            }).then((response) => response.status),
+          )
+        expect(yield* asBridge("/workbench/problems")).toBe(200)
+        expect(yield* asBridge("/agenthq/agents")).toBe(403)
 
         // Cancel a turn that would never end on its own.
         const calls = (yield* llm.hits).length
@@ -264,6 +282,8 @@ describe("agenthq acp", () => {
           "the Workbench bridge survived its agent",
           "10 seconds",
         )
+        // The session is closed, and its bridge's token with it.
+        expect(yield* asBridge("/workbench/problems")).toBe(401)
       }),
     120_000,
   )

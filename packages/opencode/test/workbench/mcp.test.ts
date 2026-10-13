@@ -196,7 +196,7 @@ describe("workbench MCP bridge", () => {
     }),
   )
 
-  it.live("sends the project directory and basic-auth credentials", () =>
+  it.live("sends the project directory and basic-auth credentials, or only its token when it has one", () =>
     Effect.gen(function* () {
       const seen: Headers[] = []
       const server = yield* Effect.acquireRelease(
@@ -220,6 +220,17 @@ describe("workbench MCP bridge", () => {
       expect(text(yield* call(mcp, "workbench_problems"))).toStartWith("0 errors")
       expect(seen[0].get("x-opencode-directory")).toBe("/projects/demo")
       expect(seen[0].get("authorization")).toBe(`Basic ${Buffer.from("ide:secret").toString("base64")}`)
+
+      // A bridge that Agent HQ started has a token of its own, and then sends only that.
+      const tokened = yield* connect({
+        url: `http://127.0.0.1:${server.port}`,
+        directory: "/projects/demo",
+        token: "bridge-token",
+        username: "ide",
+        password: "secret",
+      })
+      expect(text(yield* call(tokened, "workbench_problems"))).toStartWith("0 errors")
+      expect(seen.at(-1)?.get("authorization")).toBe("Bearer bridge-token")
     }),
   )
 

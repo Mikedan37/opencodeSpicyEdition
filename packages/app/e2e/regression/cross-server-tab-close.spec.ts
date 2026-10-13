@@ -2,8 +2,9 @@ import { expect, test, type Page, type Route } from "@playwright/test"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { currentSession } from "../utils/mock-server"
 
-const serverA = "http://127.0.0.1:4096"
-const serverB = "http://127.0.0.1:4097"
+// spicy: the app's default server is PLAYWRIGHT_SERVER_HOST/PORT (playwright.config.ts), not always 4096
+const serverA = `http://${process.env.PLAYWRIGHT_SERVER_HOST ?? "127.0.0.1"}:${process.env.PLAYWRIGHT_SERVER_PORT ?? "4096"}`
+const serverB = `http://127.0.0.1:${Number(process.env.PLAYWRIGHT_SERVER_PORT ?? "4096") + 1}`
 const sessionA = session("ses_server_a", "C:/server-a", "Server A session")
 const sessionB = session("ses_server_b", "/home/server-b", "Server B session")
 
@@ -11,18 +12,18 @@ test("closing the active server's last tab opens the remaining server tab", asyn
   const requests: string[] = []
   await mockServers(page, requests)
   await page.addInitScript(
-    ({ serverB, sessionA, sessionB }) => {
+    ({ serverA, serverB, sessionA, sessionB }) => {
       localStorage.setItem("settings.v3", JSON.stringify({ general: { newLayoutDesigns: true } }))
       localStorage.setItem("opencode.global.dat:server", JSON.stringify({ list: [serverB] }))
       localStorage.setItem(
         "opencode.window.browser.dat:tabs",
         JSON.stringify([
-          { type: "session", server: "http://127.0.0.1:4096", sessionId: sessionA },
+          { type: "session", server: serverA, sessionId: sessionA },
           { type: "session", server: serverB, sessionId: sessionB },
         ]),
       )
     },
-    { serverB, sessionA: sessionA.id, sessionB: sessionB.id },
+    { serverA, serverB, sessionA: sessionA.id, sessionB: sessionB.id },
   )
 
   const hrefA = `/server/${base64Encode(serverA)}/session/${sessionA.id}`

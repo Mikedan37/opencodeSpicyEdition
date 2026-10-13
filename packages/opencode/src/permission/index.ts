@@ -6,6 +6,7 @@ import { Deferred, Effect, Layer, Context } from "effect"
 import os from "os"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { WorkbenchApprovals } from "@/workbench/approvals" // spicy: rules saved for the project
 
 export const Event = PermissionV1.Event
 
@@ -44,6 +45,7 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
+    const approvals = yield* WorkbenchApprovals.Service // spicy: "Always allow in this project"
     const state = yield* InstanceState.make<State>(
       Effect.fn("Permission.state")(function* (ctx) {
         void ctx
@@ -70,11 +72,16 @@ const layer = Layer.effect(
       const { ruleset, ...request } = input
       let needsAsk = false
       const remembered = approved.get(request.sessionID) ?? [] // spicy: only this session's "always" approvals
+      const saved = WorkbenchApprovals.allows(yield* approvals.list()) // spicy: and the project's saved ones
 
       for (const pattern of request.patterns) {
-        // spicy: an explicit deny is checked before the approvals, so an "always" never lifts it
+        // spicy: an explicit deny is checked before the approvals, so an "always" never lifts it, and no approval
+        // covers an edit under .git/ (WorkbenchApprovals.approvable)
         const explicit = evaluate(request.permission, pattern, ruleset)
-        const rule = explicit.action === "deny" ? explicit : evaluate(request.permission, pattern, ruleset, remembered)
+        const rule =
+          explicit.action === "deny" || !WorkbenchApprovals.approvable(request.permission, pattern)
+            ? explicit
+            : evaluate(request.permission, pattern, ruleset, saved, remembered)
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
           return yield* new PermissionV1.DeniedError({
@@ -160,7 +167,9 @@ const layer = Layer.effect(
       for (const [id, item] of pending.entries()) {
         if (item.info.sessionID !== existing.info.sessionID) continue
         const ok = item.info.patterns.every(
-          (pattern) => evaluate(item.info.permission, pattern, remembered).action === "allow",
+          (pattern) =>
+            WorkbenchApprovals.approvable(item.info.permission, pattern) && // spicy: never an edit under .git/
+            evaluate(item.info.permission, pattern, remembered).action === "allow",
         )
         if (!ok) continue
         pending.delete(id)
@@ -225,6 +234,10 @@ export function visibleTools<T>(tools: Record<string, T>, ruleset: PermissionV1.
   return Object.fromEntries(Object.entries(tools).filter(([name]) => !hidden.has(name)))
 }
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node] })
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer,
+  deps: [EventV2Bridge.node, WorkbenchApprovals.node], // spicy: saved approvals
+})
 
 export * as Permission from "."

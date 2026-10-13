@@ -128,7 +128,10 @@ export const workbenchScenarios: Scenario[] = [
     }))
     .json(200, (body) => {
       object(body)
-      check(body.enabled === false, "a new session asks before edits")
+      check(
+        body.edits === false && body.commands === false && body.enabled === false,
+        "a new session asks before edits and commands",
+      )
     }),
   http.protected
     .put("/workbench/sessions/{sessionID}/auto-approve", "workbench.autoApprove.set")
@@ -137,11 +140,50 @@ export const workbenchScenarios: Scenario[] = [
     .at((ctx) => ({
       path: route("/workbench/sessions/{sessionID}/auto-approve", { sessionID: ctx.state.id }),
       headers: ctx.headers(),
+      body: { edits: true, commands: false },
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(
+        body.edits === true && body.commands === false && body.enabled === false,
+        "the session now auto-approves edits only",
+      )
+    }),
+  http.protected
+    .put("/workbench/sessions/{sessionID}/auto-approve", "workbench.autoApprove.set.enabled")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Auto-approve single switch" }))
+    .at((ctx) => ({
+      path: route("/workbench/sessions/{sessionID}/auto-approve", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
       body: { enabled: true },
     }))
     .json(200, (body) => {
       object(body)
-      check(body.enabled === true, "the session now auto-approves edits and bash")
+      check(body.edits === true && body.commands === true && body.enabled === true, "enabled turns both on")
+    }),
+  http.protected
+    .post("/workbench/permissions/{requestID}/save", "workbench.approvals.save")
+    .at((ctx) => ({
+      path: route("/workbench/permissions/{requestID}/save", { requestID: "per_not_pending" }),
+      headers: ctx.headers(),
+    }))
+    .status(404),
+  http.protected.get("/workbench/approvals", "workbench.approvals.list").json(200, (body) => {
+    object(body)
+    check(Array.isArray(body.rules), "approvals should list rules")
+  }),
+  http.protected
+    .delete("/workbench/approvals", "workbench.approvals.remove")
+    .mutating()
+    .at((ctx) => ({
+      path: "/workbench/approvals",
+      headers: ctx.headers(),
+      body: { permission: "bash", pattern: "git status *" },
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(Array.isArray(body.rules), "removing a rule returns the rest")
     }),
   http.protected.get("/workbench/doctor", "workbench.doctor").json(200, (body) => {
     object(body)

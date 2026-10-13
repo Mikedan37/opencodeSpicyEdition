@@ -145,8 +145,12 @@ describe("workbench bridge token", () => {
           ["PUT", "/workbench/file", { path: "a.txt", content: "x", baseHash: "x" }],
           ["GET", "/workbench/runs"],
           // An agent cannot turn on auto-approve, not even for the session it works in.
-          ["PUT", `/workbench/sessions/${own.body.id}/auto-approve`, { enabled: true }],
+          ["PUT", `/workbench/sessions/${own.body.id}/auto-approve`, { edits: true, commands: true }],
           ["GET", `/workbench/sessions/${own.body.id}/auto-approve`],
+          // Nor save, list or remove "Always allow in this project" rules.
+          ["POST", "/workbench/permissions/per_x/save", {}],
+          ["GET", "/workbench/approvals"],
+          ["DELETE", "/workbench/approvals", { permission: "bash", pattern: "*" }],
           ["POST", "/workbench/tools", { name: "x", description: "x", source: "x" }],
           ["GET", "/session"],
           ["POST", "/session", { title: "mine" }],

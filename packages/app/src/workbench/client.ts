@@ -78,8 +78,14 @@ export type DebugAction = "continue" | "pause" | "next" | "stepIn" | "stepOut"
 // The IDE editor's file access (groups/workbench.ts `FileText` / `FileWritten`): exact text and the hash of its bytes.
 const FileText = Schema.Struct({ content: Schema.String, hash: Schema.String })
 const FileWritten = Schema.Struct({ hash: Schema.String })
-// The main chat's per-session switch (groups/workbench.ts `AutoApprove`): edits and bash run without asking there.
-const AutoApprove = Schema.Struct({ enabled: Schema.Boolean })
+// The main chat's per-session switches (groups/workbench.ts `AutoApprove`): edits (except under .git/) and shell
+// commands run without asking in that session.
+const AutoApprove = Schema.Struct({ edits: Schema.Boolean, commands: Schema.Boolean })
+export type AutoApprove = typeof AutoApprove.Type
+// "Always allow in this project" (groups/workbench.ts `Approvals`): allow rules saved from permission asks.
+const ApprovalRule = Schema.Struct({ permission: Schema.String, pattern: Schema.String })
+export type ApprovalRule = typeof ApprovalRule.Type
+const Approvals = Schema.Struct({ rules: Schema.Array(ApprovalRule) })
 
 // Project search (groups/workbench-search.ts `SearchResult`): matching lines by file, each file with the hash of its
 // bytes when searched (absent when the editor does not open it); `listed` of `total` matches were sent.
@@ -179,6 +185,7 @@ const decoders = {
   lspFormat: Schema.decodeUnknownOption(Workbench.LspFormat),
   accepted: Schema.decodeUnknownOption(Schema.Boolean),
   autoApprove: Schema.decodeUnknownOption(AutoApprove),
+  approvals: Schema.decodeUnknownOption(Approvals),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -287,10 +294,18 @@ export function createWorkbenchClient(input: {
     runTool: (name: string, args: Record<string, unknown>) =>
       decoded(decoders.toolResult, "POST", `${tool(name)}/run`, { args }),
     // Whether edits and bash run without asking in this opencode session; the server keeps the switch per session.
-    autoApprove: (sessionID: string) =>
-      decoded(decoders.autoApprove, "GET", autoApprove(sessionID)).then((value) => value.enabled),
-    setAutoApprove: (sessionID: string, enabled: boolean) =>
-      decoded(decoders.autoApprove, "PUT", autoApprove(sessionID), { enabled }).then((value) => value.enabled),
+    getAutoApprove: (sessionID: string) => decoded(decoders.autoApprove, "GET", autoApprove(sessionID)),
+    setAutoApprove: (sessionID: string, value: AutoApprove) =>
+      decoded(decoders.autoApprove, "PUT", autoApprove(sessionID), value),
+    // "Always allow in this project". Each returns the project's saved rules. saveApproval answers the pending request
+    // with "always" and saves its patterns: 404 when it is no longer pending, 400 when it has nothing to always allow.
+    listApprovals: () => decoded(decoders.approvals, "GET", "/workbench/approvals").then((value) => value.rules),
+    saveApproval: (requestID: string) =>
+      decoded(decoders.approvals, "POST", `/workbench/permissions/${encodeURIComponent(requestID)}/save`).then(
+        (value) => value.rules,
+      ),
+    removeApproval: (rule: ApprovalRule) =>
+      decoded(decoders.approvals, "DELETE", "/workbench/approvals", rule).then((value) => value.rules),
     runs: () => decoded(decoders.runs, "GET", "/workbench/runs"),
     run: (id: string) => decoded(decoders.run, "GET", `/workbench/runs/${encodeURIComponent(id)}`),
     check: (body: CheckInput = {}) => decoded(decoders.report, "POST", "/workbench/check", body),

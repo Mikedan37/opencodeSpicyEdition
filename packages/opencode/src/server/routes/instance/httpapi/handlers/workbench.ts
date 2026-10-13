@@ -25,11 +25,13 @@ import { ReviewChanges } from "@/review/changes"
 import { SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionAutoApprove } from "@/workbench/auto-approve"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { WorkbenchApprovals } from "@/workbench/approvals"
 import { mapStorageNotFound } from "./session-errors"
 import { InstanceHttpApi } from "../api"
 import { ConflictError, ForbiddenError, InvalidRequestError, notFound } from "../errors"
 import {
-  AutoApprove,
+  AutoApproveUpdate,
   CheckPayload,
   FileQuery,
   FileWritePayload,
@@ -57,6 +59,8 @@ export const workbenchHandlers = HttpApiBuilder.group(
       const formatter = yield* Format.Service
       const review = yield* ReviewChanges.Service
       const sessions = yield* Session.Service
+      const permissions = yield* Permission.Service
+      const approvals = yield* WorkbenchApprovals.Service
 
       const refuse = (failure: WorkbenchEditorFile.Failure) => {
         if (failure.kind === "missing") return notFound(failure.message)
@@ -204,22 +208,63 @@ export const workbenchHandlers = HttpApiBuilder.group(
         return { id: info.id }
       })
 
+      // `enabled` (both on) keeps the single switch's clients working: OpenCode Native 0.15.3 reads and sets it.
+      const view = (permission: PermissionV1.Ruleset) => {
+        const state = SessionAutoApprove.state(permission)
+        return { ...state, enabled: state.edits && state.commands }
+      }
+
       const autoApprove = Effect.fn("WorkbenchHttpApi.autoApprove")(function* (ctx: {
         params: { sessionID: SessionID }
       }) {
         const info = yield* mapStorageNotFound(sessions.get(ctx.params.sessionID))
-        return { enabled: SessionAutoApprove.enabled(info.permission ?? []) }
+        return view(info.permission ?? [])
       })
 
       // A person's switch: bridge tokens never reach this endpoint (BridgeToken.ROUTES), so no agent can turn it on.
       const setAutoApprove = Effect.fn("WorkbenchHttpApi.setAutoApprove")(function* (ctx: {
         params: { sessionID: SessionID }
-        payload: typeof AutoApprove.Type
+        payload: typeof AutoApproveUpdate.Type
       }) {
         const info = yield* mapStorageNotFound(sessions.get(ctx.params.sessionID))
-        const permission = SessionAutoApprove.apply(info.permission ?? [], ctx.payload.enabled)
+        const current = SessionAutoApprove.state(info.permission ?? [])
+        const { enabled } = ctx.payload
+        const permission = SessionAutoApprove.apply(info.permission ?? [], {
+          edits: ctx.payload.edits ?? enabled ?? current.edits,
+          commands: ctx.payload.commands ?? enabled ?? current.commands,
+        })
         yield* sessions.setPermission({ sessionID: info.id, permission })
-        return { enabled: SessionAutoApprove.enabled(permission) }
+        return view(permission)
+      })
+
+      // "Always allow in this project": a person's answer, so bridge tokens never reach it (BridgeToken.ROUTES).
+      const saveApproval = Effect.fn("WorkbenchHttpApi.saveApproval")(function* (ctx: {
+        params: { requestID: string }
+      }) {
+        const request = (yield* permissions.list()).find((item) => item.id === ctx.params.requestID)
+        if (!request) return yield* notFound(`No pending permission request ${ctx.params.requestID}`)
+        if (!request.always.length)
+          return yield* new InvalidRequestError({ message: "This request has nothing to always allow" })
+        const asked = request.always.map((pattern) => ({ permission: request.permission, pattern }))
+        if (!asked.every(WorkbenchApprovals.valid))
+          return yield* new InvalidRequestError({ message: "This request's patterns are too long to save" })
+        const rules = yield* approvals.save(asked)
+        yield* permissions
+          .reply({ requestID: request.id, reply: "always" })
+          .pipe(
+            Effect.catchTag("Permission.NotFoundError", () => notFound(`No pending permission request ${request.id}`)),
+          )
+        return { rules }
+      })
+
+      const listApprovals = Effect.fn("WorkbenchHttpApi.approvals")(function* () {
+        return { rules: yield* approvals.list() }
+      })
+
+      const removeApproval = Effect.fn("WorkbenchHttpApi.removeApproval")(function* (ctx: {
+        payload: WorkbenchApprovals.Rule
+      }) {
+        return { rules: yield* approvals.remove(ctx.payload) }
       })
 
       const runs = Effect.fn("WorkbenchHttpApi.runs")(function* () {
@@ -265,6 +310,9 @@ export const workbenchHandlers = HttpApiBuilder.group(
         .handle("writeFile", writeFile)
         .handle("autoApprove", autoApprove)
         .handle("setAutoApprove", setAutoApprove)
+        .handle("saveApproval", saveApproval)
+        .handle("approvals", listApprovals)
+        .handle("removeApproval", removeApproval)
     }),
   // The doctor spawns probes through AppProcess, a stateless process runner the app graph does not expose.
 ).pipe(Layer.provide(LayerNode.compile(AppProcess.node)))

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Fiber } from "effect"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -12,6 +12,8 @@ import { Provider } from "@/provider/provider"
 import { SessionID } from "@/session/schema"
 import { Skill } from "@/skill"
 import { SessionAutoApprove } from "@/workbench/auto-approve"
+import { WorkbenchApprovals } from "@/workbench/approvals"
+import { OpenCodeProvider } from "@/agenthq/providers/opencode"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -26,6 +28,7 @@ const it = testEffect(
       Skill.node,
       RuntimeFlags.node,
       Permission.node,
+      WorkbenchApprovals.node,
     ]),
   ),
 )
@@ -125,10 +128,13 @@ describe("the main chat asks before it changes anything", () => {
 })
 
 describe("per-session auto-approve", () => {
+  const BOTH = { edits: true, commands: true }
+  const edit = (file: string) => ({ permission: "edit", patterns: [file], metadata: {} })
+
   it.instance("turns asks for edit and bash into allows in that session only, and never lifts a deny", () =>
     Effect.gen(function* () {
       const agent = yield* agents
-      const on = SessionAutoApprove.apply([], true)
+      const on = SessionAutoApprove.apply([], BOTH)
       const build = SessionAutoApprove.ruleset(agent("build").permission, on)
       expect(action(build, "edit")).toBe("allow")
       expect(action(build, "bash", "rm -rf build")).toBe("allow")
@@ -146,8 +152,38 @@ describe("per-session auto-approve", () => {
       const tools = ["edit", "write", "apply_patch", "bash", "read"]
       expect(Permission.disabled(tools, plan)).toEqual(Permission.disabled(tools, agent("plan").permission))
       // A session's own deny wins over its switch.
-      const denied = SessionAutoApprove.apply([{ permission: "bash", pattern: "*", action: "deny" }], true)
+      const denied = SessionAutoApprove.apply([{ permission: "bash", pattern: "*", action: "deny" }], BOTH)
       expect(action(SessionAutoApprove.ruleset(agent("build").permission, denied), "bash")).toBe("deny")
+    }),
+  )
+
+  it.instance("each switch lifts its own asks", () =>
+    Effect.gen(function* () {
+      const build = (yield* agents)("build").permission
+      const edits = SessionAutoApprove.ruleset(build, SessionAutoApprove.apply([], { edits: true, commands: false }))
+      expect([action(edits, "edit"), action(edits, "bash", "ls")]).toEqual(["allow", "ask"])
+      const commands = SessionAutoApprove.ruleset(build, SessionAutoApprove.apply([], { edits: false, commands: true }))
+      expect([action(commands, "edit"), action(commands, "bash", "ls")]).toEqual(["ask", "allow"])
+    }),
+  )
+
+  it.instance("edits under .git keep asking with edits on, in any case and at any depth", () =>
+    Effect.gen(function* () {
+      const build = (yield* agents)("build").permission
+      const on = SessionAutoApprove.apply([], BOTH)
+      for (const file of [".git/config", ".GIT/hooks/pre-commit", "sub/.git/config", ".git", "vendor/lib/.Git"])
+        expect([file, action(SessionAutoApprove.ruleset(build, on, edit(file)), "edit", file)]).toEqual([file, "ask"])
+      for (const file of ["src/app.ts", ".github/workflows/ci.yml", ".gitignore", "notes.git/x"])
+        expect([file, action(SessionAutoApprove.ruleset(build, on, edit(file)), "edit", file)]).toEqual([file, "allow"])
+    }),
+  )
+
+  it.instance("an Agent HQ session's guard keeps asking with the switches on", () =>
+    Effect.gen(function* () {
+      const build = (yield* agents)("build").permission
+      const guarded = SessionAutoApprove.apply(OpenCodeProvider.guard(build), BOTH)
+      const rules = SessionAutoApprove.ruleset(build, guarded, edit("src/app.ts"))
+      expect([action(rules, "edit"), action(rules, "bash", "ls")]).toEqual(["ask", "ask"])
     }),
   )
 
@@ -157,7 +193,7 @@ describe("per-session auto-approve", () => {
       Effect.gen(function* () {
         const build = SessionAutoApprove.ruleset(
           (yield* agents)("build").permission,
-          SessionAutoApprove.apply([], true),
+          SessionAutoApprove.apply([], BOTH),
         )
         expect(action(build, "edit", "bun.lock")).toBe("deny")
         expect(action(build, "edit", "src/app.ts")).toBe("allow")
@@ -167,49 +203,65 @@ describe("per-session auto-approve", () => {
     { config: { permission: { edit: { "*.lock": "deny" }, bash: { "git push*": "ask" } } } },
   )
 
-  it.instance("turning it off removes only the switch", () =>
+  it.instance("switching removes only the switches, and the old single switch counts as both", () =>
     Effect.gen(function* () {
       const other: PermissionV1.Rule[] = [
         { permission: "todowrite", pattern: "*", action: "deny" },
         { permission: "external_directory", pattern: "/tmp/*", action: "allow" },
       ]
-      const on = SessionAutoApprove.apply(other, true)
-      expect(SessionAutoApprove.enabled(on)).toBe(true)
-      expect(SessionAutoApprove.enabled(other)).toBe(false)
-      expect(SessionAutoApprove.apply(on, true)).toEqual(on)
-      expect(SessionAutoApprove.apply(on, false)).toEqual(other)
-      // Without the switch the ruleset is exactly upstream's merge, so ordinary session rules keep their meaning.
+      const on = SessionAutoApprove.apply(other, BOTH)
+      expect(SessionAutoApprove.state(on)).toEqual(BOTH)
+      expect(SessionAutoApprove.state(other)).toEqual({ edits: false, commands: false })
+      expect(SessionAutoApprove.apply(on, BOTH)).toEqual(on)
+      expect(SessionAutoApprove.apply(on, { edits: false, commands: false })).toEqual(other)
+      const old: PermissionV1.Rule = { permission: "session.auto_approve", pattern: "*", action: "allow" }
+      expect(SessionAutoApprove.state([old])).toEqual(BOTH)
+      // Without a switch the ruleset is exactly upstream's merge, so ordinary session rules keep their meaning.
       expect(SessionAutoApprove.ruleset(other, other)).toEqual(Permission.merge(other, other))
     }),
   )
 })
 
+// An edit ask the way the edit tool makes it: "always" covers every file.
+const edit = (sessionID: string, file: string, ruleset: PermissionV1.Ruleset) =>
+  Permission.Service.use((svc) =>
+    svc.ask({
+      sessionID: SessionID.make(sessionID),
+      permission: "edit",
+      patterns: [file],
+      always: ["*"],
+      metadata: {},
+      ruleset,
+    }),
+  )
+const pending = Effect.gen(function* () {
+  while (true) {
+    const list = yield* Permission.Service.use((svc) => svc.list())
+    if (list.length) return list
+    yield* Effect.sleep("10 millis")
+  }
+}).pipe(Effect.timeout("2 seconds"))
+const answer = (reply: "always" | "reject") =>
+  Effect.gen(function* () {
+    const [asked] = yield* pending
+    yield* Permission.Service.use((svc) => svc.reply({ requestID: asked.id, reply }))
+    return asked
+  })
+const denied = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.exit,
+    Effect.map((exit) => Exit.isFailure(exit) && Cause.squash(exit.cause) instanceof PermissionV1.DeniedError),
+  )
+// Asks, and the test answers like a person who says no: the ask's request, for assertions.
+const asks = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const fiber = yield* effect.pipe(Effect.forkScoped)
+    const asked = yield* answer("reject")
+    yield* Fiber.await(fiber)
+    return asked
+  })
+
 describe('"Allow always" is remembered for its session and never beats a deny', () => {
-  // An edit ask the way the edit tool makes it: "always" covers every file.
-  const edit = (sessionID: string, file: string, ruleset: PermissionV1.Ruleset) =>
-    Permission.Service.use((svc) =>
-      svc.ask({
-        sessionID: SessionID.make(sessionID),
-        permission: "edit",
-        patterns: [file],
-        always: ["*"],
-        metadata: {},
-        ruleset,
-      }),
-    )
-  const pending = Effect.gen(function* () {
-    while (true) {
-      const list = yield* Permission.Service.use((svc) => svc.list())
-      if (list.length) return list
-      yield* Effect.sleep("10 millis")
-    }
-  }).pipe(Effect.timeout("2 seconds"))
-  const answer = (reply: "always" | "reject") =>
-    Effect.gen(function* () {
-      const [asked] = yield* pending
-      yield* Permission.Service.use((svc) => svc.reply({ requestID: asked.id, reply }))
-      return asked
-    })
   const alwaysForEdits = (sessionID: string, ruleset: PermissionV1.Ruleset) =>
     Effect.gen(function* () {
       const first = yield* edit(sessionID, "src/a.ts", ruleset).pipe(Effect.forkScoped)
@@ -254,5 +306,55 @@ describe('"Allow always" is remembered for its session and never beats a deny', 
         yield* edit("ses_a", "src/b.ts", build)
       }),
     { config: { permission: { edit: { "*.lock": "deny" } } } },
+  )
+})
+
+describe('"Always allow in this project": saved approvals', () => {
+  const saved = (...rules: WorkbenchApprovals.Rule[]) => WorkbenchApprovals.Service.use((svc) => svc.save(rules))
+  const unsaved = (rule: WorkbenchApprovals.Rule) => WorkbenchApprovals.Service.use((svc) => svc.remove(rule))
+
+  test("only well-formed rules are kept: both strings non-empty, permission ≤ 200 and pattern ≤ 2000 characters", () => {
+    expect(WorkbenchApprovals.valid({ permission: "bash", pattern: "git status *" })).toBe(true)
+    expect(WorkbenchApprovals.valid({ permission: "bash", pattern: "x".repeat(2000) })).toBe(true)
+    expect(WorkbenchApprovals.valid({ permission: "bash", pattern: "x".repeat(2001) })).toBe(false)
+    expect(WorkbenchApprovals.valid({ permission: "b".repeat(201), pattern: "*" })).toBe(false)
+    expect(WorkbenchApprovals.valid({ permission: "", pattern: "*" })).toBe(false)
+    expect(WorkbenchApprovals.valid({ permission: "bash" })).toBe(false)
+  })
+
+  it.instance(
+    "a saved rule skips the ask in every session of the project; removing it asks again",
+    () =>
+      Effect.gen(function* () {
+        const build = (yield* agents)("build").permission
+        expect(yield* saved({ permission: "edit", pattern: "*" })).toEqual([{ permission: "edit", pattern: "*" }])
+        // Saving it again keeps one copy.
+        expect(yield* saved({ permission: "edit", pattern: "*" })).toHaveLength(1)
+        yield* edit("ses_a", "src/a.ts", build)
+        yield* edit("ses_child", "src/b.ts", build)
+        expect(yield* Permission.Service.use((svc) => svc.list())).toEqual([])
+        expect(yield* unsaved({ permission: "edit", pattern: "*" })).toEqual([])
+        expect((yield* asks(edit("ses_a", "src/c.ts", build))).patterns).toEqual(["src/c.ts"])
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "a saved rule never lifts a deny, and never approves an edit under .git",
+    () =>
+      Effect.gen(function* () {
+        const agent = yield* agents
+        // A remembered "always" for every file still asks for .git.
+        const first = yield* edit("ses_b", "src/a.ts", []).pipe(Effect.forkScoped)
+        yield* answer("always")
+        yield* Fiber.join(first)
+        expect((yield* asks(edit("ses_b", ".git/hooks/pre-commit", []))).patterns).toEqual([".git/hooks/pre-commit"])
+        // So does a saved one, and denies hold.
+        yield* saved({ permission: "edit", pattern: "*" })
+        expect(yield* denied(edit("ses_a", "src/app.ts", agent("plan").permission))).toBe(true)
+        expect(yield* denied(edit("ses_a", "bun.lock", agent("build").permission))).toBe(true)
+        expect((yield* asks(edit("ses_a", ".git/config", agent("build").permission))).patterns).toEqual([".git/config"])
+      }),
+    { git: true, config: { permission: { edit: { "*.lock": "deny" } } } },
   )
 })

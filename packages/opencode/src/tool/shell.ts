@@ -21,6 +21,7 @@ import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
+import { WorkbenchHarmless } from "@/workbench/harmless" // spicy: commands that only read run without asking
 
 export { Parameters } from "./shell/prompt"
 
@@ -260,7 +261,12 @@ const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boole
   return tree
 })
 
-const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan, input: { command: string }) {
+const ask = Effect.fn("ShellTool.ask")(function* (
+  ctx: Tool.Context,
+  scan: Scan,
+  input: { command: string },
+  harmless = false, // spicy: the script only reads (workbench/harmless.ts)
+) {
   if (scan.dirs.size > 0) {
     const directories = Array.from(scan.dirs)
     const globs = directories.map((dir) => {
@@ -286,6 +292,7 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
     always: Array.from(scan.always),
     metadata: {
       command: input.command,
+      ...(harmless ? { harmless: true } : {}), // spicy: lifts only the blanket bash ask (workbench/auto-approve.ts)
     },
   })
 })
@@ -308,7 +315,8 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
     detached: process.platform !== "win32",
   })
 }
-const parser = lazy(async () => {
+export const parser = lazy(async () => {
+  // spicy: exported for the workbench/harmless tests
   const { Parser } = await import("web-tree-sitter")
   const { default: treeWasm } = await import("web-tree-sitter/tree-sitter.wasm" as string, {
     with: { type: "wasm" },
@@ -624,7 +632,14 @@ export const ShellTool = Tool.define(
                   )
                   const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
                   if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
-                  yield* ask(ctx, scan, params)
+                  // spicy: a script that only reads runs without the blanket bash ask (workbench/harmless.ts)
+                  const harmless =
+                    !ps &&
+                    WorkbenchHarmless.posix(shell) &&
+                    WorkbenchHarmless.harmless(tree.rootNode, {
+                      inside: (file) => containsPath(path.resolve(cwd, home(file)), instanceCtx),
+                    })
+                  yield* ask(ctx, scan, params, harmless)
                 }),
               )
 

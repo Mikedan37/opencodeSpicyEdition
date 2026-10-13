@@ -32,7 +32,8 @@ const McpCommand = cmd({
     const session = WorkbenchBridgeSession.agentSession() // spicy: one session for both (dap)
     const debug = WorkbenchDebugBridge.tools(session) // spicy: debug_* tools (dap)
     const created = WorkbenchToolsBridge.tools(session) // spicy: tool creator (dap)
-    // Credentials come from OPENCODE_SERVER_USERNAME / OPENCODE_SERVER_PASSWORD, never from arguments.
+    // Credentials come from the environment, never from arguments: OPENCODE_SERVER_TOKEN (a bridge token, which
+    // Agent HQ gives the bridges it starts), else OPENCODE_SERVER_USERNAME / OPENCODE_SERVER_PASSWORD.
     await WorkbenchBridge.serve(
       {
         url,

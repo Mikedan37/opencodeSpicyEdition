@@ -68,4 +68,12 @@ export const workbenchScenarios: Scenario[] = [
     object(body)
     check(Array.isArray(body.languages) && body.languages.length > 0, "doctor should list languages")
   }),
+  http.protected
+    .post("/workbench/session", "workbench.session")
+    .mutating()
+    .at((ctx) => ({ path: "/workbench/session", headers: ctx.headers(), body: {} }))
+    .json(200, (body) => {
+      object(body)
+      check(String(body.id).startsWith("ses"), "returns the session the bridge's agent tools act in")
+    }),
 ]

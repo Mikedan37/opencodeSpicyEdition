@@ -331,6 +331,19 @@ const layer = Layer.effect(
       return session
     })
 
+    // A bridge's token lives exactly as long as the provider session it was made for: it ends when that session
+    // closes, and at once when the session never opens.
+    const withWorkbench = <E>(
+      directory: string,
+      open: (workbench: AgentProvider.McpServer | undefined) => Effect.Effect<AgentProvider.Session, E>,
+    ) =>
+      Effect.gen(function* () {
+        const workbench = yield* AgentWorkbench.server(directory)
+        const release = Effect.sync(() => AgentWorkbench.release(workbench))
+        const handle = yield* open(workbench).pipe(Effect.onError(() => release))
+        return { ...handle, close: handle.close.pipe(Effect.ensuring(release)) }
+      })
+
     const attach = Effect.fnUntraced(function* (session: Live) {
       if (session.handle) return session.handle
       const provider = providers[session.info.provider]
@@ -340,12 +353,12 @@ const layer = Layer.effect(
           action: "resume",
           message: `${session.info.provider} sessions cannot be resumed`,
         })
-      const handle = yield* provider.resumeSession({
-        agent: session.agent,
-        providerSessionID: session.info.providerSessionID,
-        emit: emitter(session),
-        workbench: yield* AgentWorkbench.server(session.agent.workingDirectory ?? session.agent.projectDirectory),
-      })
+      const providerSessionID = session.info.providerSessionID
+      const handle = yield* withWorkbench(
+        session.agent.workingDirectory ?? session.agent.projectDirectory,
+        (workbench) =>
+          provider.resumeSession!({ agent: session.agent, providerSessionID, emit: emitter(session), workbench }),
+      )
       session.handle = handle
       // A provider that could not resume started a new session of its own; later reattaches use that one.
       if (handle.providerSessionID !== session.info.providerSessionID)
@@ -459,12 +472,14 @@ const layer = Layer.effect(
         owed: 0,
       }
       // Ask the provider first: an unsupported or failing provider leaves no record behind.
-      const handle = yield* providers[agent.provider].createSession({
-        agent,
-        ...(input?.title ? { title: input.title } : {}),
-        emit: emitter(session),
-        workbench: yield* AgentWorkbench.server(agent.workingDirectory ?? agent.projectDirectory),
-      })
+      const handle = yield* withWorkbench(agent.workingDirectory ?? agent.projectDirectory, (workbench) =>
+        providers[agent.provider].createSession({
+          agent,
+          ...(input?.title ? { title: input.title } : {}),
+          emit: emitter(session),
+          workbench,
+        }),
+      )
       session.handle = handle
       session.info = { ...session.info, providerSessionID: handle.providerSessionID }
       return yield* lock(session.info.id)(

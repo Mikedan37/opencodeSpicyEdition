@@ -177,7 +177,7 @@ const bridge = (directory: string): AgentProvider.McpServer => ({
   name: "opencode-workbench",
   command: "/opt/opencode",
   args: ["workbench", "mcp", "--url", "http://127.0.0.1:4096", "--directory", directory],
-  env: { OPENCODE_SERVER_USERNAME: "opencode", OPENCODE_SERVER_PASSWORD: "s3cret" },
+  env: { OPENCODE_SERVER_TOKEN: "s3cret" },
 })
 
 const waitFor = <A>(
@@ -231,7 +231,7 @@ describe("agenthq claude code adapter (scripted SDK)", () => {
             type: "stdio",
             command: "/opt/opencode",
             args: ["workbench", "mcp", "--url", "http://127.0.0.1:4096", "--directory", "/projects/app"],
-            env: { OPENCODE_SERVER_USERNAME: "opencode", OPENCODE_SERVER_PASSWORD: "s3cret" },
+            env: { OPENCODE_SERVER_TOKEN: "s3cret" },
           },
         },
       ])
@@ -246,7 +246,7 @@ describe("agenthq claude code adapter (scripted SDK)", () => {
     }),
   )
 
-  it.live("the claude process does not inherit the opencode server's credentials; only the bridge gets them", () =>
+  it.live("the claude process does not inherit the opencode server's credentials; only the bridge gets its token", () =>
     Effect.gen(function* () {
       const saved = [process.env.OPENCODE_SERVER_USERNAME, process.env.OPENCODE_SERVER_PASSWORD] as const
       process.env.OPENCODE_SERVER_USERNAME = "opencode"
@@ -265,8 +265,11 @@ describe("agenthq claude code adapter (scripted SDK)", () => {
       const env = fake.seen.options!.env!
       expect(Object.keys(env)).not.toContain("OPENCODE_SERVER_USERNAME")
       expect(Object.keys(env)).not.toContain("OPENCODE_SERVER_PASSWORD")
+      expect(Object.keys(env)).not.toContain("OPENCODE_SERVER_TOKEN")
       expect(env.PATH).toBe(process.env.PATH)
-      expect(fake.seen.mcp[0]?.["opencode-workbench"]).toMatchObject({ env: { OPENCODE_SERVER_PASSWORD: "s3cret" } })
+      expect(fake.seen.mcp[0]?.["opencode-workbench"]).toEqual(
+        expect.objectContaining({ env: { OPENCODE_SERVER_TOKEN: "s3cret" } }),
+      )
     }),
   )
 
@@ -456,7 +459,7 @@ describe("agenthq claude code adapter (real, opt-in)", () => {
         const { server } = yield* listener
         const dir = yield* tmpdirScoped({ git: true })
 
-        // What the manager gives a session in `dir`: this listener, the directory and its credentials. The test adds
+        // What the manager gives a session in `dir`: this listener, the directory and a bridge token. The test adds
         // its own XDG dirs, so the bridge stays out of the owner's opencode data whatever claude passes it.
         const configured = (yield* AgentWorkbench.server(dir))!
         expect(configured.args).toEqual(expect.arrayContaining(["--url", server.url.origin, "--directory", dir]))
@@ -502,13 +505,14 @@ describe("agenthq claude code adapter (real, opt-in)", () => {
           "60 seconds",
         )
         const tools = (status.tools ?? []).map((tool) => tool.name)
-        // The processes: claude without the server's credentials, the bridge with them only in its environment.
+        // The processes: claude without the server's credentials, the bridge with its token only in its environment and
+        // never the server password.
         const claude = inspect(session.providerSessionID)
         const bridge = inspect(`workbench mcp --url ${server.url.origin} --directory ${dir}`)
         const report = {
           connectMs,
           firstStatus: first?.status,
-          // Never `config`: it holds the server password.
+          // Never `config`: it holds the bridge token.
           server: { name: status.name, status: status.status, source: status.source, serverInfo: status.serverInfo },
           error: status.error,
           tools,
@@ -519,7 +523,10 @@ describe("agenthq claude code adapter (real, opt-in)", () => {
           claudeHasPassword: claude.environment.includes(auth.password),
           bridgeFound: bridge.command !== "",
           bridgeArgsHavePassword: bridge.command.includes(auth.password),
-          bridgeEnvHasPassword: bridge.environment.includes(`OPENCODE_SERVER_PASSWORD=${auth.password}`),
+          bridgeEnvHasPassword: bridge.environment.includes(auth.password),
+          bridgeEnvHasToken: bridge.environment.includes(
+            `OPENCODE_SERVER_TOKEN=${configured.env.OPENCODE_SERVER_TOKEN}`,
+          ),
           bridgeGotClaudeEnv: bridge.environment.includes("OPENCODE_EXPERIMENTAL_EVENT_SYSTEM="),
         }
         console.log(`SPICY_REAL_CLAUDE status ${JSON.stringify(report)}`)
@@ -528,7 +535,11 @@ describe("agenthq claude code adapter (real, opt-in)", () => {
         expect(tools.some((name) => name.startsWith("debug_"))).toBe(true)
         expect(report).toMatchObject({ claudeFound: true, claudeStrict: true, claudeMcpConfigArg: false })
         expect(report).toMatchObject({ claudeHasPassword: false, bridgeFound: true })
-        expect(report).toMatchObject({ bridgeArgsHavePassword: false, bridgeEnvHasPassword: true })
+        expect(report).toMatchObject({
+          bridgeArgsHavePassword: false,
+          bridgeEnvHasPassword: false,
+          bridgeEnvHasToken: true,
+        })
         if (mode === "status") return
 
         // The one model call: Claude asks to run the doctor, the test allows it once, the result comes back.

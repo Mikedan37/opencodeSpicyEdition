@@ -1,4 +1,5 @@
 import { ServerAuth } from "@/server/auth"
+import { BridgeToken } from "@/server/bridge-token" // spicy: Workbench bridge tokens
 import { Effect, Encoding, Layer, Redacted } from "effect"
 import { HttpEffect, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiError, HttpApiMiddleware } from "effect/unstable/httpapi"
@@ -120,9 +121,14 @@ export const authorizationLayer = Layer.effect(
   Effect.gen(function* () {
     const config = yield* ServerAuth.Config
     if (!ServerAuth.required(config)) return Authorization.of((effect) => effect)
-    return Authorization.of((effect) =>
+    return Authorization.of((effect, options) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
+        // spicy: a Workbench bridge token reaches only the bridge's own endpoints; any other endpoint is 403
+        if (BridgeToken.of(request))
+          return BridgeToken.ROUTES.has(`${options.group.identifier}.${options.endpoint.name}`)
+            ? yield* effect
+            : HttpServerResponse.empty({ status: 403 })
         return yield* credentialFromRequest(request).pipe(
           Effect.flatMap((credential) => validateCredential(effect, credential, config)),
         )

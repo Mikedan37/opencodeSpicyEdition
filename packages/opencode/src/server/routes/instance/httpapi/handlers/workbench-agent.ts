@@ -1,10 +1,14 @@
 // spicy: running workbench tools for agents outside opencode (the Workbench MCP bridge) as the agent of an opencode
 // session. Asks go through the permission service with the default agent's rules plus the session's (as
-// session/tools.ts does), so "ask" waits for the human in the IDE; nothing is approved here.
+// session/tools.ts does), so "ask" waits for the human in the IDE; nothing is approved here. A bridge token acts only
+// in the session it got from POST /workbench/session: another session's rules (approvals the human saved there) are
+// not its to use.
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Effect } from "effect"
+import { HttpServerRequest } from "effect/unstable/http"
 import { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
+import { BridgeToken } from "@/server/bridge-token"
 import { MessageID, type SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { Tool } from "@/tool/tool"
@@ -17,6 +21,9 @@ export const runner = Effect.gen(function* () {
   const permission = yield* Permission.Service
   return <A, E>(sessionID: SessionID, execute: (ctx: Tool.Context) => Effect.Effect<A, E>) =>
     Effect.gen(function* () {
+      const grant = BridgeToken.of(yield* HttpServerRequest.HttpServerRequest)
+      if (grant && grant.session !== sessionID)
+        return yield* new ForbiddenError({ message: "a Workbench bridge acts only in its own session" })
       const owner = yield* sessions
         .get(sessionID)
         .pipe(Effect.catch(() => Effect.fail(notFound(`no session ${sessionID}`))))

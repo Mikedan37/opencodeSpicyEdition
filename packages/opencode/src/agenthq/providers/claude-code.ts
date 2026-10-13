@@ -186,7 +186,7 @@ const connect = (query: ReturnType<Run>, server: AgentProvider.McpServer, emit: 
     }),
     Effect.map((reason) => {
       if (!reason) return
-      const secret = server.env.OPENCODE_SERVER_PASSWORD
+      const secret = server.env.OPENCODE_SERVER_TOKEN
       const message = `Workbench tools unavailable: ${secret ? reason.replaceAll(secret, "***") : reason}`
       emit({ type: "error", message: message.slice(0, PREVIEW_LIMIT) })
     }),

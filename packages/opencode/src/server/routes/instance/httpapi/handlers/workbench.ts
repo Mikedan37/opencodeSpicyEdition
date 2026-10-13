@@ -2,12 +2,15 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppProcess } from "@opencode-ai/core/process"
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { Effect, Layer } from "effect"
+import { HttpServerRequest } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Permission } from "@/permission"
+import { BridgeToken } from "@/server/bridge-token"
+import { SessionShare } from "@/share/session"
 import { Doctor } from "@/workbench/doctor"
 import { WorkbenchProblems } from "@/workbench/problems/store"
 import { WorkbenchCheckers } from "@/workbench/verify/checkers"
@@ -16,6 +19,7 @@ import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { LSP } from "@/lsp/lsp"
 import { WorkbenchEditorFile } from "@/workbench/editor-file"
+import { SessionID } from "@/session/schema"
 import { InstanceHttpApi } from "../api"
 import { ConflictError, ForbiddenError, InvalidRequestError, notFound } from "../errors"
 import { CheckPayload, FileQuery, FileWritePayload, ProblemsQuery } from "../groups/workbench"
@@ -33,6 +37,7 @@ export const workbenchHandlers = HttpApiBuilder.group(
       const appProcess = yield* AppProcess.Service
       const lsp = yield* LSP.Service
       const events = yield* EventV2Bridge.Service
+      const shares = yield* SessionShare.Service
 
       const refuse = (failure: WorkbenchEditorFile.Failure) => {
         if (failure.kind === "missing") return notFound(failure.message)
@@ -71,7 +76,10 @@ export const workbenchHandlers = HttpApiBuilder.group(
       })
 
       const check = Effect.fn("WorkbenchHttpApi.check")(function* (ctx: { payload: typeof CheckPayload.Type }) {
-        const trigger = ctx.payload.trigger ?? "user"
+        // Only a person (the server password, the IDE) starts checks as "user". A bridge token is an agent whatever
+        // the body says.
+        const bridge = BridgeToken.of(yield* HttpServerRequest.HttpServerRequest)
+        const trigger = bridge ? "agent" : (ctx.payload.trigger ?? "user")
         // A person who starts a check in the IDE has approved it, so checks that run project code run. An agent
         // outside opencode (the MCP bridge) only gets what the permission rules already allow; nobody is asked.
         const rules = trigger === "agent" ? (yield* agents.defaultInfo()).permission : []
@@ -90,6 +98,16 @@ export const workbenchHandlers = HttpApiBuilder.group(
           approval: trigger === "agent" ? "needs approval in the IDE" : undefined,
         })
         return result.report
+      })
+
+      // The session the bridge's agent tools act in, as POST /session would make it. A bridge token gets one, made on
+      // its first call and the only session it can act in (WorkbenchAgent.runner).
+      const session = Effect.fn("WorkbenchHttpApi.session")(function* () {
+        const grant = BridgeToken.of(yield* HttpServerRequest.HttpServerRequest)
+        if (grant?.session) return { id: SessionID.make(grant.session) }
+        const info = yield* shares.create({ title: "Workbench MCP" })
+        if (grant) grant.session = info.id
+        return { id: info.id }
       })
 
       const runs = Effect.fn("WorkbenchHttpApi.runs")(function* () {
@@ -123,6 +141,7 @@ export const workbenchHandlers = HttpApiBuilder.group(
         .handle("runs", runs)
         .handle("run", run)
         .handle("doctor", doctor)
+        .handle("session", session)
         .handle("file", file)
         .handle("writeFile", writeFile)
     }),

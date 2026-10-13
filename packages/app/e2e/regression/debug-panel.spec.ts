@@ -482,6 +482,69 @@ test("a stop brings its file forward over the Review tab but leaves the Debug ta
   await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
 })
 
+async function openConsole(page: Page, backlog: Record<string, unknown>[]) {
+  const mock = await setup(page)
+  mock.sessions = [session({ state: "stopped", stop: stopAt(1) })]
+  mock.backlog = backlog
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="debug"]').click()
+  return { mock, panel: page.locator('[data-component="workbench-debug-console"]') }
+}
+
+test("CON-12 10,000 console rows stay virtualized while filtering and scrolling", async ({ page }) => {
+  const backlog = Array.from({ length: 10_000 }, (_, index) =>
+    row(index + 1, index % 2 ? "stderr" : "stdout", "program", `line ${index + 1}`),
+  )
+  const { panel } = await openConsole(page, backlog)
+  const rows = panel.locator("[data-console-row]")
+  // The console follows the newest row.
+  await expect(panel.locator('[data-console-row="10000"]')).toContainText("line 10000")
+  expect(await rows.count()).toBeLessThan(300)
+
+  const started = Date.now()
+  await panel.locator('[data-console-filter="stderr"]').click()
+  await expect(panel.locator('[data-console-row="10000"]')).toHaveCount(0)
+  await expect(panel.locator('[data-console-row="9999"]')).toContainText("line 9999")
+  expect(Date.now() - started).toBeLessThan(2_000)
+  expect(await rows.count()).toBeLessThan(300)
+
+  await panel.getByRole("region").evaluate((el) => (el.scrollTop = 0))
+  await expect(panel.locator('[data-console-row="1"]')).toContainText("line 1")
+  expect(await rows.count()).toBeLessThan(300)
+})
+
+test("CON-03 Esc closes the completion list and keeps the typed text", async ({ page }) => {
+  const { panel } = await openConsole(page, [row(5, "stdout", "program", "hello")])
+  const input = panel.locator('[data-slot="debug-console-input"]')
+  await input.fill("ite")
+  await expect(panel.getByRole("option")).toHaveText([/items/, /iter/])
+  await input.press("Escape")
+  await expect(panel.getByRole("option")).toHaveCount(0)
+  await expect(input).toHaveValue("ite")
+  await expect(input).toBeFocused()
+})
+
+test("CON-05 an agent's evaluation is attributed to the agent", async ({ page }) => {
+  const { mock, panel } = await openConsole(page, [row(5, "stdout", "program", "hello")])
+  mock.emit(output(row(6, "eval", "agent", "len(xs)"), row(7, "result", "agent", "(0, 0)")))
+  await expect(panel.locator('[data-console-row="6"]')).toHaveText("agent› len(xs)")
+  await expect(panel.locator('[data-console-row="6"]')).toHaveAttribute("data-by", "agent")
+  await expect(panel.locator('[data-console-row="7"]')).toContainText("(0, 0)")
+})
+
+test("CON-04 stderr is styled apart from stdout", async ({ page }) => {
+  const { panel } = await openConsole(page, [
+    row(5, "stdout", "program", "plain line"),
+    row(6, "stderr", "program", "error line"),
+  ])
+  const color = (seq: number) =>
+    panel.locator(`[data-console-row="${seq}"] > div`).evaluate((el) => getComputedStyle(el).color)
+  await expect(panel.locator('[data-console-row="6"]')).toContainText("error line")
+  expect(await color(6)).not.toBe(await color(5))
+})
+
 function row(seq: number, kind: string, by: string, text: string) {
   return { seq, at: seq, kind, by, text }
 }

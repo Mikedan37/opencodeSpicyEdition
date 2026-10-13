@@ -60,7 +60,17 @@ export const AutoApprove = Schema.Struct({
     description: "Edits (edit, write, apply_patch) in this session run without asking, except under .git/",
   }),
   commands: Schema.Boolean.annotate({ description: "Shell commands in this session run without asking" }),
+  enabled: Schema.Boolean.annotate({
+    description: "Both switches on (edits && commands): the single switch's shape, which installed apps still read",
+  }),
 }).annotate({ identifier: "WorkbenchAutoApprove" })
+
+// What PUT takes: either switch, or `enabled` for both (the single switch's shape); a field left out keeps its value.
+export const AutoApproveUpdate = Schema.Struct({
+  edits: Schema.optional(Schema.Boolean),
+  commands: Schema.optional(Schema.Boolean),
+  enabled: Schema.optional(Schema.Boolean).annotate({ description: "Sets both switches; edits/commands win over it" }),
+}).annotate({ identifier: "WorkbenchAutoApproveUpdate" })
 
 // "Always allow in this project" (src/workbench/approvals.ts): allow rules saved from permission asks.
 export const Approvals = Schema.Struct({
@@ -302,7 +312,7 @@ export const WorkbenchApi = HttpApi.make("workbench")
         HttpApiEndpoint.put("setAutoApprove", `${root}/sessions/:sessionID/auto-approve`, {
           params: { sessionID: SessionID },
           query: WorkspaceRoutingQuery,
-          payload: AutoApprove,
+          payload: AutoApproveUpdate,
           success: described(AutoApprove, "The session's switches after the change"),
           error: ApiNotFoundError,
         }).annotateMerge(

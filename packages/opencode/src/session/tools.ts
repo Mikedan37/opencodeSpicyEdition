@@ -85,7 +85,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           ...req,
           sessionID: input.session.id,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-          ruleset: SessionAutoApprove.ruleset(input.agent.permission, input.session.permission ?? []), // spicy: auto-approve switch
+          ruleset: SessionAutoApprove.ruleset(input.agent.permission, input.session.permission ?? [], req), // spicy: auto-approve switches, harmless commands
         })
         .pipe(Effect.orDie),
   })

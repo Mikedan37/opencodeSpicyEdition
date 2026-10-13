@@ -1453,3 +1453,31 @@ The logged exchange showed two things the ACP adapter now handles for every agen
 Tests: the launch test records `-y @agentclientprotocol/codex-acp@2.2.2` and `INITIAL_AGENT_MODE=read-only`; a
 `codex-acp` on PATH gets both the mode and the `-c` policy; AHQ-15 replays Codex's exchange with the fake agent
 (`codex-edit`): the preview shows the diff, and the refused edit reports no `file.changed`.
+
+## Cursor: slow probes, and a check that could not fail
+
+With the installed 2026.10.01-e373342 logged in, Cursor sessions timed out, and the free real check still passed:
+`{"available":true,…,"sessionNew":"failed","message":"cursor-agent --version failed or timed out"}`.
+
+- Root cause: every cursor-agent start waits on Node's `--use-system-ca`, which its launcher adds (unless
+  `AGENT_CLI_CREDENTIAL_STORE=file`) and which reads the macOS trust store before anything runs. Measured here:
+  `node index.js acp --help` 0.25 s, `node --use-system-ca index.js acp --help` 1.4 s to 5.5 s with load;
+  `cursor-agent --version` 1.6 to 5.3 s and `acp --help` about 5.2 s. It is not a network or update check. The probes
+  had 5 seconds each, and the launch ran the whole detection again, so a session start probed a second time and ran
+  out.
+- Fix: each probe gets 15 seconds, the two run side by side, and the answer is kept while the binary is the same file
+  (real path, size, mtime, inode); a probe that fails or times out is not kept. One detection runs at a time. A provider
+  list or a session start reuses it, so a session start only runs `acp`.
+- The real check now fails unless `session/new` succeeds. Run of 2026-10-13: `{"available":true,"version":
+"2026.10.01-e373342","ms":9507,"sessionNew":"ok","providerSessionID":"8cf84702-…","allowlistAfter":{"allow":[],
+"deny":[]}}`. Cursor's session start also writes its own state into `~/.cursor` (`agent-cli-state.json`, a skills
+  sync manifest, and an empty project folder for the test directory, which was removed).
+- Auto-update and `~/.local/bin/agent`: Cursor's installer function links both `~/.local/bin/agent` and
+  `~/.local/bin/cursor-agent` to the version it installs (unlinking whatever `agent` was) and writes a
+  `~/.local/bin/cursor` shim, also when the version is already present. It runs on `cursor-agent update`, `upgrade`,
+  `set-channel`, and, 2 seconds after the interactive agent starts, as a background auto-update unless
+  `--disable-auto-update` or the "static" channel. ACP mode (`cursor-agent acp`, what Agent HQ runs) never calls it. So
+  the owner's own interactive Cursor use re-points AgentKit's `agent` link whenever a new Cursor version lands.
+
+Tests: a fake cursor-agent that takes 6 seconds over `acp --help` is available (it fails with the old 5-second limit),
+is asked once per binary across lists and a session start, and is asked again after its mtime changes.

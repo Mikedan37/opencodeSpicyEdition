@@ -132,7 +132,11 @@ export const attach = (input: AttachInput, ctx: Context): Effect.Effect<Spec, De
     } satisfies Spec
   })
 
-const lldb = { runInTerminal: true, console: "integratedTerminal", commandEscapePrefix: "`" }
+// lldb launches the program itself, on a pseudo-terminal of its own, and forwards its output as DAP output events (so
+// stdout stays line-buffered and output written before a crash survives). Not runInTerminal: lldb-dap's launcher is
+// lldb-dap itself, which the debugger has to attach to before it execs the program, and macOS does not allow
+// attaching to Xcode's Apple-signed lldb-dap ("Not allowed to attach to process"), so that launch can never start.
+const lldb = { runInTerminal: false, console: "internalConsole", commandEscapePrefix: "`" }
 
 // std calls rust_panic for every panic, so a function breakpoint there stops on failed asserts and unwraps.
 const PANIC = "rust_panic"

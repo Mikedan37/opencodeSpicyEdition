@@ -422,6 +422,17 @@ export interface CursorEnv extends Env {
   readonly OPENCODE_CURSOR_AGENT?: string
 }
 
+/** A file as it is now (real path, size, mtime, inode), or undefined when it cannot be read. */
+function fileIdentity(file: string) {
+  try {
+    const real = realpathSync(file)
+    const stat = statSync(real)
+    return [real, stat.size, stat.mtimeMs, stat.ino].join("\n")
+  } catch {
+    return undefined
+  }
+}
+
 /** The cursor-agent binary: OPENCODE_CURSOR_AGENT, else PATH. */
 export function cursorBinary(
   env: CursorEnv = { PATH: process.env.PATH, OPENCODE_CURSOR_AGENT: process.env.OPENCODE_CURSOR_AGENT },
@@ -455,13 +466,18 @@ const cursorCapabilities: AgentHQ.ProviderCapabilities = {
   ],
 }
 
-/** Cursor; available when its `acp` subcommand exists. Probing runs only `--version` and `acp --help`. */
+/**
+ * Cursor; available when its `acp` subcommand exists. Probing runs only `--version` and `acp --help`, once per binary:
+ * a provider list or a session start asks again only when the binary changed.
+ */
 export const cursor = Effect.fn("AgentHQ.detect.cursor")(function* (env?: CursorEnv) {
   const proc = yield* AppProcess.Service
   const base = { id: "cursor", name: "Cursor", auth: "unknown", capabilities: cursorCapabilities } as const
+  // cursor-agent starts slowly: its launcher runs Node with --use-system-ca, which reads the macOS trust store before
+  // anything else (1.5 to 5 seconds per run here, more under load), so each probe gets 15.
   const run = (bin: string, args: string[]) =>
     proc
-      .run(ChildProcess.make(bin, args, { stdin: "ignore", env: AgentProvider.agentEnv() }), { timeout: "5 seconds" })
+      .run(ChildProcess.make(bin, args, { stdin: "ignore", env: AgentProvider.agentEnv() }), { timeout: "15 seconds" })
       .pipe(
         Effect.map((result) => ({
           code: result.exitCode,
@@ -469,27 +485,44 @@ export const cursor = Effect.fn("AgentHQ.detect.cursor")(function* (env?: Cursor
         })),
         Effect.orElseSucceed(() => ({ code: -1, text: "" })),
       )
-  const detected: Effect.Effect<AgentHQ.ProviderStatus> = Effect.gen(function* () {
-    const bin = cursorBinary(env)
-    const explicit = env ? env.OPENCODE_CURSOR_AGENT : process.env.OPENCODE_CURSOR_AGENT
-    if (!bin)
-      return {
-        ...base,
-        available: false,
-        reason: explicit ? "OPENCODE_CURSOR_AGENT does not point to a file" : "cursor-agent not found on PATH",
-      }
-    const version = (yield* run(bin, ["--version"])).text.match(/\d+\.\d+[\w.+-]*/)?.[0]
-    if (!version) return { ...base, available: false, reason: "cursor-agent --version failed or timed out" }
-    const usage = yield* run(bin, ["acp", "--help"])
-    if (usage.code !== 0 || !/Agent Client Protocol|\bACP\b/.test(usage.text))
-      return {
-        ...base,
-        version,
-        available: false,
-        reason: `This cursor-agent (${version.split("-")[0]}) has no ACP mode; update the Cursor CLI`,
-      }
-    return { ...base, version, available: true }
-  }).pipe(Effect.provideService(AppProcess.Service, proc))
+  // A complete answer is kept while the binary is the same file (real path, size, mtime, inode); a probe that failed
+  // or timed out is asked again next time. One detection at a time, so two lists never probe twice.
+  let known: { readonly key: string; readonly status: AgentHQ.ProviderStatus } | undefined
+  const asking = Semaphore.makeUnsafe(1)
+  const detected: Effect.Effect<AgentHQ.ProviderStatus> = asking
+    .withPermit(
+      Effect.gen(function* () {
+        const bin = cursorBinary(env)
+        const explicit = env ? env.OPENCODE_CURSOR_AGENT : process.env.OPENCODE_CURSOR_AGENT
+        if (!bin)
+          return {
+            ...base,
+            available: false,
+            reason: explicit ? "OPENCODE_CURSOR_AGENT does not point to a file" : "cursor-agent not found on PATH",
+          }
+        const key = fileIdentity(bin)
+        if (key && known?.key === key) return known.status
+        const [probed, usage] = yield* Effect.all([run(bin, ["--version"]), run(bin, ["acp", "--help"])], {
+          concurrency: 2,
+        })
+        const version = probed.text.match(/\d+\.\d+[\w.+-]*/)?.[0]
+        if (!version) return { ...base, available: false, reason: "cursor-agent --version failed or timed out" }
+        if (usage.code === -1)
+          return { ...base, version, available: false, reason: "cursor-agent acp --help failed or timed out" }
+        const status: AgentHQ.ProviderStatus =
+          usage.code === 0 && /Agent Client Protocol|\bACP\b/.test(usage.text)
+            ? { ...base, version, available: true }
+            : {
+                ...base,
+                version,
+                available: false,
+                reason: `This cursor-agent (${version.split("-")[0]}) has no ACP mode; update the Cursor CLI`,
+              }
+        if (key) known = { key, status }
+        return status
+      }),
+    )
+    .pipe(Effect.provideService(AppProcess.Service, proc))
   return yield* AcpProvider.make({
     id: "cursor",
     status: detected,

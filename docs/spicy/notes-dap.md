@@ -296,8 +296,9 @@ Delivered on the instance stream `GET /event` (SSE; each item `{ id, type, prope
   a human's `` ` `` LLDB command first asks `debug.lldbCommand` (wave 6).
 - **Run tab**: when `ptyID` is set, the program runs in that PTY: attach with the existing PTY routes
   (`POST /pty/:ptyID/connect-token`, then the `/pty/:ptyID/connect` WebSocket) for live I/O and stdin. Its output is
-  also mirrored into console rows (`stdout`, ANSI stripped). Without `ptyID` (debugpy's default internal console),
-  the `stdout`/`stderr` rows are the program's output.
+  also mirrored into console rows (`stdout`, ANSI stripped). Without `ptyID` (debugpy's default internal console, and
+  every lldb-dap session, which lldb runs on a pseudo-terminal of its own), the `stdout`/`stderr` rows are the
+  program's output and there is no stdin.
 - **Investigations**: `status` follows `created → reproducing → debugging → diagnosing → patching → verifying →
 resolved`, plus `blocked`, `needs_human`, `interrupted`, `failed`, `cancelled`. The summary's `reason`, `rule`,
   `runIDs` and `evidenceID` come from the latest checkpoint with a reason: `reason` is a sentence, `rule` the
@@ -790,3 +791,51 @@ test/agenthq` 1115 pass / 13 skip / 1 todo / 0 fail; `packages/core` PTY tests 1
   sessions", the known load timeout; 4/4 twice alone). All runs used `env -u TERM_SESSION_ID TERM_PROGRAM=opencode
 SHELL_SESSIONS_DISABLE=1`, and the real `~/.zsh_sessions`/`~/.bash_sessions` were compared (read only) before and
   after: unchanged.
+
+## lldb-dap with Developer Mode on (DAP-18, E2E-02/03/04)
+
+- Root cause of the first real runs failing ("Failed to attach to the target process. Timed out trying to get messages
+  from the runInTerminal launcher", about 1.6 s in): lldb-dap's runInTerminal launcher is lldb-dap itself
+  (`lldb-dap --comm-file <fifo> --debugger-pid <pid> --launch-target <program>`). It sends lldb-dap its pid, and
+  lldb-dap must attach to it before it execs the program. macOS refuses that attach for Xcode's Apple-signed lldb-dap.
+  Evidence:
+  - the lldb-dap protocol log shows the launch failing right after our runInTerminal reply;
+  - a stand-alone replay (no opencode; the launcher in a bun-pty PTY, then as a plain child process) fails the same
+    way, the launcher printing nothing;
+  - `lldb -p <pid>` against an idle Xcode lldb-dap started for the check answers "Not allowed to attach to process",
+    while attaching to a program compiled here works.
+    Not the PTY service, its environment or the `env -u` wrapper.
+- Fix (`dap/launch.ts`): lldb-dap launches use lldb's own launch (`runInTerminal: false`,
+  `console: "internalConsole"`, still `commandEscapePrefix`). lldb runs the program on a pseudo-terminal and forwards
+  its output as DAP output events, so stdout stays line-buffered and output written right before a crash survives
+  (the reason runInTerminal was chosen). The cost: lldb-dap sessions have no `ptyID`, so no Run-tab terminal and no
+  stdin. debugpy is unchanged.
+- Snapshots (`dap/snapshot.ts`): a language runtime's own failure report is shown as the exception, from the code
+  that failed.
+  - A Rust panic stops at the `rust_panic` breakpoint under std/core's panic frames. The snapshot drops those frames,
+    so frames, locals and the default frame are the program's, and reports `exception panic`.
+  - A Swift runtime failure stops in `_swift_runtime_on_report` (lldb reports a breakpoint, "Fatal error: Index out of
+    range"). The snapshot starts below libswiftCore's frames and reports `exception Swift runtime failure: …`.
+  - Rust symbol hashes (`::h…`) are dropped from frame names. Long std frames were what pushed the test's frame out of
+    the 2 KB snapshot.
+- Tests (all real lldb-dap; Developer Mode on):
+  - `lldb.test.ts`: DAP-02 initialize against the captured profile; C breakpoint stop with locals; a C program that
+    prints a line and then dereferences NULL stops on EXC_BAD_ACCESS at line 5, its line arrives, and stopping the
+    session kills it.
+  - `rust.test.ts:163`: the rust-test preset stops on the panic at `avg::tests::empty`, and `orders` shows `20`
+    through rustc's formatters.
+  - E2E chains in `investigation/verification.test.ts`, each with a scripted model:
+    - E2E-02 (C, clang) and E2E-03 (Swift, swiftc): debug start → crash stop (EXC_BAD_ACCESS / "Index out of range")
+      in `average` with the output before it → stop → patch → rebuild with the shell → native check → debug start
+      again, which runs to exit 0 as the reproduction → resolved, evidence exception (observed), check-run and
+      repro-run (verified).
+    - E2E-04 (Rust, cargo): panic stop shown from `avg::average` with `xs: &[i32] = size=0` → patch → check with
+      cargo check and cargo test → resolved.
+  - Every chain checks that nothing the debugger started is left running.
+- Runs (`env -u TERM_SESSION_ID -u TERM_PROGRAM SHELL_SESSIONS_DISABLE=1`):
+  - `test/workbench` + debug HTTP test: 224 pass, 0 skip, 0 fail.
+  - Whole opencode suite: 3944 pass, 28 skip, 1 todo, 0 fail (3973 tests, 309 files, 376 s).
+  - `packages/core`: 1104 pass.
+  - DiagnosticReports: no new `.ips`. Only macOS's own diagnostics came and went: the crashes were stops under the
+    debugger.
+  - No lldb-dap or debugserver left running.

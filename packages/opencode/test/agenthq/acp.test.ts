@@ -161,7 +161,8 @@ describe("agenthq acp", () => {
 
         // Prompt → streamed reply with a tool that the agent must ask about.
         const before = (yield* llm.hits).length
-        yield* llm.push(reply().tool("bash", { command: "echo acp-permission", description: "Echo a marker" }))
+        // printf, not echo: echo only prints, so it would run without asking (workbench/harmless.ts).
+        yield* llm.push(reply().tool("bash", { command: "printf acp-permission", description: "Print a marker" }))
         yield* llm.push(reply().text("acp ").text("done").stop())
         expect((yield* post(`/agenthq/sessions/${session.id}/messages`, { text: "run the marker" })).body).toBe(true)
         const request = yield* waitFor(

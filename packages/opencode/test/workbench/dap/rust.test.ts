@@ -88,7 +88,7 @@ describe("rust-test preset and formatters", () => {
       build: { command: ["cargo", "test", "--no-run", "--message-format=json"], cwd: dir },
       rust: true,
       functions: ["rust_panic"],
-      arguments: { args: ["empty"], cwd: dir, runInTerminal: true },
+      arguments: { args: ["empty"], cwd: dir, runInTerminal: false, console: "internalConsole" },
     })
     expect(spec.program).toBeUndefined()
     const binary = await Effect.runPromise(

@@ -10,7 +10,7 @@ import { DapClient } from "../../../src/workbench/dap/client"
 import { WorkbenchDebug } from "../../../src/workbench/dap/service"
 import { DapTransport } from "../../../src/workbench/dap/transport"
 import { disposeAllInstances, TestInstance } from "../../fixture/fixture"
-import { testEffect } from "../../lib/effect"
+import { pollWithTimeout, testEffect } from "../../lib/effect"
 import { lldbDap } from "../fixture/dap-profiles"
 
 const found = await Lldb.resolve()
@@ -97,6 +97,49 @@ describe("lldb-dap (real)", () => {
         const { result } = yield* debug.start(spec, { by: "agent", sessionID: "ses_lldb" })
         expect(result.info.stop?.frames[0]?.name).toContain("main")
         expect(result.info.stop?.locals.map((item) => item.name)).toContain("n")
+      }),
+    60_000,
+  )
+
+  // lldb launches the program on a pseudo-terminal, so stdout is line-buffered: a line printed before a crash is
+  // flushed before it (a pipe would hold it in the buffer and lose it). The debugger catches the crash, and stopping
+  // the session kills the program: no crash report.
+  launch(
+    `DAP-18 a crash is caught by the debugger and the output before it survives${
+      !developer ? " [skipped: Developer Mode off]" : missing ? ` [skipped: ${missing}]` : ""
+    }`,
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        yield* Effect.promise(() =>
+          Bun.write(
+            path.join(test.directory, "crash.c"),
+            '#include <stdio.h>\nint main(void) {\n  int *p = 0;\n  printf("before the crash\\n");\n  return *p;\n}\n',
+          ),
+        )
+        const built = yield* Effect.promise(() =>
+          Process.run(["cc", "-g", "-O0", "-o", "crash", "crash.c"], { cwd: test.directory, nothrow: true }),
+        )
+        expect(built.code).toBe(0)
+        const debug = yield* WorkbenchDebug.Service
+        const { session, result } = yield* debug.start(yield* debug.prepare({ program: "crash" }), {
+          by: "agent",
+          sessionID: "ses_lldb_crash",
+        })
+        expect(result.outcome).toBe("stopped")
+        expect(result.info.stop?.reason).toBe("exception")
+        expect(JSON.stringify(result.info.stop)).toContain("EXC_BAD_ACCESS")
+        expect(result.info.stop?.frames[0]).toMatchObject({ name: expect.stringContaining("main"), line: 5 })
+        const printed = yield* pollWithTimeout(
+          Effect.sync(() =>
+            session.output().find((row) => row.by === "program" && row.text.includes("before the crash")),
+          ),
+          "the output before the crash never arrived",
+        )
+        expect(printed.kind).toBe("stdout")
+        const pid = session.processes.find((item) => item.command.endsWith("crash"))?.pid
+        yield* session.stop({ by: "agent", sessionID: "ses_lldb_crash" })
+        if (pid) expect(() => process.kill(pid, 0)).toThrow()
       }),
     60_000,
   )

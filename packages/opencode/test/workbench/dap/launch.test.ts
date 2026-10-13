@@ -121,7 +121,7 @@ describe("launch specs", () => {
     const native = await ok({ program: "build/avg" }, directory)
     expect(native).toMatchObject({
       adapter: "lldb-dap",
-      arguments: { runInTerminal: true, console: "integratedTerminal", commandEscapePrefix: "`" },
+      arguments: { runInTerminal: false, console: "internalConsole", commandEscapePrefix: "`" },
       exceptions: [],
     })
     const test = await ok({ preset: "python-test", program: "tests/test_avg.py" }, directory)

@@ -12,6 +12,8 @@ export const EDITOR_MAX_CHARS = 500_000
 export type EditorFileClient = {
   readFile: (path: string) => Promise<{ content: string; hash: string }>
   writeFile: (input: { path: string; content: string; baseHash: string | null }) => Promise<{ hash: string }>
+  // The language servers read the file on disk again (after unsaved text was discarded).
+  lspSync?: (path: string) => Promise<unknown>
 }
 
 export type EditorBuffer = {
@@ -121,10 +123,12 @@ export function createEditorStore(client: EditorFileClient) {
       )
       return write(path, content, disk)
     },
-    // Drops unsaved edits: the next view starts from the file on disk.
+    // Drops unsaved edits: the next view starts from the file on disk, and so do the language servers.
     discard(path: string) {
+      const dirty = state.files[path]?.dirty
       saved.delete(path)
       setState("files", path, undefined!)
+      if (dirty) void client.lspSync?.(path).catch(() => undefined)
     },
   }
 }

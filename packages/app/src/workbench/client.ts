@@ -125,6 +125,10 @@ const decoders = {
   fileWritten: Schema.decodeUnknownOption(FileWritten),
   lspHover: Schema.decodeUnknownOption(Schema.NullOr(Workbench.LspHover)),
   lspLocations: Schema.decodeUnknownOption(Schema.Array(Workbench.LspLocation)),
+  lspCompletion: Schema.decodeUnknownOption(Workbench.LspCompletionList),
+  lspRename: Schema.decodeUnknownOption(Workbench.LspRename),
+  lspFormat: Schema.decodeUnknownOption(Workbench.LspFormat),
+  accepted: Schema.decodeUnknownOption(Schema.Boolean),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -210,6 +214,15 @@ export function createWorkbenchClient(input: {
       decoded(decoders.lspLocations, "GET", lsp("definition", path, at)),
     lspReferences: (path: string, at: { line: number; character: number }) =>
       decoded(decoders.lspLocations, "GET", lsp("references", path, at)),
+    // The editor's unsaved text for the file's language servers; without text they read the file on disk again.
+    lspSync: (path: string, text?: string) => decoded(decoders.accepted, "POST", "/workbench/lsp/sync", { path, text }),
+    lspCompletion: (path: string, at: { line: number; character: number }) =>
+      decoded(decoders.lspCompletion, "GET", lsp("completion", path, at)),
+    // Writes the rename and records it as the session's review changeset; 400 with the reason when refused.
+    lspRename: (path: string, at: { line: number; character: number }, newName: string, sessionID: string) =>
+      decoded(decoders.lspRename, "POST", "/workbench/lsp/rename", { path, ...at, newName, sessionID }),
+    lspFormat: (path: string, text: string, options: { tabSize: number; insertSpaces: boolean }) =>
+      decoded(decoders.lspFormat, "POST", "/workbench/lsp/format", { path, text, ...options }),
     // Tool creator (groups/workbench-tools.ts). Approve and enable send the hash of the reviewed source: 409 when the
     // file changed since. The test run is the user's own call and does not ask.
     tools: () => decoded(decoders.tools, "GET", "/workbench/tools"),

@@ -72,7 +72,7 @@ import {
   type Spot,
 } from "./editor"
 import { useEditor } from "./editor-context"
-import { codeIntelligence, type CodeIntelligence } from "./editor-lsp"
+import { codeIntelligence, createSync, type CodeIntelligence } from "./editor-lsp"
 import { useFileLineOpener } from "./open-file"
 import { useWorkbench } from "./panel"
 
@@ -284,7 +284,7 @@ function Editor(props: EditorViewProps) {
   const language = useLanguage()
   const theme = useTheme()
   const file = useFile()
-  const { tabs } = useSessionLayout()
+  const { tabs, params } = useSessionLayout()
   const openLine = useFileLineOpener()
   const owner = getOwner()
   const path = props.path
@@ -368,10 +368,23 @@ function Editor(props: EditorViewProps) {
     editor.store.remember({ path, ...from })
     jump({ path: file.normalize(location.file), ...location.range.start })
   }
+  // The editor's unsaved text reaches the language servers before each request, so answers match what it shows.
+  const sync = createSync((text) => workbench.client.lspSync(path, text))
   const intelligence: CodeIntelligence = {
-    hover: (at) => workbench.client.lspHover(path, at),
-    definition: (at) => workbench.client.lspDefinition(path, at),
-    references: (at) => workbench.client.lspReferences(path, at),
+    hover: (at) => sync.flush().then(() => workbench.client.lspHover(path, at)),
+    definition: (at) => sync.flush().then(() => workbench.client.lspDefinition(path, at)),
+    references: (at) => sync.flush().then(() => workbench.client.lspReferences(path, at)),
+    completion: (at) => sync.flush().then(() => workbench.client.lspCompletion(path, at)),
+    // A rename is written to disk and reviewed there, so no file may hold unsaved edits.
+    renameBlocked: () =>
+      !params.id
+        ? language.t("workbench.editor.lsp.renameNoSession")
+        : editor.store.anyDirty()
+          ? language.t("workbench.editor.lsp.renameUnsaved")
+          : undefined,
+    rename: (at, newName) => sync.flush().then(() => workbench.client.lspRename(path, at, newName, params.id!)),
+    renamed: () => showToast({ variant: "success", title: language.t("workbench.editor.lsp.renamed") }),
+    format: (text, options) => workbench.client.lspFormat(path, text, options),
     open: go,
     showReferences: (items, from) => setReferences({ items, from }),
     dismiss: () => {
@@ -387,7 +400,7 @@ function Editor(props: EditorViewProps) {
     render: (dom, markdown) =>
       runWithOwner(owner, () => render(() => <Markdown text={markdown} class="select-text text-[12px]" />, dom)) ??
       (() => {}),
-    text: (key, place) => language.t(`workbench.editor.lsp.${key}`, { place: place ?? "" }),
+    text: (key, values) => language.t(`workbench.editor.lsp.${key}`, values),
   }
 
   const extensions = (separator: string): Extension => [
@@ -433,6 +446,7 @@ function Editor(props: EditorViewProps) {
     EditorView.contentAttributes.of({ "aria-label": language.t("workbench.editor.label", { file: name }) }),
     EditorView.updateListener.of((update) => {
       if (!update.docChanged) return
+      sync.edit(() => update.view.state.sliceDoc())
       const dirty = !update.state.doc.eq(base)
       // Editing a preview tab keeps it open, like any edited file.
       if (dirty && !editor.store.dirty(path)) void tabs().open(file.tab(path))
@@ -534,8 +548,13 @@ function Editor(props: EditorViewProps) {
     editor.store.targets.delete(path)
     // After this editor's own first scroll (a selected line).
     if (target) queueMicrotask(() => alive && show(target))
+    // Unsaved text kept from an earlier view goes to the language servers too.
+    if (editor.store.dirty(path)) sync.edit(() => current.state.sliceDoc())
     onCleanup(() => {
       if (editor.store.showing.get(path) === show) editor.store.showing.delete(path)
+      // A kept buffer still sends its last edit; a discarded one does not (the store re-syncs from disk).
+      if (editor.store.state.files[path]) void sync.flush()
+      if (!editor.store.state.files[path]) sync.stop()
       props.search?.register(null)
       if (debug.viewers.get(path) === cursorLine) debug.viewers.delete(path)
       if (editor.store.live.get(path)) editor.store.live.delete(path)

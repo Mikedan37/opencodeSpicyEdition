@@ -1073,3 +1073,42 @@ Results: `bun test --timeout 120000 test/agenthq` 46 pass, 4 skip (the opt-in re
 typecheck` clean in `packages/opencode` and `packages/app`; `packages/app` Agent HQ unit tests 18 pass.
 
 No upstream-owned files were edited in wave 10.
+
+# Wave 11: discovery never touches the folders macOS guards
+
+In the desktop app the server runs as the app's utility process, and macOS guards `~/Documents`, `~/Desktop`,
+`~/Downloads` and iCloud Drive (`~/Library/Mobile Documents`) per app (TCC). The first touch shows "“OpenCode” would
+like to access files in your Documents folder". Listing providers in the real app did that: discovery resolved,
+stat'ed, read the xattrs of and probed LaunchServices hits under `~/Documents/Codex/…`. The CLI tests never saw it
+because Terminal already has access.
+
+Now LaunchServices hits are judged by the path the index gives, before anything resolves, stats, reads or runs them:
+one under `PROTECTED_FOLDERS` (`providers/detect.ts`: `Documents`, `Desktop`, `Downloads`, `Library/Mobile Documents`
+of the home folder, compared without regard to case and against the home as given and resolved) is skipped. `mdfind`
+only queries the index. The env var, PATH, an identity's `launch` and the Applications folders are unchanged.
+
+When nothing else qualifies, the status and a session start say why: "OpenCode Native was found only in a protected
+folder (Documents); install it in Applications or set OPENCODE_AGENTKIT_BRIDGE" (the folders the skipped copies were
+in). The new-agent dialog shows a provider's reason when it is unavailable.
+
+On this Mac LaunchServices lists four copies; three are under `~/Documents/Codex` and are skipped, and
+`~/OpenCodeCode/OpenCodeNative-agentkit` has no ACP mode. The free status check (`SPICY_REAL_AGENTKIT=index`, which now
+records every path discovery resolves or stats) reports that reason, and it touched only `/Applications/OpenCode
+Native.app` and `~/Applications/OpenCode Native.app` (neither exists), the home folder, and the `OpenCodeNative-agentkit`
+copy; nothing in a protected folder. Until a build is installed in Applications (by copying it: a link in Applications
+that points into Documents would be resolved), the full real run (`SPICY_REAL_AGENTKIT=1`) needs
+`OPENCODE_AGENTKIT_BRIDGE`.
+
+## Tests (wave 11)
+
+`agentkit.test.ts`: the newest copies, with an ACP mode, in the test home's Documents, Desktop, Downloads and iCloud
+Drive folders (plus one listed with `documents` in lower case and one by the resolved home) are never resolved,
+stat'ed or asked about (a spy on `files` and `quarantined`) and never run (their logs stay empty); the status and a
+session start give the reason with all four folders; a copy in `~/Applications` is still chosen, listed by
+LaunchServices beside them or found in the folder. Removing the skip, the case folding, the resolved home or the
+reason at session start each makes it fail.
+
+Results: `bun test --timeout 120000 test/agenthq` 47 pass, 4 skip (the opt-in real checks), 0 fail; `bun run
+typecheck` clean.
+
+No upstream-owned files were edited in wave 11.

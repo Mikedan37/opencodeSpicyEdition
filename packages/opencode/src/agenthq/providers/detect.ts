@@ -170,6 +170,9 @@ export const codex = Effect.fn("AgentHQ.detect.codex")(function* (env?: Env) {
 export const AGENTKIT_BRIDGE = "agentkit-bridge"
 // OpenCode Native's bundle id (its Info.plist), for LaunchServices' index of every copy on this Mac.
 export const AGENTKIT_BUNDLE_ID = "local.opencode.spicy.native"
+// Folders of the home folder that macOS guards per app (TCC): the first touch makes macOS ask the human, and discovery
+// is not the human's request. A copy LaunchServices lists in one of them is skipped before anything touches it.
+export const PROTECTED_FOLDERS = ["Documents", "Desktop", "Downloads", "Library/Mobile Documents"]
 
 /** What the trust check reads of a file; `fs.Stats` has all of it. */
 export interface FileFacts {
@@ -334,14 +337,39 @@ export const agentkit = Effect.fn("AgentHQ.detect.agentkit")(function* (env?: Ag
   // OpenCode Native.app in Applications, else the newest copy LaunchServices knows; chosen again on each provider list.
   // ponytail: one choice per process; per-identity overrides cover anything finer.
   let discovered: { readonly bundle: string; readonly bin: string } | undefined
+  // The protected folders the last search skipped copies in.
+  let skipped: string[] = []
   const discover = Effect.gen(function* () {
+    skipped = []
     const installed = (env?.applications ?? ["/Applications", path.join(os.homedir(), "Applications")]).map((folder) =>
       path.join(folder, "OpenCode Native.app"),
     )
-    discovered = (yield* newest(installed)) ?? (yield* newest(yield* indexed))
-    return discovered
+    const local = yield* newest(installed)
+    if (local) return (discovered = local)
+    // Judged by the path the index gives, before anything resolves, stats, reads or runs it. The home folder counts
+    // as given and resolved (they differ behind a symlink, as /var is).
+    const homes = (() => {
+      try {
+        return [Global.Path.home, files.realpath(Global.Path.home)]
+      } catch {
+        return [Global.Path.home]
+      }
+    })()
+    const folder = (app: string) =>
+      PROTECTED_FOLDERS.find((name) =>
+        homes.some((home) =>
+          `${path.resolve(app)}/`.toLowerCase().startsWith(`${path.join(home, name)}/`.toLowerCase()),
+        ),
+      )
+    const hits = yield* indexed
+    skipped = PROTECTED_FOLDERS.filter((name) => hits.some((app) => folder(app) === name))
+    return (discovered = yield* newest(hits.filter((app) => !folder(app))))
   })
   const explicit = () => (env ? env.OPENCODE_AGENTKIT_BRIDGE : process.env.OPENCODE_AGENTKIT_BRIDGE)
+  const notFound = () =>
+    skipped.length && !explicit()
+      ? `OpenCode Native was found only in a protected folder (${skipped.join(", ")}); install it in Applications or set OPENCODE_AGENTKIT_BRIDGE`
+      : "AgentKit bridge not found"
   // As the human set it (the env var, alone when set, then PATH), else a found copy.
   const locate = (refresh: boolean) =>
     Effect.gen(function* () {
@@ -352,7 +380,7 @@ export const agentkit = Effect.fn("AgentHQ.detect.agentkit")(function* (env?: Ag
 
   const detected: Effect.Effect<AgentHQ.ProviderStatus> = Effect.gen(function* () {
     const found = yield* locate(true)
-    if (!found) return { ...base, available: false, reason: "AgentKit bridge not found" }
+    if (!found) return { ...base, available: false, reason: notFound() }
     const facts = yield* about(found.bin)
     if (!facts.acp) return { ...base, available: false, reason: "this AgentKit bridge has no ACP mode yet" }
     // The human sees what will run.
@@ -371,14 +399,14 @@ export const agentkit = Effect.fn("AgentHQ.detect.agentkit")(function* (env?: Ag
           return { command: agent.launch.command, args: agent.launch.args.length ? [...agent.launch.args] : ["acp"] }
         const refuse = (message: string) =>
           new AgentProvider.UnsupportedError({ provider: "agentkit", action: "createSession", message })
-        // The choice the last provider list made and showed, unless there is none yet. A found copy is checked again
-        // right before it runs and must still resolve to the bridge that list showed.
+        // The choice the last provider list made and showed, unless there is none yet.
         const found = yield* locate(false)
-        const still = found && "bundle" in found ? (yield* vet(found.bundle))?.bin : found?.bin
-        const bin = still === found?.bin ? still : undefined
-        if (!bin) return yield* refuse("AgentKit bridge not found")
-        if (!(yield* about(bin)).acp) return yield* refuse("this AgentKit bridge has no ACP mode yet")
-        return { command: bin, args: ["acp"] }
+        if (!found) return yield* refuse(notFound())
+        // A found copy is checked again right before it runs and must still resolve to the bridge that list showed.
+        if ("bundle" in found && (yield* vet(found.bundle))?.bin !== found.bin)
+          return yield* refuse("AgentKit bridge not found")
+        if (!(yield* about(found.bin)).acp) return yield* refuse("this AgentKit bridge has no ACP mode yet")
+        return { command: found.bin, args: ["acp"] }
       }),
   })
 })

@@ -278,6 +278,64 @@ describe("agenthq agentkit (agentkit-bridge acp)", () => {
     }),
   )
 
+  it.live("never touches a copy LaunchServices lists in a folder macOS guards, and says why none was chosen", () =>
+    Effect.gen(function* () {
+      // The newest copies, with an ACP mode, in the home folder's Documents, Desktop, Downloads and iCloud Drive.
+      const tag = `agentkit-${Math.random().toString(36).slice(2)}`
+      const folders = [...AgentDetect.PROTECTED_FOLDERS, "Applications"].map((name) =>
+        path.join(Global.Path.home, name, tag),
+      )
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => Promise.all(folders.map((dir) => fs.rm(dir, { recursive: true, force: true })))),
+      )
+      const copies = yield* Effect.forEach(folders.slice(0, -1), (dir) => nativeApp(dir, "Codex", USAGE, 1))
+      // Every path discovery resolves, stats or asks xattr about.
+      const touched: string[] = []
+      const spy = {
+        files: {
+          realpath: (file: string) => (touched.push(file), realpathSync(file)),
+          stat: (file: string) => (touched.push(file), statSync(file)),
+        },
+        quarantined: (paths: readonly string[]) => Effect.sync(() => (touched.push(...paths), false)),
+      }
+      const guarded = () =>
+        touched.filter((file) =>
+          AgentDetect.PROTECTED_FOLDERS.some((name) => file.toLowerCase().includes(`/${name.toLowerCase()}/`)),
+        )
+      // As the index lists them, one spelled in another case (the same folder on macOS), and one by the resolved home.
+      const indexed = [
+        ...copies.map((copy) => copy.bundle),
+        copies[0]!.bundle.replace("/Documents/", "/documents/"),
+        copies[1]!.bundle.replace(Global.Path.home, realpathSync(Global.Path.home)),
+      ]
+      const reason =
+        "OpenCode Native was found only in a protected folder (Documents, Desktop, Downloads, Library/Mobile Documents); install it in Applications or set OPENCODE_AGENTKIT_BRIDGE"
+      const provider = yield* AgentDetect.agentkit({
+        PATH: "",
+        applications: [],
+        finder: Effect.succeed(indexed),
+        ...spy,
+      })
+      expect(yield* provider.status).toMatchObject({ available: false, reason })
+      const refused = yield* provider
+        .createSession({ agent: kit(yield* tmpdirScoped()), emit: () => {} })
+        .pipe(Effect.flip)
+      expect(refused).toMatchObject({ message: reason })
+
+      // A copy in ~/Applications is still chosen: listed by LaunchServices beside them, or found in the folder.
+      const installed = yield* nativeApp(folders.at(-1)!, ".", USAGE, 60)
+      for (const env of [
+        { applications: [], finder: Effect.succeed([...indexed, installed.bundle]) },
+        { applications: [folders.at(-1)!], finder: Effect.succeed(indexed) },
+      ]) {
+        const found = yield* (yield* AgentDetect.agentkit({ PATH: "", ...env, ...spy })).status
+        expect(found.capabilities.notes?.[0]).toBe(`Bridge: ${realpathSync(installed.bin)}`)
+      }
+      expect(guarded()).toEqual([])
+      for (const copy of copies) expect(yield* Effect.promise(copy.runs)).toEqual([])
+    }),
+  )
+
   it.live("asks a bridge about itself once per binary, until it changes", () =>
     Effect.gen(function* () {
       const root = yield* homeScoped
@@ -335,19 +393,30 @@ const realHome = Effect.acquireRelease(
 
 describe("agenthq agentkit (real index, opt-in)", () => {
   realIndex(
-    "REAL: the provider finds OpenCode Native's bridge through LaunchServices [skipped unless SPICY_REAL_AGENTKIT=index; status only]",
+    "REAL: AgentKit discovery on this Mac, touching nothing in protected folders [skipped unless SPICY_REAL_AGENTKIT=index; status only]",
     () =>
       Effect.gen(function* () {
-        // As the server sees it: nothing configured, nothing on PATH.
+        // As the server sees it: nothing configured, nothing on PATH. Every path discovery resolves or stats is recorded.
         yield* realHome
-        const status = yield* (yield* AgentDetect.agentkit({ PATH: "" })).status
+        const touched: string[] = []
+        const files = {
+          realpath: (file: string) => (touched.push(file), realpathSync(file)),
+          stat: (file: string) => (touched.push(file), statSync(file)),
+        }
+        const status = yield* (yield* AgentDetect.agentkit({ PATH: "", files })).status
+        const guarded = touched.filter((file) =>
+          AgentDetect.PROTECTED_FOLDERS.some((name) => file.startsWith(path.join(os.homedir(), name) + "/")),
+        )
         console.log(
-          `SPICY_REAL_AGENTKIT index ${JSON.stringify({ available: status.available, version: status.version, reason: status.reason, bridge: status.capabilities.notes?.[0] })}`,
+          `SPICY_REAL_AGENTKIT index ${JSON.stringify({ available: status.available, version: status.version, reason: status.reason, bridge: status.capabilities.notes?.[0], touched: [...new Set(touched)], guarded })}`,
         )
-        expect(status).toMatchObject({ available: true })
-        expect(status.capabilities.notes?.[0]).toMatch(
-          /^Bridge: .*OpenCode Native\.app\/Contents\/MacOS\/agentkit-bridge$/,
-        )
+        expect(guarded).toEqual([])
+        // Found and runnable, or found only where macOS would ask the human first.
+        if (status.available)
+          expect(status.capabilities.notes?.[0]).toMatch(
+            /^Bridge: .*OpenCode Native\.app\/Contents\/MacOS\/agentkit-bridge$/,
+          )
+        else expect(status.reason).toMatch(/^OpenCode Native was found only in a protected folder \(/)
       }),
   )
 })

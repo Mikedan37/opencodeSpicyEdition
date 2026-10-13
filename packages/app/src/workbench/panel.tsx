@@ -425,10 +425,17 @@ export function WorkbenchTabTriggers() {
       const at = SURFACES.indexOf(node.dataset.value?.slice(PREFIX.length) as Surface)
       if (at >= 0) widths[at] = node.offsetWidth + GAP
     }
-    let terminals = 0
-    for (const node of list.children) if (node !== group) terminals += (node as HTMLElement).offsetWidth
+    // The terminals' tabs and "+" end here (the list's own padding and gaps included).
+    const style = getComputedStyle(list)
+    const before = group.previousElementSibling?.getBoundingClientRect().right
+    const terminals = before === undefined ? 0 : before - list.getBoundingClientRect().left + list.scrollLeft
     const more = (group.querySelector<HTMLElement>('[data-action="workbench-tabs-more"]')?.offsetWidth ?? MORE) + GAP
-    const room = list.clientWidth - Math.min(terminals, TERMINAL_ROOM) - PADDING
+    const room =
+      list.clientWidth -
+      Math.min(terminals, TERMINAL_ROOM) -
+      (parseFloat(style.columnGap) || 0) -
+      (parseFloat(style.paddingRight) || 0) -
+      PADDING
     const next = fitTabs(widths, room, more, SURFACES.indexOf(workbench.tab()!))
     if (next.join() !== shown().join()) setShown(next)
   }

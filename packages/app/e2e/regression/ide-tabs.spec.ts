@@ -35,6 +35,9 @@ test("800×900: the tabs that do not fit are in », nothing is clipped, and the 
   }
   const terminalTab = (await page.locator('#terminal-panel [data-slot="tabs-trigger-wrapper"]').first().boundingBox())!
   expect(terminalTab.x + terminalTab.width).toBeLessThanOrEqual(group.x + 0.5)
+  // The bar does not overflow: the terminal's tab and its "+" are not under the IDE's tabs
+  const overflow = () => list.evaluate((node) => node.scrollWidth - node.clientWidth)
+  await expect.poll(overflow).toBeLessThanOrEqual(0)
   await page.screenshot({ path: test.info().outputPath("ux7-overflow-800.png") })
 
   // The menu holds the rest; picking one opens it and brings it into the bar
@@ -48,6 +51,7 @@ test("800×900: the tabs that do not fit are in », nothing is clipped, and the 
   await expect(page.locator('[data-workbench-tab="agents"]')).toHaveAttribute("aria-selected", "true")
   await expect(panel(page)).toHaveAttribute("data-surface", "agents")
   await expect(more).toBeVisible()
+  await expect.poll(overflow).toBeLessThanOrEqual(0)
   await page.screenshot({ path: test.info().outputPath("ux7-overflow-800-agents.png") })
 
   // Wide enough: all four, no menu

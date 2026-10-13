@@ -19,13 +19,13 @@ afterEach(async () => {
   await resetDatabase()
 })
 
-async function fakeAdapter(directory: string, name = "fake") {
+async function fakeAdapter(directory: string, name = "fake", profile: "debugpy" | "lldb-dap" = "debugpy") {
   const proc = Bun.spawn(
     [
       process.execPath,
       FAKE,
       JSON.stringify({
-        profile: "debugpy",
+        profile,
         tcp: true,
         stops: [
           {
@@ -53,7 +53,13 @@ async function fakeAdapter(directory: string, name = "fake") {
     JSON.stringify({
       configurations: [
         ...existing.configurations,
-        { name, type: "python", request: "launch", program: "${workspaceFolder}/app.py", debugServer: port },
+        {
+          name,
+          type: profile === "lldb-dap" ? "lldb-dap" : "python",
+          request: "launch",
+          program: "${workspaceFolder}/app.py",
+          debugServer: port,
+        },
       ],
     }),
   )
@@ -129,6 +135,65 @@ describe("workbench debug HttpApi", () => {
       expect(updates.every((event) => event.directory === tmp.path)).toBe(true)
     } finally {
       GlobalBus.off("event", listen)
+      adapter.kill()
+    }
+  })
+
+  test("CON-07 a human's raw LLDB command asks debug.lldbCommand; a plain expression does not", async () => {
+    await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
+    // The fake adapter speaks for lldb-dap over TCP: no lldb is launched (Developer Mode stays off).
+    const adapter = await fakeAdapter(tmp.path, "fake-lldb", "lldb-dap")
+    const app = Server.Default().app
+    const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+    const call = (method: string, url: string, body?: object) =>
+      app.request(url, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) })
+    const asked = () =>
+      until(async () => {
+        const pending = (await (await call("GET", "/permission")).json()) as {
+          id: string
+          sessionID: string
+          permission: string
+          patterns: string[]
+          metadata: Record<string, unknown>
+        }[]
+        return pending.find((item) => item.permission === "debug.lldbCommand")
+      }, "no debug.lldbCommand ask")
+    try {
+      const started = await call("POST", root, { configuration: "fake-lldb" })
+      const info = (await started.json()) as { id: string; adapter: string }
+      expect(info.adapter).toBe("lldb-dap")
+      await until(async () => {
+        const list = (await (await call("GET", root)).json()) as { id: string; state: string; stop?: object }[]
+        return list.find((item) => item.id === info.id && item.state === "stopped" && item.stop)
+      }, "never stopped")
+      const evaluate = (expression: string) => call("POST", `${root}/${info.id}/evaluate`, { expression })
+
+      expect((await evaluate("len(xs)")).status).toBe(200)
+      const running = evaluate("`platform shell echo hi")
+      const first = await asked()
+      expect(first).toMatchObject({
+        sessionID: `ses_${info.id}`,
+        patterns: ["platform shell echo hi"],
+        metadata: { command: "platform shell echo hi", debugSessionID: info.id },
+      })
+      await call("POST", `/permission/${first.id}/reply`, { reply: "once" })
+      const ran = await running
+      expect(ran.status).toBe(200)
+      expect(await ran.json()).toMatchObject({ kind: "result", by: "human", text: "<`platform shell echo hi>" })
+
+      const refused = evaluate("`script import os")
+      const second = await asked()
+      await call("POST", `/permission/${second.id}/reply`, { reply: "reject" })
+      const denied = await refused
+      expect(denied.status).toBe(403)
+      expect(JSON.stringify(await denied.json())).toContain("debug.lldbCommand was not allowed")
+      // Only what the user allowed reached the adapter.
+      const output = (await (await call("GET", `${root}/${info.id}/output`)).json()) as { kind: string; text: string }[]
+      expect(output.filter((row) => row.kind === "eval").map((row) => row.text)).toEqual([
+        "len(xs)",
+        "`platform shell echo hi",
+      ])
+    } finally {
       adapter.kill()
     }
   })

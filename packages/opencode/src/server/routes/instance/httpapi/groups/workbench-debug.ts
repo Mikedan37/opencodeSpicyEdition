@@ -170,7 +170,7 @@ export const WorkbenchDebugApi = HttpApi.make("workbench-debug")
           query: WorkspaceRoutingQuery,
           payload: Workbench.DebugEvaluateInput,
           success: described(Workbench.ConsoleRow, "Result row (seq 0 for watch and hover: not a console row)"),
-          error: errors,
+          error: [...errors, ForbiddenError], // a raw LLDB command the user did not allow (debug.lldbCommand)
         }).annotateMerge(
           op("workbench.debug.evaluate", "Evaluate", "Run an expression in a stack frame (runs program code)."),
         ),

@@ -67,6 +67,15 @@ user's own and not group/world-writable, and lives under home or /Applications (
 
 Gap fixes after validation (merged by `dd5a6867c`): DIAG-01 multi-source problems, DIAG-07 stale after a crash, DIAG-12 "language servers are off", DIAG-13 real rust-analyzer, CON-03 multi-line console, CON-05 evidence chips, CON-07 `debug.lldbCommand` ask, CON-10 Run tab stdin e2e, CON-11 Swift output e2e, E2E-01 Activity e2e, UI-07 Fix/Investigate with agent, schema event-manifest baseline (15/15), cold-Vite e2e flake.
 
+Security review (independent, 2026-10-13): 4 findings, all fixed. HIGH: external agents were handed the full server
+password through the Workbench MCP bridge, so they could reach every route (self-approve asks, human-actor debug,
+files); now each bridge gets an in-memory token allowed only on its 7 routes, its own session and its own directory
+(`6716f227e`, `20fd66a16`). HIGH: `POST /workbench/check` trusted a client `trigger: "user"`; tokens always run as the
+agent. MEDIUM: launch.json `${env:…}` refuses secret names (`e71464650`). LOW: tool enable installs the reviewed bytes
+(`48d49e79f`). Debug adapters and programs no longer inherit the server's credentials (`e1046a4a3`). Baseline
+failures fixed (`89a266277`): e2e 134/0, app unit 814/0 without the JSX override, ui 27/0; two real bugs (Shift+F10
+menus on macOS, Shahmukhi Punjabi on Apple ICU).
+
 ## Environment blockers (owner action)
 
 - macOS Developer Mode off: lldb-dap cannot launch (Swift/C/C++/Rust debugging, E2E-02/03, DAP-18).

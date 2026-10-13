@@ -9,6 +9,31 @@ import { harness, json, layer } from "./fixture/session-api"
 const it = testEffect(layer)
 
 describe("main chat permissions", () => {
+  it.live("the single switch's shape ({ enabled }) still sets and reads both; the session's other rules stay", () =>
+    Effect.gen(function* () {
+      const { call } = yield* harness()
+      const deny = { permission: "bash", pattern: "rm *", action: "deny" }
+      const session = (yield* call<{ id: string }>("/session", json("POST", { permission: [deny] }))).body.id
+      const route = `/workbench/sessions/${session}/auto-approve`
+      const rules = call<{ permission: { permission: string; pattern: string; action: string }[] }>(
+        `/session/${session}`,
+      ).pipe(Effect.map((result) => result.body.permission))
+      const both = (on: boolean) => ({ edits: on, commands: on, enabled: on })
+
+      expect((yield* call(route, json("PUT", { enabled: true }))).body).toEqual(both(true))
+      expect((yield* call(route)).body).toEqual(both(true))
+      expect(yield* rules).toContainEqual(deny)
+      expect((yield* call(route, json("PUT", { enabled: false }))).body).toEqual(both(false))
+      expect(yield* rules).toEqual([deny])
+      // A field left out keeps its value.
+      expect((yield* call(route, json("PUT", { commands: true }))).body).toEqual({
+        edits: false,
+        commands: true,
+        enabled: false,
+      })
+    }),
+  )
+
   it.live("an edit waits for the human; with auto-approve on, that session's edits and bash run without asking", () =>
     Effect.gen(function* () {
       const { llm, call, read, until, pending, asked: waitAsk, idle, turn, create } = yield* harness()

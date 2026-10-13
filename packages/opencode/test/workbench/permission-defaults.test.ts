@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Fiber } from "effect"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -312,6 +312,15 @@ describe('"Allow always" is remembered for its session and never beats a deny', 
 describe('"Always allow in this project": saved approvals', () => {
   const saved = (...rules: WorkbenchApprovals.Rule[]) => WorkbenchApprovals.Service.use((svc) => svc.save(rules))
   const unsaved = (rule: WorkbenchApprovals.Rule) => WorkbenchApprovals.Service.use((svc) => svc.remove(rule))
+
+  test("only well-formed rules are kept: both strings non-empty, permission ≤ 200 and pattern ≤ 2000 characters", () => {
+    expect(WorkbenchApprovals.valid({ permission: "bash", pattern: "git status *" })).toBe(true)
+    expect(WorkbenchApprovals.valid({ permission: "bash", pattern: "x".repeat(2000) })).toBe(true)
+    expect(WorkbenchApprovals.valid({ permission: "bash", pattern: "x".repeat(2001) })).toBe(false)
+    expect(WorkbenchApprovals.valid({ permission: "b".repeat(201), pattern: "*" })).toBe(false)
+    expect(WorkbenchApprovals.valid({ permission: "", pattern: "*" })).toBe(false)
+    expect(WorkbenchApprovals.valid({ permission: "bash" })).toBe(false)
+  })
 
   it.instance(
     "a saved rule skips the ask in every session of the project; removing it asks again",

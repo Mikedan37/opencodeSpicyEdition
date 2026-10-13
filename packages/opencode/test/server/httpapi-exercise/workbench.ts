@@ -128,7 +128,10 @@ export const workbenchScenarios: Scenario[] = [
     }))
     .json(200, (body) => {
       object(body)
-      check(body.edits === false && body.commands === false, "a new session asks before edits and commands")
+      check(
+        body.edits === false && body.commands === false && body.enabled === false,
+        "a new session asks before edits and commands",
+      )
     }),
   http.protected
     .put("/workbench/sessions/{sessionID}/auto-approve", "workbench.autoApprove.set")
@@ -141,7 +144,23 @@ export const workbenchScenarios: Scenario[] = [
     }))
     .json(200, (body) => {
       object(body)
-      check(body.edits === true && body.commands === false, "the session now auto-approves edits only")
+      check(
+        body.edits === true && body.commands === false && body.enabled === false,
+        "the session now auto-approves edits only",
+      )
+    }),
+  http.protected
+    .put("/workbench/sessions/{sessionID}/auto-approve", "workbench.autoApprove.set.enabled")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Auto-approve single switch" }))
+    .at((ctx) => ({
+      path: route("/workbench/sessions/{sessionID}/auto-approve", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { enabled: true },
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(body.edits === true && body.commands === true && body.enabled === true, "enabled turns both on")
     }),
   http.protected
     .post("/workbench/permissions/{requestID}/save", "workbench.approvals.save")

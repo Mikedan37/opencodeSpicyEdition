@@ -31,12 +31,16 @@ none approves an **edit under `.git/`** (any case, any depth, or a `.git` file):
 | "Always allow" | one session | `POST /permission/:id/reply` `always` | the request's always-patterns, remembered in memory for that session |
 | "Always allow in this project" | every session of the project, subagents included | `POST /workbench/permissions/:id/save` | the always-patterns saved in Storage (`workbench/approvals/<projectID>`) |
 
+The switches' route also speaks the single switch's shape, for installed apps (OpenCode Native 0.15.3): PUT takes
+`{ enabled }` (both on or both off) as well as `{ edits, commands }` (a field left out keeps its value), and GET
+and PUT return `enabled` (= edits && commands) next to them.
+
 Lifts touch only the agent's rules, so rules for specific files or commands (`"git push*": "ask"`), the session's
 own rules (Agent HQ's guard) and external_directory asks still apply after them. `Permission.ask` checks the
 ruleset's explicit denies first, then the ruleset with the saved and remembered approvals.
 
-Saved rules: allow rules only, `{ permission, pattern }` with permission ≤ 200 and pattern ≤ 2000 characters;
-malformed entries on disk are dropped. They are cached per project and refreshed on save and delete in this
+Saved rules: allow rules only, `{ permission, pattern }` with permission ≤ 200 and pattern ≤ 2000 characters (a
+request whose patterns are longer is refused, 400); malformed entries on disk are dropped. They are cached per project and refreshed on save and delete in this
 process (another server process sees a change after its restart). `GET /workbench/approvals` lists them,
 `DELETE /workbench/approvals` `{ permission, pattern }` removes one. Saving answers the pending request with
 "always": 404 when it is no longer pending, 400 when it has no always-patterns. Bridge tokens reach none of
@@ -45,7 +49,8 @@ v2); the fork's lives in Storage like the tool creator's metadata.
 
 ## Harmless commands
 
-A script runs without the blanket bash ask only when all of this holds:
+`opencode acp` serves the same main chat, so its harmless commands run unasked too (the Agent HQ ACP test now uses
+`printf`, which asks). A script runs without the blanket bash ask only when all of this holds:
 
 - the shell is POSIX (sh, bash, zsh, dash, ksh), never PowerShell, cmd or fish, and the parse has no errors;
 - every command is on the list with safe arguments:

@@ -17,6 +17,11 @@ export type Rule = typeof Rule.Type
 
 const decode = Schema.decodeUnknownOption(Rule)
 
+/** Whether a value is a rule the store keeps: both strings non-empty and within their caps. */
+export function valid(value: unknown): value is Rule {
+  return decode(value)._tag === "Some"
+}
+
 /** Whether a path pattern is in a .git directory, or is a .git file (a linked worktree's pointer), in any case. */
 export function gitPath(pattern: string) {
   return pattern

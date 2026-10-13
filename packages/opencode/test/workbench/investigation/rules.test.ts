@@ -106,7 +106,64 @@ describe("supervisor", () => {
       check(false, ["run_2"], [problem("division by zero at line 4")]),
     ])
     expect(record.status).toBe("blocked")
-    expect(record.checkpoints.at(-1)?.reason).toBe("S2: no progress: same error after 2 patches (checks run_1, run_2)")
+    // The rule, the sentence and the runs are separate, so the UI can label and link them.
+    expect(record.checkpoints.at(-1)).toMatchObject({
+      rule: "S2",
+      reason: "no progress: same error after 2 patches",
+      runIDs: ["run_1", "run_2"],
+    })
+  })
+
+  test("UX #15 the summary carries the rule, the sentence and the runs apart; agents still read one line", () => {
+    const record = draft({ maxRepairAttempts: 5 })
+    run(record, [
+      ...debugging,
+      patch("/repo/avg.py", "a"),
+      check(false, ["run_1"], [problem("division by zero at line 3")]),
+      patch("/repo/avg.py", "b"),
+      check(false, ["run_2"], [problem("division by zero at line 4")]),
+    ])
+    const evidenceID = record.checkpoints.at(-1)?.evidenceID
+    expect(evidenceID).toStartWith("ev_")
+    expect(WorkbenchInvestigation.summary(record)).toMatchObject({
+      status: "blocked",
+      rule: "S2",
+      reason: "no progress: same error after 2 patches",
+      runIDs: ["run_1", "run_2"],
+      evidenceID,
+    })
+    expect(WorkbenchInvestigation.explain(record.checkpoints.at(-1))).toBe(
+      "S2: no progress: same error after 2 patches (checks run_1, run_2)",
+    )
+  })
+
+  test("UX #15 records written before rule and runIDs existed are read apart too", () => {
+    const legacy = draft()
+    legacy.status = "blocked"
+    legacy.checkpoints.push(
+      { status: "blocked", at: 2, reason: "S2: no progress: same error after 2 patches (checks run_a, run_b)" },
+      { status: "needs_human", at: 3, reason: "S7: permission denied: debug.launch" },
+    )
+    expect(legacy.checkpoints.slice(-2).map(WorkbenchInvestigation.checkpoint)).toEqual([
+      {
+        status: "blocked",
+        at: 2,
+        rule: "S2",
+        reason: "no progress: same error after 2 patches",
+        runIDs: ["run_a", "run_b"].map((id) => Workbench.RunID.make(id)),
+      },
+      { status: "needs_human", at: 3, rule: "S7", reason: "permission denied: debug.launch" },
+    ])
+    expect(WorkbenchInvestigation.summary(legacy)).toMatchObject({
+      rule: "S7",
+      reason: "permission denied: debug.launch",
+    })
+    // A reason without a rule prefix is left alone.
+    expect(WorkbenchInvestigation.checkpoint({ status: "interrupted", at: 4, reason: "the app restarted" })).toEqual({
+      status: "interrupted",
+      at: 4,
+      reason: "the app restarted",
+    })
   })
 
   test("INV-07 S3: an identical patch twice blocks", () => {
@@ -118,7 +175,7 @@ describe("supervisor", () => {
       patch("/repo/avg.py", "same"),
     ])
     expect(record.status).toBe("blocked")
-    expect(record.checkpoints.at(-1)?.reason).toBe("S3: repeated identical patch")
+    expect(record.checkpoints.at(-1)).toMatchObject({ rule: "S3", reason: "repeated identical patch" })
   })
 
   test("INV-08 S4: a growing error count blocks", () => {
@@ -131,7 +188,7 @@ describe("supervisor", () => {
       check(false, ["run_2"], [problem("two"), problem("three", "/repo/b.py")]),
     ])
     expect(record.status).toBe("blocked")
-    expect(record.checkpoints.at(-1)?.reason).toBe("S4: each fix adds errors (1 → 2)")
+    expect(record.checkpoints.at(-1)).toMatchObject({ rule: "S4", reason: "each fix adds errors (1 → 2)" })
   })
 
   test("S1: repair attempts used up", () => {
@@ -144,7 +201,11 @@ describe("supervisor", () => {
       check(false, ["run_2"], [problem("three")]),
     ])
     expect(record.status).toBe("blocked")
-    expect(record.checkpoints.at(-1)?.reason).toBe("S1: repair attempts used up (checks run_1, run_2)")
+    expect(record.checkpoints.at(-1)).toMatchObject({
+      rule: "S1",
+      reason: "repair attempts used up",
+      runIDs: ["run_1", "run_2"],
+    })
   })
 
   test("INV-09 S5: the step budget hands the investigation to the user", () => {
@@ -153,7 +214,10 @@ describe("supervisor", () => {
     expect(record.status).toBe("diagnosing")
     run(record, [{ type: "debug.steps", delta: 1 }])
     expect(record.status).toBe("needs_human")
-    expect(record.checkpoints.at(-1)?.reason).toBe("S5: debug step budget of 200 used; the program stays paused")
+    expect(record.checkpoints.at(-1)).toMatchObject({
+      rule: "S5",
+      reason: "debug step budget of 200 used; the program stays paused",
+    })
   })
 
   test("INV-10 S6: the duration limit hands the investigation to the user", () => {
@@ -161,20 +225,23 @@ describe("supervisor", () => {
     run(record, debugging, 1_000)
     run(record, [{ type: "debug.steps", delta: 1 }], 1_800_000)
     expect(record.status).toBe("needs_human")
-    expect(record.checkpoints.at(-1)?.reason).toBe("S6: investigation reached its 30 minute limit")
+    expect(record.checkpoints.at(-1)).toMatchObject({ rule: "S6", reason: "investigation reached its 30 minute limit" })
   })
 
   test("S7: a permission denial hands it to the user; S8: two adapter crashes fail it", () => {
     const denied = draft()
     run(denied, [...debugging, { type: "permission.denied", permission: "debug.evaluate" }])
     expect(denied.status).toBe("needs_human")
-    expect(denied.checkpoints.at(-1)?.reason).toBe("S7: permission denied: debug.evaluate")
+    expect(denied.checkpoints.at(-1)).toMatchObject({ rule: "S7", reason: "permission denied: debug.evaluate" })
     const crashed = draft()
     run(crashed, [...debugging, { type: "debug.crashed", debugSessionID: dbg, error: "exit 3" }])
     expect(crashed.status).toBe("diagnosing")
     run(crashed, [{ type: "debug.crashed", debugSessionID: dbg, error: "exit 3" }])
     expect(crashed.status).toBe("failed")
-    expect(crashed.checkpoints.at(-1)?.reason).toBe("S8: debugger unstable: the debug adapter crashed twice")
+    expect(crashed.checkpoints.at(-1)).toMatchObject({
+      rule: "S8",
+      reason: "debugger unstable: the debug adapter crashed twice",
+    })
   })
 
   test("fingerprints normalize numbers and whitespace", () => {

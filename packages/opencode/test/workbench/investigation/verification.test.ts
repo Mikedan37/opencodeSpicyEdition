@@ -256,9 +256,11 @@ describe("verification feeds investigations", () => {
       expect(full.investigation.status).toBe("blocked")
       const verify = yield* WorkbenchVerify.Service
       const runs = (yield* verify.reports()).flatMap((report) => report.checks.map((check) => check.run.id))
-      expect(full.investigation.checkpoints.at(-1)?.reason).toBe(
-        `S2: no progress: same error after 2 patches (checks ${runs.join(", ")})`,
-      )
+      expect(full.investigation.checkpoints.at(-1)).toMatchObject({
+        rule: "S2",
+        reason: "no progress: same error after 2 patches",
+        runIDs: runs,
+      })
       expect(full.investigation.attempts.map((attempt) => [attempt.n, attempt.passed])).toEqual([
         [1, false],
         [2, false],
@@ -324,7 +326,10 @@ describe("verification feeds investigations", () => {
         expect(repairs(messages)).toHaveLength(1)
         const record = yield* investigations.get(investigation.id)
         expect(record.status).toBe("blocked")
-        expect(record.checkpoints.at(-1)?.reason).toStartWith("S2: no progress: same error after 2 patches")
+        expect(record.checkpoints.at(-1)).toMatchObject({
+          rule: "S2",
+          reason: "no progress: same error after 2 patches",
+        })
         expect(record.attempts.map((attempt) => attempt.errorFingerprints)).toEqual([
           record.attempts[0].errorFingerprints,
           record.attempts[0].errorFingerprints,

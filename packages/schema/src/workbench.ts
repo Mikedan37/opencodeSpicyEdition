@@ -306,6 +306,12 @@ export const InvestigationStatus = Schema.Literals([
 ])
 export type InvestigationStatus = typeof InvestigationStatus.Type
 
+// The supervisor rule that stopped an investigation or handed it to the user: S1 repair attempts used up, S2 no
+// progress (same error after 2 patches), S3 repeated identical patch, S4 each fix adds errors, S5 debug step budget,
+// S6 duration limit, S7 permission denied, S8 debugger unstable.
+export const SupervisorRule = Schema.Literals(["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"])
+export type SupervisorRule = typeof SupervisorRule.Type
+
 export const EvidenceKind = Schema.Literals([
   "repro-run",
   "check-run",
@@ -357,7 +363,11 @@ export const InvestigationSummary = Schema.Struct({
   agentID: optional(Schema.String), // Agent HQ identity, when started by one
   attempts: NonNegativeInt,
   evidenceCount: NonNegativeInt,
-  reason: optional(Schema.String), // latest checkpoint reason, e.g. supervisor rule S2
+  // From the latest checkpoint with a reason: the sentence, the supervisor rule, and what it refers to.
+  reason: optional(Schema.String),
+  rule: optional(SupervisorRule),
+  runIDs: optional(Schema.Array(RunID)),
+  evidenceID: optional(EvidenceID),
   updatedAt: Schema.Finite,
 }).annotate({ identifier: "WorkbenchInvestigation" })
 export interface InvestigationSummary extends Schema.Schema.Type<typeof InvestigationSummary> {}
@@ -383,7 +393,9 @@ export const InvestigationAttempt = Schema.Struct({
 export const InvestigationCheckpoint = Schema.Struct({
   status: InvestigationStatus,
   at: Schema.Finite,
-  reason: optional(Schema.String),
+  reason: optional(Schema.String), // a sentence for people, without the rule or run ids
+  rule: optional(SupervisorRule), // set when a supervisor rule made the change
+  runIDs: optional(Schema.Array(RunID)), // the check runs the reason refers to
   evidenceID: optional(EvidenceID),
 })
 

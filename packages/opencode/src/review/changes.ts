@@ -805,13 +805,16 @@ function present(
     additions: item?.additions ?? 0,
     deletions: item?.deletions ?? 0,
     hunks,
+    // A file decided both ways is partly kept (UX audit #9), not accepted.
     state: hunks.length
       ? accepted + rejected
         ? "partial"
         : "pending"
-      : rejected && !accepted
-        ? "rejected"
-        : "accepted",
+      : accepted && rejected
+        ? "partial"
+        : rejected
+          ? "rejected"
+          : "accepted",
     undoable,
     accepted,
     rejected,

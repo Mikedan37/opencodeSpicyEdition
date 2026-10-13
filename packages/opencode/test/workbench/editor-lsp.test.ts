@@ -4,11 +4,13 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { which } from "@opencode-ai/core/util/which"
+import type { Review } from "@opencode-ai/schema/review"
+import type { Workbench } from "@opencode-ai/schema/workbench"
 import { Effect, Layer } from "effect"
 import { WorkbenchEditorLsp } from "@/workbench/editor-lsp"
 import { resetDatabase } from "../fixture/db"
 import { tmpdirScoped } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "../server/httpapi-layer"
 
 const it = testEffect(
@@ -96,6 +98,110 @@ describe("workbench code intelligence routes", () => {
   )
 })
 
+const send = (dir: string, route: string, body: unknown) =>
+  Effect.gen(function* () {
+    const response = yield* requestInDirectory(route, dir, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    return { status: response.status, body: JSON.parse(yield* response.text) as unknown }
+  })
+
+describe("workbench code intelligence, editing", () => {
+  it.live("sync gives the servers the editor's text; completion answers against it", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true, config: nav })
+      yield* Effect.promise(() => Bun.write(path.join(dir, "a.nav"), "use helper\n"))
+      const labels = (body: unknown) => (body as Workbench.LspCompletionList).items.map((item) => item.label)
+
+      expect(yield* send(dir, "/workbench/lsp/sync", { path: "a.nav", text: "use helper\nunsaved\n" })).toEqual({
+        status: 200,
+        body: true,
+      })
+      const typed = yield* get(dir, "/workbench/lsp/completion", { path: "a.nav", line: 1, character: 3 })
+      expect(labels(typed.body)).toContain("unsaved")
+      expect((typed.body as Workbench.LspCompletionList).items).toContainEqual({
+        label: "helper",
+        kind: "function",
+        detail: "fn helper(arg)",
+        insert: "helper(arg)",
+      })
+      expect((typed.body as Workbench.LspCompletionList).incomplete).toBe(false)
+
+      // without text the servers read the file on disk again
+      yield* send(dir, "/workbench/lsp/sync", { path: "a.nav" })
+      expect(
+        labels((yield* get(dir, "/workbench/lsp/completion", { path: "a.nav", line: 0, character: 2 })).body),
+      ).not.toContain("unsaved")
+    }),
+  )
+
+  it.live("rename writes the files and records them as the session's review changeset", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true, config: nav })
+      const a = path.join(dir, "a.nav")
+      const b = path.join(dir, "b.nav")
+      yield* Effect.promise(() =>
+        Promise.all([Bun.write(a, "use helper\nhelper again\noutsider\nnothing\n"), Bun.write(b, "def helper\n")]),
+      )
+      const session = (yield* send(dir, "/session", {})).body as { id: string }
+      const rename = (line: number, character: number, newName: string) =>
+        send(dir, "/workbench/lsp/rename", { path: "a.nav", line, character, newName, sessionID: session.id })
+
+      expect(yield* rename(0, 5, "assist")).toEqual({
+        status: 200,
+        body: { files: [a, b], edits: 3, changeset: `chg_${session.id}` },
+      })
+      expect(yield* Effect.promise(() => Bun.file(a).text())).toBe("use assist\nassist again\noutsider\nnothing\n")
+      expect(yield* Effect.promise(() => Bun.file(b).text())).toBe("def assist\n")
+      const changesets = (yield* get(dir, "/review/changesets", {})).body as Review.ChangeSet[]
+      expect(
+        changesets.find((item) => item.id === `chg_${session.id}`)?.files.map((file) => [file.path, file.state]),
+      ).toEqual([
+        ["a.nav", "pending"],
+        ["b.nav", "pending"],
+      ])
+
+      // refused: a file outside the project; nothing to rename: no change
+      const outside = yield* rename(2, 3, "inside")
+      expect(outside.status).toBe(400)
+      expect(JSON.stringify(outside.body)).toContain("outside the project")
+      expect(yield* rename(3, 3, "something")).toEqual({ status: 200, body: { files: [], edits: 0 } })
+      expect(yield* Effect.promise(() => Bun.file(a).text())).toBe("use assist\nassist again\noutsider\nnothing\n")
+    }),
+  )
+
+  it.live("format: the server's edits for the editor's text, else opencode's formatter on a copy, else nothing", () =>
+    Effect.gen(function* () {
+      const upper = path.join(__dirname, "../fixture/workbench/upper-format.js")
+      const dir = yield* tmpdirScoped({
+        git: true,
+        config: { ...nav, formatter: { upper: { command: [process.execPath, upper, "$FILE"], extensions: [".up"] } } },
+      })
+      yield* Effect.promise(() =>
+        Promise.all([
+          Bun.write(path.join(dir, "a.nav"), "saved\n"),
+          Bun.write(path.join(dir, "b.up"), "saved\n"),
+          Bun.write(path.join(dir, "c.txt"), "saved\n"),
+        ]),
+      )
+      expect((yield* send(dir, "/workbench/lsp/format", { path: "a.nav", text: "one  \ntwo\n" })).body).toEqual({
+        edits: [{ range: span(0, 3, 5), newText: "" }],
+      })
+      expect((yield* send(dir, "/workbench/lsp/format", { path: "b.up", text: "unsaved text\n" })).body).toEqual({
+        text: "UNSAVED TEXT\n",
+      })
+      expect((yield* send(dir, "/workbench/lsp/format", { path: "c.txt", text: "x\n" })).body).toEqual({})
+      // the copy is gone and the files on disk are untouched
+      expect((yield* Effect.promise(() => import("fs/promises").then((fs) => fs.readdir(dir)))).sort()).toEqual(
+        [".git", "a.nav", "b.up", "c.txt", "nav.log", "opencode.json"].sort(),
+      )
+      expect(yield* Effect.promise(() => Bun.file(path.join(dir, "b.up")).text())).toBe("saved\n")
+    }),
+  )
+})
+
 const clangd = which("clangd") ? it.live : it.live.skip
 
 describe("workbench code intelligence with a real language server", () => {
@@ -116,6 +222,62 @@ describe("workbench code intelligence with a real language server", () => {
           { file, range: span(0, 4, 7), preview: "int add(int a, int b) { return a + b; }" },
           { file, range: span(2, 9, 12), preview: "return add(1, 2);" },
         ])
+      }),
+    30_000,
+  )
+
+  clangd(
+    `[clangd] completion of the editor's text, a rename for review, formatting${which("clangd") ? "" : " (skipped: clangd is not on PATH)"}`,
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped({ git: true, config: { lsp: true } })
+        const file = path.join(dir, "main.c")
+        const saved = "int add(int a, int b) { return a + b; }\nint main(void) {\n  return add(1, 2);\n}\n"
+        yield* Effect.promise(() => Bun.write(file, saved))
+
+        // the unsaved line `  return ad` completes to add
+        yield* send(dir, "/workbench/lsp/sync", { path: "main.c", text: saved.replace("add(1, 2);", "ad") })
+        const completion = (yield* get(dir, "/workbench/lsp/completion", { path: "main.c", line: 2, character: 11 }))
+          .body as Workbench.LspCompletionList
+        expect(completion.items).toContainEqual(expect.objectContaining({ label: "add" }))
+
+        // Diagnostics follow the editor's text: an unsaved error shows in Problems, and goes with the text on disk.
+        const errors = () =>
+          get(dir, "/workbench/problems", { file: "main.c", severity: "error" }).pipe(
+            Effect.map((result) => (result.body as Workbench.ProblemsSnapshot).problems.length),
+          )
+        yield* send(dir, "/workbench/lsp/sync", { path: "main.c", text: saved.replace("add(1, 2)", "missing(1, 2)") })
+        yield* pollWithTimeout(
+          errors().pipe(Effect.map((count) => (count > 0 ? count : undefined))),
+          "the unsaved error never reached Problems",
+          "20 seconds",
+        )
+        yield* send(dir, "/workbench/lsp/sync", { path: "main.c" })
+        yield* pollWithTimeout(
+          errors().pipe(Effect.map((count) => (count === 0 ? true : undefined))),
+          "the error stayed after the text on disk came back",
+          "20 seconds",
+        )
+
+        const session = (yield* send(dir, "/session", {})).body as { id: string }
+        expect(
+          yield* send(dir, "/workbench/lsp/rename", {
+            path: "main.c",
+            line: 2,
+            character: 10,
+            newName: "sum",
+            sessionID: session.id,
+          }),
+        ).toEqual({ status: 200, body: { files: [file], edits: 2, changeset: `chg_${session.id}` } })
+        expect(yield* Effect.promise(() => Bun.file(file).text())).toBe(saved.replaceAll("add", "sum"))
+
+        const format = (yield* send(dir, "/workbench/lsp/format", {
+          path: "main.c",
+          text: "int main(void){return 0;}\n",
+        })).body as Workbench.LspFormat
+        expect(WorkbenchEditorLsp.applyEdits("int main(void){return 0;}\n", format.edits ?? [])).toBe(
+          "int main(void) { return 0; }\n",
+        )
       }),
     30_000,
   )

@@ -123,6 +123,40 @@ export const LspLocation = Schema.Struct({
 }).annotate({ identifier: "WorkbenchLspLocation" })
 export interface LspLocation extends Schema.Schema.Type<typeof LspLocation> {}
 
+export const LspCompletion = Schema.Struct({
+  label: Schema.String,
+  kind: optional(Schema.String), // a CodeMirror completion type: function, method, variable, class, keyword, ...
+  detail: optional(Schema.String),
+  documentation: optional(Schema.String), // markdown
+  insert: optional(Schema.String), // what to insert when it is not the label (snippets arrive flattened)
+  range: optional(Range), // what the insert replaces, when the server says
+}).annotate({ identifier: "WorkbenchLspCompletion" })
+export interface LspCompletion extends Schema.Schema.Type<typeof LspCompletion> {}
+
+export const LspCompletionList = Schema.Struct({
+  items: Schema.Array(LspCompletion),
+  incomplete: Schema.Boolean, // more items exist: ask again as the word grows
+}).annotate({ identifier: "WorkbenchLspCompletionList" })
+export interface LspCompletionList extends Schema.Schema.Type<typeof LspCompletionList> {}
+
+export const LspTextEdit = Schema.Struct({ range: Range, newText: Schema.String })
+export interface LspTextEdit extends Schema.Schema.Type<typeof LspTextEdit> {}
+
+// Formatting the editor's text: a language server's edits against the text sent, or opencode's formatter's whole
+// text; neither when nothing formats this file.
+export const LspFormat = Schema.Struct({
+  edits: optional(Schema.Array(LspTextEdit)),
+  text: optional(Schema.String),
+}).annotate({ identifier: "WorkbenchLspFormat" })
+export interface LspFormat extends Schema.Schema.Type<typeof LspFormat> {}
+
+export const LspRename = Schema.Struct({
+  files: Schema.Array(Schema.String), // absolute paths written
+  edits: NonNegativeInt,
+  changeset: optional(Schema.String), // the review changeset (Review.ChangeSetID) holding them as pending hunks
+}).annotate({ identifier: "WorkbenchLspRename" })
+export interface LspRename extends Schema.Schema.Type<typeof LspRename> {}
+
 // ---------------------------------------------------------------- verification
 
 // A timeout, a skip, a missing tool or a cancelled run is never a pass.

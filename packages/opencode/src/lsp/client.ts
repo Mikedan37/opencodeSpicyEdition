@@ -306,6 +306,9 @@ export async function create(input: {
             versionSupport: false,
           },
           hover: { contentFormat: ["markdown", "plaintext"] }, // spicy: the IDE editor's hover renders markdown
+          // spicy: the IDE editor's completion (plain text, no snippets) and rename
+          completion: { completionItem: { snippetSupport: false, documentationFormat: ["markdown", "plaintext"] } },
+          rename: {},
         },
       },
     }),
@@ -637,11 +640,12 @@ export async function create(input: {
     // spicy: resolves with a reason when the server process dies (REG-09)
     exited,
     notify: {
-      async open(request: { path: string }) {
+      // spicy: `text` (the IDE editor's unsaved buffer) is sent instead of the file on disk
+      async open(request: { path: string; text?: string }) {
         request.path = Filesystem.normalizePath(
           path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
         )
-        const text = await Filesystem.readText(request.path)
+        const text = request.text ?? (await Filesystem.readText(request.path))
         const extension = path.extname(request.path)
         const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
 

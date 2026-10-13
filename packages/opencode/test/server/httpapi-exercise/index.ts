@@ -584,6 +584,69 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
     }))
     .json(404, object, "status"),
+  // spicy: tool creator routes. Mutations probe a missing tool; nothing is drafted or loaded.
+  http.protected.get("/workbench/tools", "workbench.tools.list").json(200, array),
+  http.protected
+    .post("/workbench/tools", "workbench.tools.draft")
+    .at((ctx) => ({
+      path: "/workbench/tools",
+      headers: ctx.headers(),
+      body: { name: "Not A Slug", description: "", source: "" },
+    }))
+    .json(400, object, "status"),
+  http.protected
+    .post("/workbench/tools/agent", "workbench.tools.agent")
+    .at((ctx) => ({
+      path: "/workbench/tools/agent",
+      headers: ctx.headers(),
+      body: { sessionID: "ses_httpapi_missing", tool: "tool_create", args: {} },
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/workbench/tools/{name}/approve", "workbench.tools.approve")
+    .at((ctx) => ({
+      path: route("/workbench/tools/{name}/approve", { name: "httpapi_missing" }),
+      headers: ctx.headers(),
+      body: { hash: "0" },
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/workbench/tools/{name}/reject", "workbench.tools.reject")
+    .at((ctx) => ({
+      path: route("/workbench/tools/{name}/reject", { name: "httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/workbench/tools/{name}/disable", "workbench.tools.disable")
+    .at((ctx) => ({
+      path: route("/workbench/tools/{name}/disable", { name: "httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/workbench/tools/{name}/enable", "workbench.tools.enable")
+    .at((ctx) => ({
+      path: route("/workbench/tools/{name}/enable", { name: "httpapi_missing" }),
+      headers: ctx.headers(),
+      body: { hash: "0" },
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/workbench/tools/{name}/run", "workbench.tools.run")
+    .at((ctx) => ({
+      path: route("/workbench/tools/{name}/run", { name: "httpapi_missing" }),
+      headers: ctx.headers(),
+      body: { args: {} },
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .delete("/workbench/tools/{name}", "workbench.tools.remove")
+    .at((ctx) => ({
+      path: route("/workbench/tools/{name}", { name: "httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
   http.protected
     .post("/workbench/debug/agent", "workbench.debug.agent")
     .at((ctx) => ({

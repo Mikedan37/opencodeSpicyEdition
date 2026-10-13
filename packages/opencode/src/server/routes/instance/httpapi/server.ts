@@ -113,6 +113,8 @@ import { agenthqHandlers } from "./handlers/agenthq" // spicy: Agent HQ routes
 import { workbenchHandlers } from "./handlers/workbench" // spicy: Workbench problems routes
 import { WorkbenchProblems } from "@/workbench/problems/store" // spicy: Workbench services
 import { workbenchDebugHandlers } from "./handlers/workbench-debug" // spicy: Workbench debug routes
+import { workbenchToolsHandlers } from "./handlers/workbench-tools" // spicy: tool creator routes
+import { WorkbenchTools } from "@/workbench/tools/tools" // spicy: tool creator service
 import { DebugToolNode } from "@/workbench/tool/debug" // spicy: Workbench debug and investigation routes
 import { reviewHandlers } from "./handlers/review" // spicy: review routes
 import { ReviewChanges } from "@/review/changes" // spicy: review service
@@ -182,6 +184,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     agenthqHandlers, // spicy: Agent HQ routes
     workbenchHandlers, // spicy: Workbench problems routes
     workbenchDebugHandlers, // spicy: Workbench debug routes
+    workbenchToolsHandlers, // spicy: tool creator routes
     reviewHandlers, // spicy: review routes
   ]),
 )
@@ -286,6 +289,7 @@ const app = LayerNode.group([
   AgentOrchestrator.node, // spicy: Agent HQ services
   WorkbenchProblems.node, // spicy: Workbench services
   DebugToolNode, // spicy: Workbench debug and investigation routes
+  WorkbenchTools.node, // spicy: tool creator service
   ReviewChanges.node, // spicy: review service
   WorkbenchVerify.node, // spicy: Workbench services
 ])

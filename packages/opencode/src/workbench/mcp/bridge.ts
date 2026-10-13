@@ -47,8 +47,12 @@ export interface Tool<Input extends Schema.Decoder<unknown> = Schema.Decoder<unk
   readonly description: string
   readonly input: Input
   readonly annotations?: ToolAnnotations
+  readonly jsonSchema?: Record<string, unknown> // spicy: listed instead of `input`'s, for tools defined by JSON Schema (dap)
   run(args: Input["Type"], api: Api, connection: Connection): Promise<ToolResult>
 }
+
+// spicy: extra tools, or a function listing them each time, for tools that change while the bridge runs (dap)
+export type Extra = ReadonlyArray<Tool> | ((api: Api) => Promise<ReadonlyArray<Tool>>)
 
 export const define = <Input extends Schema.Decoder<unknown>>(tool: Tool<Input>) => tool
 
@@ -182,24 +186,24 @@ export function inputSchema(tool: Tool) {
 }
 
 /** An MCP server with the workbench tools (plus `extra`), talking to the opencode server in `connection`. */
-export function create(connection: Connection, extra: ReadonlyArray<Tool> = []) {
-  const all = [...tools, ...extra]
+export function create(connection: Connection, extra: Extra = []) {
   const api = client(connection)
+  const all = async () => [...tools, ...(typeof extra === "function" ? await extra(api) : extra)] // spicy: Extra
   const server = new Server(
     { name: "opencode-workbench", version: InstallationVersion },
     { capabilities: { tools: {} } },
   )
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: all.map((tool) => ({
+    tools: (await all()).map((tool) => ({
       name: tool.name,
       title: tool.title,
       description: tool.description,
-      inputSchema: inputSchema(tool),
+      inputSchema: tool.jsonSchema ? { ...tool.jsonSchema, type: "object" as const } : inputSchema(tool), // spicy
       annotations: tool.annotations,
     })),
   }))
   server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
-    const tool = all.find((item) => item.name === request.params.name)
+    const tool = (await all()).find((item) => item.name === request.params.name) // spicy: Extra
     if (!tool) return failure(`Unknown tool: ${request.params.name}`)
     const args = Schema.decodeUnknownExit(tool.input, { onExcessProperty: "error" })(request.params.arguments ?? {})
     if (Exit.isFailure(args))
@@ -213,7 +217,7 @@ export function create(connection: Connection, extra: ReadonlyArray<Tool> = []) 
 }
 
 /** Serves the bridge on stdin/stdout until stdin closes. */
-export async function serve(connection: Connection, extra: ReadonlyArray<Tool> = []) {
+export async function serve(connection: Connection, extra: Extra = []) {
   const transport = new StdioServerTransport()
   // the host ends the session by closing our stdin; the transport itself does not report that
   const closed = new Promise<void>((resolve) => {

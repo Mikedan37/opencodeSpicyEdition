@@ -1,6 +1,6 @@
 // Debug tools for the Workbench MCP bridge: one `debug_<action>` tool per action of opencode's own `debug` tool,
 // with the same field names and descriptions. Each call is POST /workbench/debug/agent, which runs that tool on
-// the server for an opencode session the bridge creates on first use ("Workbench MCP: debugging"). The server asks
+// the server for the bridge's opencode session (WorkbenchBridgeSession, "Workbench MCP"). The server asks
 // debug.launch / debug.attach / debug.evaluate there, so approvals happen in the IDE; nothing is approved here.
 // Control (start, control, breakpoints, evaluate, stop) needs the agent to own the debug session; inspection
 // (inspect, output, status) works whoever owns it, while the program is stopped.
@@ -8,6 +8,7 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { Schema } from "effect"
 import { Parameters } from "../tool/debug"
 import { WorkbenchBridge } from "./bridge"
+import { WorkbenchBridgeSession } from "./session"
 
 type Field = keyof typeof Parameters.fields
 type Action = (typeof Parameters.fields.action.literals)[number]
@@ -18,7 +19,6 @@ const AgentResult = Schema.Struct({
   metadata: Schema.Record(Schema.String, Schema.Unknown),
 })
 const decode = Schema.decodeUnknownSync(Schema.toCodecJson(AgentResult))
-const decodeSession = Schema.decodeUnknownSync(Schema.Struct({ id: Schema.String }))
 
 const START: Field[] = [
   "title",
@@ -128,19 +128,8 @@ const SPECS: {
   },
 ]
 
-/** The debug_* tools. Each bridge process gets one opencode session, created on the first debug call. */
-export function tools(): WorkbenchBridge.Tool[] {
-  const state: { session?: Promise<string> } = {}
-  const session = (api: WorkbenchBridge.Api) => {
-    state.session ??= api
-      .post("/session", { title: "Workbench MCP: debugging" })
-      .then((body) => decodeSession(body).id)
-      .catch((error: unknown) => {
-        state.session = undefined
-        throw error
-      })
-    return state.session
-  }
+/** The debug_* tools, acting in `session` (one per bridge process, shared with the other agent tools). */
+export function tools(session = WorkbenchBridgeSession.agentSession()): WorkbenchBridge.Tool[] {
   return SPECS.map(
     (spec): WorkbenchBridge.Tool => ({
       name: `debug_${spec.action}`,

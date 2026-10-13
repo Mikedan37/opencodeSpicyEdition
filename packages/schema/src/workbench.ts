@@ -418,6 +418,66 @@ export const InvestigationDetail = Schema.Struct({
 }).annotate({ identifier: "WorkbenchInvestigationDetail" })
 export interface InvestigationDetail extends Schema.Schema.Type<typeof InvestigationDetail> {}
 
+// ---------------------------------------------------------------- custom tools
+
+// Tools that agents or the user draft in the IDE. A draft is never imported or run: once the user approves it, it
+// becomes an ordinary opencode custom tool (.opencode/tool/custom_<name>.ts) called custom_<name>.
+export const CustomToolStatus = Schema.Literals(["draft", "enabled", "disabled", "invalid"])
+export type CustomToolStatus = typeof CustomToolStatus.Type
+
+export const CustomToolArg = Schema.Struct({
+  name: Schema.String,
+  type: optional(Schema.String), // "string", "number", "boolean", "array", "object", "enum", ... when known
+  description: optional(Schema.String),
+  required: Schema.Boolean,
+})
+export interface CustomToolArg extends Schema.Schema.Type<typeof CustomToolArg> {}
+
+export const CustomToolAuthor = Schema.Struct({
+  by: Schema.Literals(["agent", "user"]),
+  sessionID: optional(Schema.String), // the agent's opencode session
+  agent: optional(Schema.String), // the agent's name
+})
+export interface CustomToolAuthor extends Schema.Schema.Type<typeof CustomToolAuthor> {}
+
+export const CustomTool = Schema.Struct({
+  name: Schema.String, // slug: lowercase letters, digits, _
+  id: Schema.String, // custom_<name>: the tool id agents call and the permission key
+  description: Schema.String,
+  args: Schema.Array(CustomToolArg), // read from the source for drafts, from the loaded schema once enabled
+  status: CustomToolStatus,
+  reason: optional(Schema.String), // why it is invalid: failed checks or load, or an enabled file that did not load
+  path: Schema.String, // absolute path of its file: the draft, the tool, or the tool + ".disabled"
+  source: Schema.String, // the file's TypeScript
+  hash: Schema.String, // sha256 (hex) of source; approve and enable send it back
+  createdBy: CustomToolAuthor,
+  createdAt: Schema.Finite,
+  updatedAt: Schema.Finite,
+  inputSchema: optional(Schema.Record(Schema.String, Schema.Unknown)), // JSON Schema of the args, enabled tools only
+}).annotate({ identifier: "WorkbenchCustomTool" })
+export interface CustomTool extends Schema.Schema.Type<typeof CustomTool> {}
+
+// POST /workbench/tools (the user) and the tool_create tool (agents).
+export const CustomToolDraft = Schema.Struct({
+  name: Schema.String.annotate({
+    description: "Tool name: lowercase letters, digits and _ (max 40); the tool will be called custom_<name>",
+  }),
+  description: Schema.String.annotate({ description: "What the tool does, for the user who approves it" }),
+  source: Schema.String.annotate({
+    description:
+      'The whole TypeScript file: import { tool } from "@opencode-ai/plugin", then export default tool({ description, args, execute })',
+  }),
+}).annotate({ identifier: "WorkbenchCustomToolDraft" })
+export interface CustomToolDraft extends Schema.Schema.Type<typeof CustomToolDraft> {}
+
+// What a run of a tool returned (POST /workbench/tools/:name/run, the user's test run).
+export const CustomToolResult = Schema.Struct({
+  title: Schema.String,
+  output: Schema.String,
+  metadata: Schema.Record(Schema.String, Schema.Unknown),
+}).annotate({ identifier: "WorkbenchCustomToolResult" })
+export interface CustomToolResult extends Schema.Schema.Type<typeof CustomToolResult> {}
+
 // ---------------------------------------------------------------- events
 
 const ProblemsUpdated = define({
@@ -441,6 +501,8 @@ const InvestigationUpdated = define({
   type: "workbench.investigation.updated",
   schema: { investigation: InvestigationSummary },
 })
+const ToolUpdated = define({ type: "workbench.tool.updated", schema: { tool: CustomTool } })
+const ToolRemoved = define({ type: "workbench.tool.removed", schema: { name: Schema.String } })
 
 export const Event = {
   ProblemsUpdated,
@@ -449,5 +511,16 @@ export const Event = {
   DebugUpdated,
   DebugOutput,
   InvestigationUpdated,
-  Definitions: inventory(ProblemsUpdated, RunUpdated, RunOutput, DebugUpdated, DebugOutput, InvestigationUpdated),
+  ToolUpdated,
+  ToolRemoved,
+  Definitions: inventory(
+    ProblemsUpdated,
+    RunUpdated,
+    RunOutput,
+    DebugUpdated,
+    DebugOutput,
+    InvestigationUpdated,
+    ToolUpdated,
+    ToolRemoved,
+  ),
 }

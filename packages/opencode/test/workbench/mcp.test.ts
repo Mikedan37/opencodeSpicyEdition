@@ -254,14 +254,15 @@ describe("workbench MCP bridge", () => {
           (client) => Effect.promise(() => client.close()),
         )
         const listed = yield* Effect.promise(() => mcp.listTools())
-        // spicy: the CLI also serves the debug_* tools (dap); test/workbench/mcp-debug.test.ts covers them
+        // spicy: the CLI also serves debug_* and tool_create (dap); mcp-debug.test.ts and tools/tools.test.ts cover them
         const names = listed.tools.map((tool) => tool.name)
-        expect(names.filter((name) => !name.startsWith("debug_"))).toEqual([
+        expect(names.filter((name) => name.startsWith("workbench_"))).toEqual([
           "workbench_problems",
           "workbench_check",
           "workbench_doctor",
         ])
         expect(names).toContain("debug_start")
+        expect(names).toContain("tool_create")
         const problems = yield* call(mcp, "workbench_problems")
         expect(problems.isError).toBeFalsy()
         expect(text(problems)).toStartWith("0 errors")

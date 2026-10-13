@@ -28,6 +28,7 @@ also owns is listed here so upstream merges stay predictable. Each edit in the c
 | `packages/opencode/test/cli/help/__snapshots__/help-snapshots.test.ts.snap` | `opencode debug workbench` line in the `debug --help` snapshot | Doctor subcommand |
 | `packages/opencode/test/lsp/{client,index}.test.ts`, `test/fixture/lsp/fake-lsp-server.js` | `refreshSupport` now true; fake server variants for the sourcekit pattern and dying servers | REG tests |
 | `packages/opencode/test/session/{prompt,snapshot-tool-race}.test.ts`, `test/tool/lsp.test.ts` | LSP stubs gain `diagnosticEvents: () => Stream.empty` | Interface grew a method |
+| `packages/opencode/test/agent/agent.test.ts` | `build`'s default `edit` and `bash` (also with a user's `bash` deny merged in) expect `ask` | The main chat asks before edits and bash (owner decision 2026-10-12) |
 | `packages/opencode/test/cli/run/run-process.test.ts`, `test/session/prompt.test.ts` | The two stream-recovery runs allow `bash`; the failed-subtask test's session allows `task` | The build agent now asks before bash and subagents, and `opencode run` rejects asks; these tests are about something else |
 | `packages/app/src/app.tsx` | `FileComponentProvider` gets the fork's `DebugFile` (session-ui `File` plus debugger gutter marks) | Breakpoints, paused line and values in the file viewer |
 | `packages/app/src/context/command.tsx` | `EDITABLE_KEYBIND_IDS` also spreads `SPICY_EDITABLE_KEYBIND_IDS` from `workbench/keys.ts` | Fork keys (F5, F9, F10, …) fire while typing; new fork keys only edit `keys.ts` |

@@ -20,13 +20,16 @@ describe("tool creator permissions", () => {
   defaults.instance('custom_* asks although the defaults allow "*"', () =>
     Effect.gen(function* () {
       const agents = yield* Agent.Service
-      for (const agent of [yield* agents.defaultInfo(), (yield* agents.get("general"))!]) {
+      const plan = (yield* agents.get("plan"))!
+      // plan still starts from "*": "allow"; the main chat (build, general) from "*": "ask" with the read-only tools
+      // allowed. custom_* comes after the last "*" rule either way, so no "*" can win over it.
+      expect(Permission.evaluate("some_plugin_tool", "*", plan.permission).action).toBe("allow")
+      for (const agent of [plan, yield* agents.defaultInfo(), (yield* agents.get("general"))!]) {
         const rules = agent.permission
-        const everything = rules.findIndex((rule) => rule.permission === "*" && rule.action === "allow")
+        const everything = rules.findLastIndex((rule) => rule.permission === "*")
         expect(everything).toBeGreaterThanOrEqual(0)
         expect(rules.findIndex((rule) => rule.permission === "custom_*")).toBeGreaterThan(everything)
         expect(Permission.evaluate("custom_hello", "*", rules).action).toBe("ask")
-        expect(Permission.evaluate("some_plugin_tool", "*", rules).action).toBe("allow")
       }
     }),
   )

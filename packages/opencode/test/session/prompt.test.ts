@@ -958,7 +958,11 @@ it.instance("failed subtask preserves metadata on error tool state", () =>
     }))
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
-    const chat = yield* sessions.create({ title: "Pinned" })
+    // spicy: the build agent asks before starting a subagent; this test is about the failed subtask's metadata
+    const chat = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "task", pattern: "*", action: "allow" }],
+    })
     yield* llm.tool("task", {
       description: "inspect bug",
       prompt: "look into the cache key path",

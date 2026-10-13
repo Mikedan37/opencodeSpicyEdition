@@ -55,7 +55,11 @@ const project = (files: Record<string, string>) =>
   Effect.gen(function* () {
     const llm = yield* TestLLMServer
     yield* llm.reset
-    const dir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+    // The main chat asks before edits and bash; these tests are about reviewing them, so the project allows them.
+    const dir = yield* tmpdirScoped({
+      git: true,
+      config: { ...testProviderConfig(llm.url), permission: { edit: "allow", bash: "allow" } },
+    })
     yield* Effect.promise(() =>
       Promise.all(Object.entries(files).map((item) => Bun.write(path.join(dir, item[0]), item[1]))),
     )

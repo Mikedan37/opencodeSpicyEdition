@@ -128,6 +128,7 @@ export type ServeHandle = {
   readonly kill: () => void
   // Resolves with the exit code once the process exits. Bun returns a number.
   readonly exited: Promise<number>
+  readonly pid: number // spicy: tests that look at the server's child processes (serve-signal.test.ts)
 }
 
 // `opencode acp` speaks newline-delimited JSON-RPC over stdin/stdout. It is
@@ -382,6 +383,7 @@ export function withCliFixture<A, E>(
           proc.kill()
         },
         exited: proc.exited as Promise<number>,
+        pid: proc.pid, // spicy:
       } satisfies ServeHandle
     })
 

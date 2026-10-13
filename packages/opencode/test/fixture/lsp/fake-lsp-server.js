@@ -274,6 +274,8 @@ function handle(raw) {
     return
   }
 
+  if (data.method === "exit") process.exit(0) // spicy: the client now ends with shutdown + exit
+
   if (typeof data.id !== "undefined") {
     sendResponse(data.id, null)
   }

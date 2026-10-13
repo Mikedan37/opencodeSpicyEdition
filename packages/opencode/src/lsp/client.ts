@@ -18,6 +18,8 @@ const DIAGNOSTICS_REQUEST_TIMEOUT_MS = 3_000
 const DIAGNOSTICS_WARMUP_MS = 5_000
 
 const INITIALIZE_TIMEOUT_MS = 45_000
+// spicy: how long `shutdown` gets an answer, and then how long the server gets to exit on `exit`, before it is killed
+const SHUTDOWN_STEP_MS = 1_000
 
 // LSP spec constants
 const FILE_CHANGE_CREATED = 1
@@ -721,7 +723,14 @@ export async function create(input: {
       }
       await waitForFullDiagnostics({ path: normalizedPath, version: request.version, after: request.after })
     },
+    // spicy: `shutdown` then `exit` first, so the server stops on its own (clangd aborts and leaves a crash report when
+    // it outlives its pipes); one that does not answer or exit in time is killed as before
     async shutdown() {
+      if (exitReason === undefined) {
+        await withTimeout(connection.sendRequest("shutdown"), SHUTDOWN_STEP_MS).catch(() => undefined)
+        await connection.sendNotification("exit").catch(() => undefined)
+        await withTimeout(exited, SHUTDOWN_STEP_MS).catch(() => undefined)
+      }
       connection.end()
       connection.dispose()
       await Process.stop(input.server.process)

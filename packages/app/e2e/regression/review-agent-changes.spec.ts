@@ -95,7 +95,8 @@ test("agent changes: hunks render inline, accept one, reject one, files on disk 
     })
     await page.goto(`/server/${base64Encode(server.url)}/session/${session.id}`)
     await expectSessionTitle(page, "Review e2e")
-    await openAgentChanges(page)
+    // UX #9: with agent changes pending, the review panel opens on Agent changes by itself.
+    await expect(page.locator('#review-panel [data-component="select-v2"]')).toContainText("Agent changes")
 
     // One changeset per session, named after its agent: the Agent HQ agent's, and the plain OpenCode session's with
     // both files pending; a.txt's two hunks render inline.
@@ -125,13 +126,42 @@ test("agent changes: hunks render inline, accept one, reject one, files on disk 
     await shot("1b-review-panel-1280")
     await resize(page, 1600, 1000)
 
-    // Accept the focused (first) hunk with the keyboard: the file stays as the agent wrote it, the hunk moves to the
-    // reviewed list.
+    // UX #9: the file opens on its first change, its keys shown there, and its buttons named after it; changes on
+    // disk are said to be.
     await expect(hunks.nth(0)).toHaveAttribute("data-focused", "")
+    await expect(hunks.nth(0)).not.toHaveAttribute("data-chosen", "")
     // The emulated "Desktop Chrome" device reports Win32, so the app binds mod to Ctrl.
+    await expect(hunks.nth(0).locator('[data-slot="review-keys"]')).toHaveText(
+      "Ctrl+Shift+Y accept · Ctrl+Shift+K reject · Alt+F5 next",
+    )
+    await expect(hunks.nth(0).locator('[data-action="accept"]')).toHaveAttribute(
+      "aria-label",
+      "Accept change 1 of 2 in a.txt",
+    )
+    await expect(hunks.nth(1).locator('[data-action="reject"]')).toHaveAttribute(
+      "aria-label",
+      "Reject change 2 of 2 in a.txt",
+    )
+    await expect(page.locator('#review-panel [data-slot="review-on-disk"]')).toHaveText(
+      "These changes are already in your files: Accept keeps them, Reject reverts them.",
+    )
+    // The first Alt+F5 lands on the first change (strong ring); the next one moves on, Shift goes back.
+    await page.keyboard.press("Alt+F5")
+    await expect(hunks.nth(0)).toHaveAttribute("data-chosen", "")
+    await page.keyboard.press("Alt+F5")
+    await expect(hunks.nth(1)).toHaveAttribute("data-chosen", "")
+    await shot("1c-hunk-chosen")
+    await page.keyboard.press("Shift+Alt+F5")
+    await expect(hunks.nth(0)).toHaveAttribute("data-chosen", "")
+
+    // Accept the focused (first) hunk with the keyboard: the file stays as the agent wrote it, the hunk moves to the
+    // reviewed list, drawn as a diff.
     await page.keyboard.press("Control+Shift+KeyY")
     await expect(hunks).toHaveCount(1)
     await expect(page.locator('[data-component="review-decided-hunk"][data-state="accepted"]')).toHaveCount(1)
+    await expect(
+      page.locator('[data-component="review-decided-hunk"] [data-component="file"][data-mode="diff"]'),
+    ).toHaveCount(1)
     expect(await read("a.txt")).toBe(A_EDITED)
 
     // The human edits the second hunk's line after it was listed: rejecting the listed hunk is refused and explained,
@@ -148,11 +178,10 @@ test("agent changes: hunks render inline, accept one, reject one, files on disk 
     await hunks.nth(0).locator('[data-action="reject"]').click()
     await expect(hunks).toHaveCount(0)
     await expect(page.locator('[data-component="review-decided-hunk"][data-state="rejected"]')).toHaveCount(1)
-    // One hunk kept and one reverted: the file is partly kept, not accepted.
-    await expect(changeset.locator('[data-component="review-file-row"][data-path="a.txt"]')).toHaveAttribute(
-      "data-state",
-      "partial",
-    )
+    // Decided both ways: partly kept.
+    const row = changeset.locator('[data-component="review-file-row"][data-path="a.txt"]')
+    await expect(row).toHaveAttribute("data-state", "partial")
+    await expect(row.locator('[data-component="review-state"]')).toHaveText("Partly kept (1 kept · 1 reverted)")
     expect(await read("a.txt")).toBe(TEN.replace("two\n", "TWO\n"))
     await shot("3-a-reviewed")
 
@@ -211,13 +240,6 @@ function wrappedLabels(scope: Locator) {
       })
       .map((button) => button.textContent),
   )
-}
-
-async function openAgentChanges(page: Page) {
-  const panel = page.locator("#review-panel")
-  await panel.locator('[data-component="select-v2"]').click()
-  await page.locator('[data-component="menu-v2-item"]', { hasText: "Agent changes" }).click()
-  await expect(panel.locator('[data-component="select-v2"]')).toContainText("Agent changes")
 }
 
 function json(body: unknown): RequestInit {

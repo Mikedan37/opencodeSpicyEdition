@@ -31,6 +31,7 @@ import {
   SessionReviewV2Sidebar,
 } from "@opencode-ai/session-ui/v2/session-review-v2"
 import "@opencode-ai/session-ui/v2/session-review-v2.css"
+import { resolveFileDiff } from "@opencode-ai/session-ui/session-diff"
 import { AgentAvatar } from "@/agenthq/avatar"
 import { useCommand } from "@/context/command"
 import { useFile } from "@/context/file"
@@ -43,7 +44,6 @@ import { anchor, step } from "./model"
 
 const UP = '<path d="M6 15l6-6 6 6"/>'
 const DOWN = '<path d="M6 9l6 6 6-6"/>'
-const DECIDED_PREVIEW_LINES = 12
 
 type Row = NonNullable<ReturnType<ReturnType<typeof useReview>["entry"]>>
 
@@ -69,7 +69,7 @@ export function ReviewFile(props: { path: string; contents: string; tab: string 
       () => props.path,
       (path) => {
         if (review.focus()?.path === path) return
-        review.setFocus({ path, hunkID: review.entry(path)?.file.hunks[0]?.id })
+        review.setFocus({ path, hunkID: review.entry(path)?.file.hunks[0]?.id, implicit: true })
       },
     ),
   )
@@ -146,6 +146,11 @@ function ReviewBar(props: { entry: Row; path: string; onOpen: (path: string) => 
       <span class="ml-auto flex flex-wrap items-center gap-1">
         <FileActions entry={props.entry} />
       </span>
+      <Show when={props.entry.file.hunks.length}>
+        <div class="w-full">
+          <OnDiskLine />
+        </div>
+      </Show>
       <NoticeLine changeset={props.entry.changeset.id} path={props.entry.file.path} />
     </div>
   )
@@ -241,16 +246,30 @@ function AgentLabel(props: { changeset: Review.ChangeSet }) {
   )
 }
 
-function StateChip(props: { state: Review.FileState | Review.DecidedHunk["state"] }) {
+function StateChip(props: { state: Review.FileState | Review.DecidedHunk["state"]; file?: Review.File }) {
   const language = useLanguage()
+  // "partial" with nothing left: every change decided, some kept and some reverted.
+  const kept = () => props.state === "partial" && props.file && !props.file.hunks.length
   return (
     <span
       data-component="review-state"
       data-state={props.state}
       class={`shrink-0 whitespace-nowrap rounded px-1.5 text-[11px] leading-4 ${STATE_TONE[props.state]}`}
     >
-      {language.t(`review.state.${props.state}`)}
+      {kept()
+        ? language.t("review.state.partlyKept", { kept: props.file!.accepted, reverted: props.file!.rejected })
+        : language.t(`review.state.${props.state}`)}
     </span>
+  )
+}
+
+// UX #9: what a pending change already is.
+function OnDiskLine() {
+  const language = useLanguage()
+  return (
+    <p data-slot="review-on-disk" class="text-[12px] text-v2-text-text-muted">
+      {language.t("review.onDisk")}
+    </p>
   )
 }
 
@@ -328,6 +347,17 @@ function HunkBar(props: { hunk: Accessor<Review.Hunk>; path: string }) {
     return !entry || review.busy(entry.changeset.id, entry.file.path)
   }
   const focused = () => review.focus()?.path === props.path && review.focus()?.hunkID === props.hunk().id
+  // Chosen by the keyboard or a click (not just the change a file opened on): the strong ring.
+  const chosen = () => focused() && !review.focus()?.implicit
+  // "Change 1 of 2 in a.txt", so each hunk's buttons have a name of their own.
+  const place = () => {
+    const hunks = row()?.file.hunks ?? []
+    return {
+      index: hunks.findIndex((hunk) => hunk.id === props.hunk().id) + 1,
+      total: hunks.length,
+      file: getFilename(props.path),
+    }
+  }
   createEffect(
     on(focused, (value) => {
       if (value) element?.scrollIntoView({ block: "nearest" })
@@ -350,10 +380,12 @@ function HunkBar(props: { hunk: Accessor<Review.Hunk>; path: string }) {
       data-hunk={props.hunk().id}
       data-state="pending"
       data-focused={focused() ? "" : undefined}
-      class="my-1 flex flex-wrap items-center gap-2 border-l-2 px-3 py-1 font-sans text-[12px]"
+      data-chosen={chosen() ? "" : undefined}
+      class="my-1 flex flex-wrap items-center gap-2 rounded-[4px] border-l-2 px-3 py-1 font-sans text-[12px]"
       classList={{
         "border-v2-state-fg-info bg-v2-background-bg-layer-01": focused(),
         "border-transparent": !focused(),
+        "shadow-[inset_0_0_0_2px_var(--v2-border-border-focus)]": chosen(),
       }}
       onClick={() => review.setFocus({ path: props.path, hunkID: props.hunk().id })}
     >
@@ -364,6 +396,7 @@ function HunkBar(props: { hunk: Accessor<Review.Hunk>; path: string }) {
         data-action="accept"
         class="shrink-0 whitespace-nowrap"
         disabled={busy()}
+        aria-label={language.t("review.acceptHunk", place())}
         title={label(language.t("review.accept"), "review.hunk.accept")}
         onClick={(event: MouseEvent) => {
           event.stopPropagation()
@@ -378,6 +411,7 @@ function HunkBar(props: { hunk: Accessor<Review.Hunk>; path: string }) {
         data-action="reject"
         class="shrink-0 whitespace-nowrap"
         disabled={busy()}
+        aria-label={language.t("review.rejectHunk", place())}
         title={label(language.t("review.reject"), "review.hunk.reject")}
         onClick={(event: MouseEvent) => {
           event.stopPropagation()
@@ -386,6 +420,16 @@ function HunkBar(props: { hunk: Accessor<Review.Hunk>; path: string }) {
       >
         {language.t("review.reject")}
       </ButtonV2>
+      {/* UX #9: the keyboard model, visible on the change it acts on */}
+      <Show when={focused()}>
+        <span data-slot="review-keys" class="text-[11px] text-v2-text-text-muted">
+          {language.t("review.keys", {
+            accept: command.keybind("review.hunk.accept"),
+            reject: command.keybind("review.hunk.reject"),
+            next: command.keybind("review.next"),
+          })}
+        </span>
+      </Show>
     </div>
   )
 }
@@ -438,35 +482,38 @@ function createHunkAnnotations(input: {
   return { annotations, render }
 }
 
-// Hunks already decided in this file, newest first, with the change they made.
+// Hunks already decided in this file, newest first, with the change they made (the timeline's diff view).
 function DecidedList(props: { path: string }) {
   const review = useReview()
   const language = useLanguage()
+  const fileComponent = useFileComponent()
   const decided = () => [...(review.entry(props.path)?.file.decided ?? [])].reverse()
   return (
     <Show when={decided().length}>
       <div data-component="review-decided" class="flex flex-col gap-2 px-3 py-3">
         <div class="text-[12px] font-[530] text-v2-text-text-base">{language.t("review.decided.title")}</div>
         <For each={decided()}>
-          {(item) => {
-            const lines = item.patch.split("\n").filter(Boolean)
-            return (
-              <div
-                data-component="review-decided-hunk"
-                data-hunk={item.id}
-                data-state={item.state}
-                class="flex flex-col gap-1 rounded border border-v2-border-border-muted px-2 py-1.5"
-              >
-                <StateChip state={item.state} />
-                <Show when={lines.length} fallback={<span class="text-[12px]">{language.t("review.binary")}</span>}>
-                  <pre class="overflow-x-auto whitespace-pre font-mono text-[11px] leading-4 text-v2-text-text-muted">
-                    {lines.slice(0, DECIDED_PREVIEW_LINES).join("\n")}
-                    {lines.length > DECIDED_PREVIEW_LINES ? "\n…" : ""}
-                  </pre>
-                </Show>
-              </div>
-            )
-          }}
+          {(item) => (
+            <div
+              data-component="review-decided-hunk"
+              data-hunk={item.id}
+              data-state={item.state}
+              class="flex flex-col gap-1 rounded border border-v2-border-border-muted px-2 py-1.5"
+            >
+              <StateChip state={item.state} />
+              <Show when={item.patch.trim()} fallback={<span class="text-[12px]">{language.t("review.binary")}</span>}>
+                {(patch) => (
+                  <Dynamic
+                    component={fileComponent}
+                    mode="diff"
+                    fileDiff={resolveFileDiff({ file: props.path, patch: patch() + "\n" })}
+                    hunkSeparators="simple"
+                    diffStyle="unified"
+                  />
+                )}
+              </Show>
+            </div>
+          )}
         </For>
       </div>
     </Show>
@@ -496,7 +543,7 @@ export function ReviewChangesPanel(props: ReviewPanelV2Props) {
   createEffect(
     on(active, (path) => {
       if (!path || review.focus()?.path === path) return
-      review.setFocus({ path, hunkID: review.entry(path)?.file.hunks[0]?.id })
+      review.setFocus({ path, hunkID: review.entry(path)?.file.hunks[0]?.id, implicit: true })
     }),
   )
   createEffect(
@@ -642,7 +689,7 @@ function ChangesSidebar(
                           {language.t("review.count.pending", { count: row.file.hunks.length })}
                         </span>
                       </Show>
-                      <StateChip state={row.file.state} />
+                      <StateChip state={row.file.state} file={row.file} />
                     </button>
                   )}
                 </For>
@@ -683,7 +730,7 @@ function ChangesPreview(props: { path: string; diffStyle: "unified" | "split"; e
               </Show>
             </div>
             <div class="flex flex-wrap items-center gap-2">
-              <StateChip state={entry().file.state} />
+              <StateChip state={entry().file.state} file={entry().file} />
               <DiffChanges changes={entry().file} />
               <Show when={entry().file.status !== "deleted"}>
                 <ButtonV2
@@ -699,7 +746,10 @@ function ChangesPreview(props: { path: string; diffStyle: "unified" | "split"; e
               <FileActions entry={entry()} />
             </div>
           </div>
-          <div class="px-3">
+          <div class="flex flex-col gap-1 px-3">
+            <Show when={entry().file.hunks.length}>
+              <OnDiskLine />
+            </Show>
             <NoticeLine changeset={entry().changeset.id} path={entry().file.path} />
           </div>
           <div data-slot="session-review-v2-diff-scroll">

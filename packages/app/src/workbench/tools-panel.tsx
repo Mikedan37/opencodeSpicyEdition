@@ -10,10 +10,10 @@ import type { Workbench } from "@opencode-ai/schema/workbench"
 import { AgentAvatar } from "@/agenthq/avatar"
 import { useAgentHQ } from "@/agenthq/context"
 import { useLanguage } from "@/context/language"
-import { getRelativeTime } from "@/utils/time"
 import { showToast } from "@/utils/toast"
 import { errorText } from "./client"
 import { CodeView } from "./code-view"
+import { useRelativeTime } from "./clock"
 import { useEditor } from "./editor-context"
 import { useWorkbench } from "./panel"
 import { TOOL_TEMPLATE, toolArgs, toolFields, type ToolField } from "./tools"
@@ -32,8 +32,6 @@ const SECTION = "mb-1 mt-4 text-[11px] font-[530] uppercase tracking-[0.04em] te
 const INPUT =
   "h-7 rounded-[6px] bg-v2-background-bg-layer-01 px-2 text-[12px] text-v2-text-text-base shadow-[inset_0_0_0_0.5px_var(--v2-border-border-muted)] outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)]"
 const CODE = "overflow-hidden rounded-[6px] shadow-[inset_0_0_0_0.5px_var(--v2-border-border-muted)]"
-
-const time = (at: number, t: Parameters<typeof getRelativeTime>[1]) => getRelativeTime(new Date(at).toISOString(), t)
 
 function StatusPill(props: { status: Status }) {
   const language = useLanguage()
@@ -80,7 +78,8 @@ export default function ToolsPanel() {
   const workbench = useWorkbench()
   const language = useLanguage()
   const tools = workbench.tools
-  const [creating, setCreating] = createSignal(false)
+  const creating = () => tools.state.creating
+  const setCreating = tools.setCreating
   const current = createMemo(() => tools.find(tools.state.selected) ?? tools.groups()[0]?.tools[0])
 
   return (
@@ -168,6 +167,7 @@ export default function ToolsPanel() {
 
 function ToolRow(props: { tool: Tool; selected: boolean; onSelect: () => void }) {
   const language = useLanguage()
+  const ago = useRelativeTime()
   return (
     <button
       type="button"
@@ -181,12 +181,12 @@ function ToolRow(props: { tool: Tool; selected: boolean; onSelect: () => void })
         <span class="min-w-0 flex-1 truncate font-mono text-[12px] font-[530] text-v2-text-text-base">
           {props.tool.name}
         </span>
-        <span class="shrink-0 text-[11px] text-v2-text-text-faint">{time(props.tool.updatedAt, language.t)}</span>
+        <span class="shrink-0 text-[11px] text-v2-text-text-muted">{ago(props.tool.updatedAt)}</span>
       </span>
       <span class="truncate text-[11px] text-v2-text-text-muted" title={props.tool.description}>
         {props.tool.description}
       </span>
-      <span class="flex min-w-0 items-center gap-1 text-[11px] text-v2-text-text-faint">
+      <span class="flex min-w-0 items-center gap-1 text-[11px] text-v2-text-text-muted">
         <Author by={props.tool.createdBy} />
       </span>
     </button>
@@ -197,6 +197,7 @@ function ToolDetail(props: { tool: Tool }) {
   const workbench = useWorkbench()
   const editor = useEditor()
   const language = useLanguage()
+  const ago = useRelativeTime()
   const tools = workbench.tools
   const busy = () => !!tools.state.busy[props.tool.name]
   const fail = (action: "approve" | "reject" | "enable" | "disable" | "delete") => (error: unknown) =>
@@ -279,9 +280,9 @@ function ToolDetail(props: { tool: Tool }) {
         </Switch>
       </div>
       <p class="mt-1 select-text text-[12px] leading-[18px] text-v2-text-text-base">{props.tool.description}</p>
-      <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 text-[11px] text-v2-text-text-faint">
+      <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 text-[11px] text-v2-text-text-muted">
         <Author by={props.tool.createdBy} />
-        <span>{time(props.tool.updatedAt, language.t)}</span>
+        <span>{ago(props.tool.updatedAt)}</span>
         <span class="min-w-0 truncate font-mono" title={props.tool.path}>
           {props.tool.path}
         </span>
@@ -291,7 +292,7 @@ function ToolDetail(props: { tool: Tool }) {
         <div
           role="alert"
           data-slot="tool-stale"
-          class="mt-3 rounded-[6px] bg-v2-state-bg-warning px-3 py-2 text-[12px] leading-[18px] text-v2-state-fg-warning"
+          class="mt-3 rounded-[6px] bg-v2-state-bg-warning px-3 py-2 text-[12px] leading-[18px] text-[var(--spicy-fg-warning)]"
         >
           {language.t("workbench.tools.stale")}
         </div>
@@ -322,7 +323,7 @@ function ToolDetail(props: { tool: Tool }) {
       <h4 class={SECTION}>{language.t("workbench.tools.args")}</h4>
       <Show
         when={props.tool.args.length > 0}
-        fallback={<p class="text-[12px] text-v2-text-text-faint">{language.t("workbench.tools.args.none")}</p>}
+        fallback={<p class="text-[12px] text-v2-text-text-muted">{language.t("workbench.tools.args.none")}</p>}
       >
         <table data-slot="tool-args" class="w-full border-collapse text-left text-[12px]">
           <thead class="text-[11px] text-v2-text-text-muted">
@@ -452,7 +453,7 @@ function TestRun(props: { tool: Tool }) {
               <Field.Label>
                 <span class="font-mono">{field.name}</span>
                 <Show when={!field.required}>
-                  <span class="ml-1.5 text-v2-text-text-faint">{language.t("workbench.tools.run.optional")}</span>
+                  <span class="ml-1.5 text-v2-text-text-muted">{language.t("workbench.tools.run.optional")}</span>
                 </Show>
                 <Show when={field.description}>
                   <span class="ml-1.5 text-v2-text-text-muted">{field.description}</span>
@@ -556,7 +557,7 @@ function NewTool(props: { onCancel: () => void; onSaved: (tool: Tool) => void })
             placeholder="greet"
             onInput={(event) => setDraft("name", event.currentTarget.value)}
           />
-          <span class="text-[11px] text-v2-text-text-faint">{language.t("workbench.tools.form.name.hint")}</span>
+          <span class="text-[11px] text-v2-text-text-muted">{language.t("workbench.tools.form.name.hint")}</span>
         </Field>
         <Field>
           <Field.Label>{language.t("workbench.tools.form.description")}</Field.Label>

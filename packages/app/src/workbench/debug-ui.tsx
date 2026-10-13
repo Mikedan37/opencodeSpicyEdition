@@ -1,6 +1,7 @@
 import { createEffect, For, Show } from "solid-js"
 import { Icon } from "@opencode-ai/ui/icon"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
+import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
 import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { useCommand } from "@/context/command"
@@ -8,7 +9,7 @@ import { useLanguage } from "@/context/language"
 import { isLive, type DebugSession, type Variable } from "./debug"
 import { useDebug } from "./debug-context"
 import { DEBUG_KEYS } from "./keys"
-import { DEBUG_GLYPHS, Glyph, TONE_CLASS } from "./ui"
+import { DEBUG_GLYPHS, Glyph } from "./ui"
 
 type Action = keyof typeof DEBUG_GLYPHS
 const KEYS: Partial<Record<Action, string>> = {
@@ -66,7 +67,7 @@ export function DebugToolbar() {
             disabled={!!blocked(action)}
             class="flex size-7 items-center justify-center rounded-[6px] text-v2-icon-icon-base outline-none enabled:hover:bg-v2-overlay-simple-overlay-hover focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)] disabled:opacity-40"
             classList={{
-              "text-v2-state-fg-success": action === "start" || action === "continue",
+              "text-[var(--spicy-fg-success)]": action === "start" || action === "continue",
               "text-v2-state-fg-danger": action === "stop",
             }}
             onClick={() => press(action)}
@@ -79,43 +80,83 @@ export function DebugToolbar() {
   )
 }
 
-const OWNER_TONE = { human: "success", agent: "warning", idle: "neutral", terminating: "neutral" } as const
+const OWNER_DOT = {
+  human: "bg-v2-state-fg-success",
+  agent: "bg-v2-state-fg-warning",
+  idle: "bg-v2-text-text-faint",
+  terminating: "bg-v2-text-text-faint",
+} as const
 
-// What the human can do with each owner: take over, hand the session to the agent, or release it.
+// What the human can do with each owner from "Controlled by": take over, or release it. Handing it to the agent is
+// in the Debug tab's Ask an agent menu (UX #13).
 const TAKE_OVER = { id: "take-over", key: "takeOver", to: "human" } as const
-const HAND_TO_AGENT = { id: "hand-to-agent", key: "handToAgent", to: "agent" } as const
 const RELEASE = { id: "release", key: "release", to: "idle" } as const
-const OWNER_ACTIONS = { agent: [TAKE_OVER], idle: [TAKE_OVER, HAND_TO_AGENT], human: [HAND_TO_AGENT, RELEASE] }
+const OWNER_ACTIONS = { agent: [TAKE_OVER], idle: [TAKE_OVER], human: [RELEASE] }
 
-// Who drives the session; the human can always take over (the agent cannot take it back).
+// Who drives the session, as a small "Controlled by: You ▾" menu; the human can always take over (the agent cannot
+// take it back).
 export function OwnerChip(props: { session: DebugSession }) {
   const debug = useDebug()
   const language = useLanguage()
   const owner = () => props.session.owner
+  const label = () =>
+    language.t("workbench.debug.controlledBy", { owner: language.t(`workbench.debug.owner.${owner()}`) })
+  const actions = () =>
+    isLive(props.session) && owner() !== "terminating"
+      ? OWNER_ACTIONS[owner() as Exclude<DebugSession["owner"], "terminating">]
+      : []
+  const dot = () => <span aria-hidden="true" class={`size-2 shrink-0 rounded-full ${OWNER_DOT[owner()]}`} />
   return (
-    <span class="flex shrink-0 items-center gap-1.5" data-slot="debug-owner" data-owner={owner()}>
-      <span
-        class={`inline-flex h-5 items-center rounded-full px-2 text-[11px] font-[530] ${TONE_CLASS[OWNER_TONE[owner()]]}`}
-        title={language.t(`workbench.debug.owner.${owner()}.description`)}
-      >
-        {language.t(`workbench.debug.owner.${owner()}`)}
-      </span>
-      <Show when={isLive(props.session) && owner() !== "terminating"}>
-        <For each={OWNER_ACTIONS[owner() as Exclude<DebugSession["owner"], "terminating">]}>
-          {(action) => (
-            <ButtonV2
-              size="small"
-              variant={action.to === "human" ? "neutral" : "ghost"}
-              data-action={`debug-${action.id}`}
-              title={language.t(`workbench.debug.${action.key}.description`)}
-              onClick={() => void debug.setOwner(action.to, props.session.id)}
-            >
-              {language.t(`workbench.debug.${action.key}`)}
-            </ButtonV2>
-          )}
-        </For>
-      </Show>
-    </span>
+    <Show
+      when={actions().length}
+      fallback={
+        <span
+          data-slot="debug-owner"
+          data-owner={owner()}
+          class="flex shrink-0 items-center gap-1.5 text-[12px] text-v2-text-text-muted"
+          title={language.t(`workbench.debug.owner.${owner()}.description`)}
+        >
+          {dot()}
+          {label()}
+        </span>
+      }
+    >
+      <MenuV2 gutter={4} modal={false} placement="bottom-end">
+        <MenuV2.Trigger
+          as={ButtonV2}
+          size="small"
+          variant="ghost"
+          data-slot="debug-owner"
+          data-owner={owner()}
+          class="shrink-0 whitespace-nowrap"
+          title={language.t(`workbench.debug.owner.${owner()}.description`)}
+        >
+          {dot()}
+          {label()}
+          <Icon name="chevron-down" size="small" />
+        </MenuV2.Trigger>
+        <MenuV2.Portal>
+          <MenuV2.Content>
+            <For each={actions()}>
+              {(action) => (
+                <MenuV2.Item
+                  data-action={`debug-${action.id}`}
+                  class="h-auto! py-1!"
+                  onSelect={() => void debug.setOwner(action.to, props.session.id)}
+                >
+                  <span class="flex flex-col gap-1">
+                    {language.t(`workbench.debug.${action.key}`)}
+                    <span class="text-[11px] text-v2-text-text-muted">
+                      {language.t(`workbench.debug.${action.key}.description`)}
+                    </span>
+                  </span>
+                </MenuV2.Item>
+              )}
+            </For>
+          </MenuV2.Content>
+        </MenuV2.Portal>
+      </MenuV2>
+    </Show>
   )
 }
 
@@ -183,14 +224,14 @@ export function VariableNode(props: { variable: Variable; path: string[]; depth?
           <span class="shrink-0 text-v2-text-text-accent">{props.variable.name}</span>
           {/* Groups such as debugpy's "special variables" have no value. */}
           <Show when={props.variable.value}>
-            <span class="shrink-0 text-v2-text-text-faint">=</span>
+            <span class="shrink-0 text-v2-text-text-muted">=</span>
           </Show>
         </Show>
         <span class="min-w-0 truncate text-v2-text-text-base" title={props.variable.value}>
           {props.variable.value}
         </span>
         <Show when={props.variable.type}>
-          <span class="ml-auto shrink-0 pl-2 font-sans text-[11px] text-v2-text-text-faint">{props.variable.type}</span>
+          <span class="ml-auto shrink-0 pl-2 font-sans text-[11px] text-v2-text-text-muted">{props.variable.type}</span>
         </Show>
       </button>
       <Show when={open()}>

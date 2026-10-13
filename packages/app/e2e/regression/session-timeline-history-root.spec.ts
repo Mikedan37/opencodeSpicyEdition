@@ -45,7 +45,9 @@ const scenarios = [
   },
 ] as const
 
-test.use({ viewport: { width: 646, height: 1385 } })
+// spicy: +28 px for the IDE's status strip under the session, so the timeline keeps the height this spec was written
+// for (at 28 px less, upstream's timeline scrolls a top-edge part out of view on "Interrupted", strip or not).
+test.use({ viewport: { width: 646, height: 1385 + 28 } })
 
 for (const scenario of scenarios) {
   test(`keeps visible timeline content visible through ${scenario.name}`, async ({ page }) => {

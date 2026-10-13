@@ -11,9 +11,10 @@ import { TextareaV2 } from "@opencode-ai/ui/v2/textarea-v2"
 import { Markdown } from "@opencode-ai/session-ui/markdown"
 import type { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { useLanguage } from "@/context/language"
-import { getRelativeTime } from "@/utils/time"
 import { showToast } from "@/utils/toast"
 import { errorText } from "@/workbench/client"
+import { useRelativeTime } from "@/workbench/clock"
+import { PatchView } from "@/workbench/patch-view"
 import { PanelState, TONE_CLASS } from "@/workbench/ui"
 import { AgentAvatar } from "./avatar"
 import { useAgentHQ } from "./context"
@@ -69,12 +70,12 @@ export function ViewSwitch() {
             onClick={() => agenthq.setView(view)}
           >
             {language.t(`agenthq.view.${view}`)}
-            <span class="text-[12px] font-normal tabular-nums text-v2-text-text-faint">
+            <span class="text-[12px] font-normal tabular-nums text-v2-text-text-muted">
               {view === "agents" ? agenthq.state.agents.length : agenthq.tasks.state.tasks.length}
             </span>
             <Show when={view === "tasks" && review()}>
               <span
-                title={language.t("agenthq.task.waitingReview", { count: review() })}
+                title={language.plural("agenthq.task.waitingReview", review())}
                 class={`min-w-4 rounded-full px-1 text-center text-[10px] leading-4 tabular-nums ${TONE_CLASS.warning}`}
               >
                 {review()}
@@ -184,7 +185,7 @@ function TaskRow(props: { task: Task; depth: number; selected: boolean; onSelect
     >
       <span class="flex min-w-0 items-center gap-2">
         <Show when={props.depth > 0}>
-          <span class="shrink-0 text-[11px] text-v2-text-text-faint" aria-hidden="true">
+          <span class="shrink-0 text-[11px] text-v2-text-text-muted" aria-hidden="true">
             ↳
           </span>
         </Show>
@@ -215,7 +216,7 @@ function TaskRow(props: { task: Task; depth: number; selected: boolean; onSelect
         </span>
       </Show>
       <Show when={waitsForApproval(agenthq, props.task)}>
-        <span data-slot="task-approval" class="truncate text-[11px] text-v2-state-fg-warning">
+        <span data-slot="task-approval" class="truncate text-[11px] text-[var(--spicy-fg-warning)]">
           {language.t("agenthq.task.needsApproval")}
         </span>
       </Show>
@@ -232,10 +233,12 @@ const waitsForApproval = (agenthq: ReturnType<typeof useAgentHQ>, task: Task) =>
 function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: string) => void }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
+  const ago = useRelativeTime()
   const tasks = agenthq.tasks
   const [confirm, setConfirm] = createSignal(false)
   const assignee = () => agenthq.state.agents.find((agent) => agent.id === props.task.assignee)
-  const busy = () => !!tasks.state.busy[props.task.id]
+  // UX #12: while an approval finishes merging, nothing else may touch the task.
+  const busy = () => !!tasks.state.busy[props.task.id] || !!props.task.merging
   const dependencies = () => props.task.dependsOn.map((id) => ({ id, task: tasks.find(id) }))
   const fail = (title: string) => (error: unknown) =>
     showToast({ variant: "error", title, description: errorText(error) })
@@ -251,6 +254,16 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
       <div class="flex flex-wrap items-center gap-2">
         <h3 class="min-w-0 truncate text-[14px] font-[530] text-v2-text-text-base">{props.task.title}</h3>
         <TaskStatusPill status={props.task.status} />
+        <Show when={props.task.merging}>
+          <span
+            role="status"
+            data-slot="task-merging"
+            class="flex shrink-0 items-center gap-1.5 text-[12px] text-v2-text-text-muted"
+          >
+            <LoaderV2 width={12} height={12} />
+            {language.t("agenthq.task.merging")}
+          </span>
+        </Show>
         <span class="flex-1" />
         <Show when={STARTABLE.has(props.task.status)}>
           <ButtonV2
@@ -296,6 +309,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
             size="small"
             variant="ghost"
             data-action="task-delete"
+            disabled={!!props.task.merging}
             onClick={remove}
             onBlur={() => setConfirm(false)}
           >
@@ -307,7 +321,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
         {(session) => (
           <p
             data-slot="task-approval"
-            class="mt-2 flex items-center gap-2 rounded-[6px] bg-v2-state-bg-warning px-2 py-1 text-[12px] text-v2-state-fg-warning"
+            class="mt-2 flex items-center gap-2 rounded-[6px] bg-v2-state-bg-warning px-2 py-1 text-[12px] text-[var(--spicy-fg-warning)]"
           >
             {language.t("agenthq.task.needsApproval.detail")}
             <button
@@ -326,7 +340,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
           class="mt-2 select-text rounded-[6px] px-2 py-1 text-[12px]"
           classList={{
             "bg-v2-state-bg-danger text-v2-state-fg-danger": props.task.status === "failed",
-            "bg-v2-state-bg-warning text-v2-state-fg-warning": props.task.status === "blocked",
+            "bg-v2-state-bg-warning text-[var(--spicy-fg-warning)]": props.task.status === "blocked",
             "bg-v2-background-bg-layer-02 text-v2-text-text-muted":
               props.task.status !== "failed" && props.task.status !== "blocked",
           }}
@@ -350,7 +364,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
         <dd class="flex min-w-0 flex-wrap items-center gap-1">
           <Show
             when={dependencies().length}
-            fallback={<span class="text-v2-text-text-faint">{language.t("agenthq.task.none")}</span>}
+            fallback={<span class="text-v2-text-text-muted">{language.t("agenthq.task.none")}</span>}
           >
             <For each={dependencies()}>
               {(dependency) => (
@@ -388,7 +402,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
             {(worktree) => (
               <span class="flex min-w-0 flex-col">
                 <span class="font-mono text-[11px]">{worktree().branch}</span>
-                <span class="truncate font-mono text-[11px] text-v2-text-text-faint" title={worktree().path}>
+                <span class="truncate font-mono text-[11px] text-v2-text-text-muted" title={worktree().path}>
                   {worktree().path}
                 </span>
               </span>
@@ -396,9 +410,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
           </Show>
         </dd>
         <dt class="text-v2-text-text-muted">{language.t("agenthq.task.updated")}</dt>
-        <dd class="text-v2-text-text-muted">
-          {getRelativeTime(new Date(props.task.updatedAt).toISOString(), language.t)}
-        </dd>
+        <dd class="text-v2-text-text-muted">{ago(props.task.updatedAt)}</dd>
       </dl>
       <Show when={props.task.description}>
         <div class="mt-3 select-text whitespace-pre-wrap break-words text-[12px] leading-[18px] text-v2-text-text-base">
@@ -433,17 +445,27 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
 }
 
 // Approving merges the task's branch into the user's project, so the dry run comes first and Approve is always an
-// explicit click; a refusal (409) is shown as the server words it.
+// explicit click; a refusal (409) is shown as the server words it. UX #4: every file of the dry run (and all of them)
+// opens the diff Approve would merge, read at the review's head, and Approve sits under the summary.
 function ReviewGate(props: { task: Task }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
   const tasks = agenthq.tasks
   const state = () => tasks.state.reviews[props.task.id]
   const [refusal, setRefusal] = createSignal<string>()
+  const [diff, setDiff] = createStore({
+    // the file whose diff is open, or ALL
+    open: undefined as string | undefined,
+    status: "idle" as "idle" | "loading" | "ready" | "failed",
+    text: "",
+    truncated: false,
+    error: undefined as string | undefined,
+  })
   // One dry run per review; a failure waits for "Check again".
   createEffect(() => {
     if (!state()) void tasks.review(props.task.id)
   })
+  const merging = () => !!props.task.merging
   const blocked = () => {
     const review = state()?.review
     if (!review) return language.t("agenthq.task.review.loading")
@@ -452,6 +474,31 @@ function ReviewGate(props: { task: Task }) {
   const approve = () => {
     setRefusal(undefined)
     tasks.approve(props.task.id, state()?.review?.head).catch((error: unknown) => setRefusal(errorText(error)))
+  }
+  const show = (path?: string) => {
+    const key = path ?? ALL
+    if (diff.open === key) return setDiff({ open: undefined, status: "idle" })
+    setDiff({ open: key, status: "loading", error: undefined })
+    tasks.reviewDiff(props.task.id, { path, head: state()?.review?.head }).then(
+      (result) => {
+        if (diff.open === key) setDiff({ status: "ready", text: result.diff, truncated: !!result.truncated })
+      },
+      (error: unknown) => {
+        if (diff.open === key) setDiff({ status: "failed", error: errorText(error) })
+      },
+    )
+  }
+  const checkAgain = () => {
+    setDiff({ open: undefined, status: "idle" })
+    void tasks.review(props.task.id)
+  }
+  const totals = () => {
+    const files = state()?.review?.files ?? []
+    return {
+      count: files.length,
+      additions: files.reduce((sum, file) => sum + file.additions, 0),
+      deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+    }
   }
   return (
     <section
@@ -468,21 +515,10 @@ function ReviewGate(props: { task: Task }) {
           variant="ghost"
           class="shrink-0 whitespace-nowrap"
           data-action="task-review-refresh"
-          disabled={state()?.status === "loading"}
-          onClick={() => void tasks.review(props.task.id)}
+          disabled={state()?.status === "loading" || merging()}
+          onClick={checkAgain}
         >
           {language.t("agenthq.task.review.refresh")}
-        </ButtonV2>
-        <ButtonV2
-          size="small"
-          variant="contrast"
-          class="shrink-0 whitespace-nowrap"
-          data-action="task-approve"
-          disabled={!!blocked() || !!tasks.state.busy[props.task.id]}
-          title={blocked()}
-          onClick={approve}
-        >
-          {language.t("agenthq.task.approve")}
         </ButtonV2>
       </div>
       <Switch>
@@ -509,7 +545,7 @@ function ReviewGate(props: { task: Task }) {
               <Show when={!review().clean || !review().mergeable}>
                 <p
                   data-slot="review-refusal"
-                  class="select-text rounded-[6px] bg-v2-state-bg-warning px-2 py-1 text-v2-state-fg-warning"
+                  class="select-text rounded-[6px] bg-v2-state-bg-warning px-2 py-1 text-[var(--spicy-fg-warning)]"
                 >
                   {review().reason ??
                     language.t(review().clean ? "agenthq.task.review.notMergeable" : "agenthq.task.review.dirty")}
@@ -520,7 +556,7 @@ function ReviewGate(props: { task: Task }) {
                   <For each={review().commits}>
                     {(commit) => (
                       <li class="flex min-w-0 gap-2">
-                        <span class="shrink-0 font-mono text-[11px] text-v2-text-text-faint">
+                        <span class="shrink-0 font-mono text-[11px] text-v2-text-text-muted">
                           {commit.sha.slice(0, 7)}
                         </span>
                         <span class="min-w-0 truncate text-v2-text-text-base">{commit.subject}</span>
@@ -536,19 +572,105 @@ function ReviewGate(props: { task: Task }) {
                 <ul data-slot="review-files" class="flex flex-col gap-0.5">
                   <For each={review().files}>
                     {(file) => (
-                      <li class="flex min-w-0 items-center gap-2 font-mono text-[11px]">
-                        <span class="min-w-0 flex-1 truncate text-v2-text-text-base">{file.path}</span>
-                        <span class="shrink-0 text-v2-state-fg-success">+{file.additions}</span>
-                        <span class="shrink-0 text-v2-state-fg-danger">−{file.deletions}</span>
+                      <li>
+                        <button
+                          type="button"
+                          data-review-file={file.path}
+                          aria-expanded={diff.open === file.path}
+                          class="flex w-full min-w-0 items-center gap-2 rounded-[4px] px-1 py-0.5 text-left font-mono text-[11px] outline-none hover:bg-v2-overlay-simple-overlay-hover focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)]"
+                          classList={{ "bg-v2-background-bg-layer-02": diff.open === file.path }}
+                          onClick={() => show(file.path)}
+                        >
+                          <span class="min-w-0 flex-1 truncate text-v2-text-text-base">{file.path}</span>
+                          <span class="shrink-0 text-[var(--spicy-fg-success)]">+{file.additions}</span>
+                          <span class="shrink-0 text-v2-state-fg-danger">−{file.deletions}</span>
+                        </button>
                       </li>
                     )}
                   </For>
                 </ul>
+                <div>
+                  <ButtonV2
+                    size="small"
+                    variant="ghost"
+                    data-action="task-review-all"
+                    aria-expanded={diff.open === ALL}
+                    onClick={() => show()}
+                  >
+                    {language.t("agenthq.task.review.all")}
+                  </ButtonV2>
+                </div>
+              </Show>
+              <Show when={diff.open}>
+                <div data-slot="review-diff" class="max-h-[480px] overflow-auto rounded-[6px]">
+                  <Switch>
+                    <Match when={diff.status === "loading"}>
+                      <div class="flex items-center gap-2 px-2 py-1 text-v2-text-text-muted">
+                        <LoaderV2 width={12} height={12} />
+                        {language.t("agenthq.task.review.diffLoading")}
+                      </div>
+                    </Match>
+                    <Match when={diff.status === "failed"}>
+                      <div
+                        role="alert"
+                        data-slot="review-diff-error"
+                        class="flex flex-wrap items-center gap-2 rounded-[6px] bg-v2-state-bg-danger px-2 py-1 text-v2-state-fg-danger"
+                      >
+                        <span class="min-w-0 flex-1 select-text">{diff.error}</span>
+                        <ButtonV2 size="small" variant="neutral" onClick={checkAgain}>
+                          {language.t("agenthq.task.review.refresh")}
+                        </ButtonV2>
+                      </div>
+                    </Match>
+                    <Match when={diff.status === "ready"}>
+                      <Show
+                        when={diff.text.trim()}
+                        fallback={<p class="text-v2-text-text-muted">{language.t("agenthq.task.review.noFiles")}</p>}
+                      >
+                        <PatchView diff={diff.text} />
+                      </Show>
+                      <Show when={diff.truncated}>
+                        <p class="pt-1 text-[11px] text-v2-text-text-muted">
+                          {language.t("agenthq.task.review.diffTruncated")}
+                        </p>
+                      </Show>
+                    </Match>
+                  </Switch>
+                </div>
               </Show>
             </div>
           )}
         </Match>
       </Switch>
+      {/* Approve under what it merges, with its size */}
+      <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-v2-border-border-muted pt-2">
+        <Show when={state()?.review}>
+          <span data-slot="review-totals" class="text-[12px] text-v2-text-text-muted">
+            {language.plural("agenthq.task.review.totals", totals().count, {
+              additions: totals().additions,
+              deletions: totals().deletions,
+            })}
+          </span>
+        </Show>
+        <span class="flex-1" />
+        <Show when={merging()}>
+          <span role="status" class="flex items-center gap-1.5 text-[12px] text-v2-text-text-muted">
+            <LoaderV2 width={12} height={12} />
+            {language.t("agenthq.task.merging")}
+          </span>
+        </Show>
+        <ButtonV2
+          size="small"
+          variant="contrast"
+          class="shrink-0 whitespace-nowrap"
+          data-action="task-approve"
+          disabled={!!blocked() || !!tasks.state.busy[props.task.id] || merging()}
+          title={blocked()}
+          onClick={approve}
+        >
+          {language.t("agenthq.task.approve")}
+        </ButtonV2>
+      </div>
       <Show when={refusal()}>
         <p
           role="alert"
@@ -562,6 +684,8 @@ function ReviewGate(props: { task: Task }) {
   )
 }
 
+const ALL = "*"
+
 const USER = "user"
 
 // Messages between the user and agents, or between agents, for one task or one agent; sending as an agent with relay
@@ -569,6 +693,7 @@ const USER = "user"
 export function MessageThread(props: { filter: MessageFilter; to?: string }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
+  const ago = useRelativeTime()
   const tasks = agenthq.tasks
   const [draft, setDraft] = createStore({ from: USER, to: props.to ?? "", text: "", relay: false, sending: false })
   const messages = createMemo(() => tasks.thread(props.filter))
@@ -607,7 +732,7 @@ export function MessageThread(props: { filter: MessageFilter; to?: string }) {
       <Show
         when={messages().length}
         fallback={
-          <p class="text-[12px] text-v2-text-text-faint">
+          <p class="text-[12px] text-v2-text-text-muted">
             {tasks.state.threads[threadKey(props.filter)] === "loading"
               ? language.t("common.loading")
               : language.t("agenthq.message.empty")}
@@ -628,7 +753,7 @@ export function MessageThread(props: { filter: MessageFilter; to?: string }) {
                     </span>
                   </Show>
                   <Show when={message.hops > 0}>
-                    <span class="text-v2-text-text-faint">
+                    <span class="text-v2-text-text-muted">
                       {language.t("agenthq.message.hops", { count: message.hops })}
                     </span>
                   </Show>
@@ -644,9 +769,7 @@ export function MessageThread(props: { filter: MessageFilter; to?: string }) {
                       </button>
                     )}
                   </Show>
-                  <span class="shrink-0 text-v2-text-text-faint">
-                    {getRelativeTime(new Date(message.at).toISOString(), language.t)}
-                  </span>
+                  <span class="shrink-0 text-v2-text-text-muted">{ago(message.at)}</span>
                 </div>
                 <div class="select-text whitespace-pre-wrap break-words text-v2-text-text-base">{message.text}</div>
                 <Show when={message.delivery === "failed" || message.reason}>
@@ -811,7 +934,7 @@ export function TaskDialog(props: { task?: Task; onSaved?: (task: Task) => void 
             </legend>
             <Show
               when={others().length}
-              fallback={<p class="text-[12px] text-v2-text-text-faint">{language.t("agenthq.task.dialog.noOthers")}</p>}
+              fallback={<p class="text-[12px] text-v2-text-text-muted">{language.t("agenthq.task.dialog.noOthers")}</p>}
             >
               <For each={others()}>
                 {(task) => (

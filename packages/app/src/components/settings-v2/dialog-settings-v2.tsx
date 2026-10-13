@@ -14,6 +14,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useLayout } from "@/context/layout"
 import { useTabs } from "@/context/tabs"
 import { useServerSync } from "@/context/server-sync"
+import { SettingsWorkbench } from "@/workbench/setup-view" // spicy: IDE setup (the Workbench doctor)
 
 export const DialogSettings: Component<{
   sessionID?: string
@@ -83,6 +84,11 @@ export const DialogSettings: Component<{
                       <Icon name="models" />
                       {language.t("settings.models.title")}
                     </TabsV2.Trigger>
+                    {/* spicy: IDE setup */}
+                    <TabsV2.Trigger value="workbench">
+                      <Icon name="code" />
+                      {language.t("workbench.setup.title")}
+                    </TabsV2.Trigger>
                   </div>
                 </div>
               </div>
@@ -107,6 +113,10 @@ export const DialogSettings: Component<{
         </TabsV2.Content>
         <TabsV2.Content value="models" class="settings-v2-panel">
           <SettingsModelsV2 />
+        </TabsV2.Content>
+        {/* spicy: IDE setup */}
+        <TabsV2.Content value="workbench" class="settings-v2-panel">
+          <SettingsWorkbench directory={directory} />
         </TabsV2.Content>
       </TabsV2>
     </Dialog>

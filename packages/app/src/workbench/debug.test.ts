@@ -12,6 +12,8 @@ import {
   mergeRows,
   programOutput,
   splitArgs,
+  stopException,
+  stopReason,
   type DebugConsole,
   type DebugSession,
 } from "./debug"
@@ -433,4 +435,22 @@ describe("start dialog helpers", () => {
     expect(guessAdapter({ type: "python" })).toBe("debugpy")
     expect(guessAdapter({ type: "lldb" })).toBe("lldb-dap")
   })
+})
+
+test("stopException: the exception a stop is on, for the red banner", () => {
+  const stop = (patch: Partial<NonNullable<DebugSession["stop"]>>) =>
+    ({ reason: "breakpoint", threadID: 1, frames: [], locals: [], at: 1, ...patch }) as NonNullable<
+      DebugSession["stop"]
+    >
+  expect(stopException(stop({}), "fallback")).toBeUndefined()
+  const raised = { id: "ValueError", description: "bad order" }
+  expect(stopException(stop({ reason: "exception", exception: raised }), "fallback")).toBe("ValueError: bad order")
+  expect(stopException(stop({ exception: { id: "SIGSEGV" } }), "fallback")).toBe("SIGSEGV")
+  expect(stopException(stop({ reason: "exception", description: "Paused on exception" }), "fallback")).toBe(
+    "Paused on exception",
+  )
+  expect(stopException(stop({ reason: "exception" }), "fallback")).toBe("fallback")
+  // "Paused: exception", not "Paused: Paused on exception"
+  expect(stopReason(stop({ reason: "exception", description: "Paused on exception" }))).toBe("exception")
+  expect(stopReason(stop({ reason: "step" }))).toBe("step")
 })

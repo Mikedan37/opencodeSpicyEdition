@@ -2,26 +2,34 @@ import { createMemo, For, Match, Show, Switch } from "solid-js"
 import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Tag } from "@opencode-ai/ui/v2/badge-v2"
+import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { useLanguage } from "@/context/language"
+import { useServerSDK } from "@/context/server-sdk"
+import { useSettingsDialog } from "@/components/settings-dialog"
+import { showToast } from "@/utils/toast"
+import { useRelativeTime } from "./clock"
 import { errorText } from "./client"
-import { HandoffMenu } from "./handoff"
+import { useEditor } from "./editor-context"
+import { HandoffMenu, type HandoffPayload } from "./handoff"
 import { useWorkbench } from "./panel"
 import {
   crashReason,
   filterProblems,
   groupProblems,
+  lastChecked,
   problemRows,
   SEVERITIES,
   SOURCE_KINDS,
   sourceLabel,
   sourcesOf,
   type ProblemRow,
+  withLsp,
 } from "./problems"
-import { latestRun, problemSnapshot, shortPath } from "./snapshot"
+import { shortPath } from "./snapshot"
 import { PanelState, RequestErrorState } from "./ui"
 import { VirtualList } from "./virtual-list"
 import { useFileLineOpener } from "./open-file"
@@ -50,32 +58,85 @@ export default function ProblemsPanel() {
     if (problem.file) openAt(problem.file, (problem.range?.start.line ?? 0) + 1)
   }
   const crashed = (problem: Workbench.Problem) => crashReason(problem, problems.state.snapshot?.producers ?? [])
-  // UI-07: what "Fix with agent" sends, made when a target is picked: the problems, the lines around them and the
-  // latest verification run.
-  const snapshotOf = async (list: readonly Workbench.Problem[], file: string | undefined) => {
-    const [source] = await Promise.all([
-      file
-        ? workbench.client.readFile(shortPath(workbench.directory, file)).then(
-            (result) => ({ text: result.content }),
-            (error: unknown) => ({ error: errorText(error) }),
-          )
-        : undefined,
-      workbench.runs.load(),
-    ])
-    const runs = workbench.runs.state.runs.map((entry) => entry.info)
-    return problemSnapshot({ root: workbench.directory, file, problems: list, source, run: latestRun(list, runs) })
-  }
-  const fix = (problem: Workbench.Problem) => snapshotOf([problem], problem.file)
+  const fix = (problem: Workbench.Problem) => workbench.problemPayload([problem], problem.file)
   const fixFile = (file: string | undefined) =>
-    snapshotOf(groups().find((group) => group.file === file)?.problems ?? [], file)
+    workbench.problemPayload(groups().find((group) => group.file === file)?.problems ?? [], file)
   const lspOff = () => problems.state.snapshot?.lsp === "off"
+  // Nothing has reported yet: no checker run and no language server, so an empty list proves nothing.
+  const unchecked = () => !problems.state.snapshot?.producers.length
+  const relative = useRelativeTime()
+  const checked = createMemo(() => lastChecked(problems.state.snapshot?.producers ?? []))
+  const editor = useEditor()
+  const serverSDK = useServerSDK()
+  // DIAG-12: "lsp": true in the project's opencode config (opencode.jsonc, else opencode.json, else a new
+  // opencode.json), after the user agrees; then the server reloads the project with it.
+  const enableLsp = async () => {
+    const read = (path: string) =>
+      workbench.client.readFile(path).then(
+        (result) => ({ path, ...result }),
+        () => undefined,
+      )
+    const file = (await read("opencode.jsonc")) ?? (await read("opencode.json"))
+    const path = file?.path ?? "opencode.json"
+    const choice = await editor.ask({
+      title: language.t("workbench.problems.lsp.confirm.title"),
+      description: language.t("workbench.problems.lsp.confirm.description", { file: path }),
+      choices: [
+        { id: "cancel", label: language.t("common.cancel"), variant: "ghost" },
+        { id: "enable", label: language.t("workbench.problems.lsp.enable"), variant: "neutral" },
+      ],
+    })
+    if (choice !== "enable") return
+    await workbench.client
+      .writeFile({
+        path,
+        content: file ? withLsp(file.content) : NEW_CONFIG,
+        baseHash: file?.hash ?? null,
+      })
+      .then(() => serverSDK().client.instance.dispose({ directory: workbench.directory }))
+      .then(() => problems.refresh())
+      .catch((error: unknown) =>
+        showToast({
+          variant: "error",
+          title: language.t("workbench.problems.lsp.failed"),
+          description: errorText(error),
+        }),
+      )
+  }
+  const runChecks = () => (
+    <ButtonV2
+      size="small"
+      variant="neutral"
+      data-action="problems-check"
+      class="shrink-0 whitespace-nowrap"
+      disabled={workbench.runs.state.checking}
+      onClick={() => void workbench.runChecks()}
+    >
+      <Show when={workbench.runs.state.checking}>
+        <LoaderV2 width={12} height={12} />
+      </Show>
+      {language.t("workbench.output.run")}
+    </ButtonV2>
+  )
+  const openSetup = useSettingsDialog("workbench")
+  const turnOnLsp = () => (
+    <ButtonV2
+      size="small"
+      variant="neutral"
+      data-action="problems-lsp"
+      class="shrink-0 whitespace-nowrap"
+      onClick={() => void enableLsp()}
+    >
+      {language.t("workbench.problems.lsp.enable")}
+    </ButtonV2>
+  )
 
   return (
     <div data-component="workbench-problems" class="flex min-h-0 flex-1 flex-col">
       <div
         role="toolbar"
         aria-label={language.t("workbench.problems.filters")}
-        class="flex h-10 shrink-0 items-center gap-2 overflow-x-auto px-3"
+        class="flex min-h-10 shrink-0 flex-wrap items-center gap-2 px-3 py-1.5"
       >
         <TextInputV2
           class="!w-56 shrink-0 !self-center"
@@ -113,6 +174,16 @@ export default function ProblemsPanel() {
           </For>
         </select>
         <span class="flex-1" />
+        <Show when={checked()}>
+          {(value) => (
+            <span data-slot="problems-checked" class="shrink-0 whitespace-nowrap text-[11px] text-v2-text-text-muted">
+              {language.t("workbench.problems.lastChecked", {
+                time: relative(value().at),
+                tools: value().tools.join(", "),
+              })}
+            </span>
+          )}
+        </Show>
         <For each={busy()}>
           {(producer) => (
             <span
@@ -129,6 +200,7 @@ export default function ProblemsPanel() {
             </span>
           )}
         </For>
+        {runChecks()}
         <IconButton
           icon="reset"
           variant="ghost"
@@ -143,7 +215,8 @@ export default function ProblemsPanel() {
           class="mx-3 mb-1 flex shrink-0 items-center gap-1.5 rounded-[6px] bg-v2-background-bg-layer-02 px-2 py-1 text-[12px] text-v2-text-text-muted"
         >
           <Icon name="warning" size="small" />
-          {language.t("workbench.problems.lspOff")}
+          <span class="min-w-0 flex-1">{language.t("workbench.problems.lspOff")}</span>
+          {turnOnLsp()}
         </div>
       </Show>
       <Switch
@@ -176,9 +249,21 @@ export default function ProblemsPanel() {
         </Match>
         <Match when={problems.state.snapshot?.problems.length === 0}>
           <PanelState
-            title={language.t("workbench.problems.empty")}
-            description={lspOff() ? language.t("workbench.problems.lspOff") : undefined}
-          />
+            title={language.t(unchecked() ? "workbench.problems.unchecked" : "workbench.problems.empty")}
+            description={
+              lspOff()
+                ? language.t("workbench.problems.lspOff")
+                : unchecked()
+                  ? language.t("workbench.problems.unchecked.description")
+                  : undefined
+            }
+          >
+            {runChecks()}
+            <Show when={lspOff()}>{turnOnLsp()}</Show>
+            <ButtonV2 size="small" variant="ghost" data-action="open-setup" onClick={openSetup}>
+              {language.t("workbench.setup.open")}
+            </ButtonV2>
+          </PanelState>
         </Match>
         <Match when={rows().length === 0}>
           <PanelState title={language.t("workbench.problems.empty.filtered")} />
@@ -188,19 +273,35 @@ export default function ProblemsPanel() {
   )
 }
 
+const NEW_CONFIG = `{\n  "$schema": "https://opencode.ai/config.json",\n  "lsp": true\n}\n`
+
 // The row's "with agent" action shows on hover and focus, and stays while its picker is open.
 const ACTION =
-  "mr-2 h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[expanded]:opacity-100"
+  "mr-2 h-5 shrink-0 px-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[expanded]:opacity-100"
 
 function Row(props: {
   row: ProblemRow
   crashed: (problem: Workbench.Problem) => string | undefined
   onOpen: (problem: Workbench.Problem) => void
   onToggle: (key: string) => void
-  onFix: (problem: Workbench.Problem) => Promise<string>
-  onFixFile: (file: string | undefined) => Promise<string>
+  onFix: (problem: Workbench.Problem) => Promise<HandoffPayload>
+  onFixFile: (file: string | undefined) => Promise<HandoffPayload>
 }) {
   const language = useLanguage()
+  const workbench = useWorkbench()
+  const rowName = (problem: Workbench.Problem, line: number, column: number) => {
+    const head = `${language.t(`workbench.problems.level.${problem.severity}`)}: ${problem.message.split("\n")[0]}`
+    if (!problem.file) return head
+    const file = getFilename(problem.file)
+    return problem.range
+      ? language.t("workbench.problems.row", { head, file, line, column })
+      : language.t("workbench.problems.rowFile", { head, file })
+  }
+  // The file's folder, project-relative (UX #15): "src/lib/" for <project>/src/lib/a.ts, nothing at the root.
+  const folder = (file: string | undefined) => {
+    const path = file ? shortPath(workbench.directory, file) : ""
+    return path.includes("/") ? getDirectory(path) : ""
+  }
   return (
     <Switch>
       <Match when={props.row.type === "file" ? props.row : undefined}>
@@ -218,13 +319,15 @@ function Row(props: {
               <span class="shrink-0 font-[530] text-v2-text-text-base">
                 {row().file ? getFilename(row().file) : language.t("workbench.problems.noFile")}
               </span>
-              <span class="min-w-0 truncate text-v2-text-text-faint">{row().file ? getDirectory(row().file) : ""}</span>
+              <span class="min-w-0 truncate text-v2-text-text-muted">{folder(row().file)}</span>
               <span class="ml-auto shrink-0 rounded-full bg-v2-background-bg-layer-02 px-1.5 text-[11px] tabular-nums text-v2-text-text-muted">
                 {row().count}
               </span>
             </button>
             <HandoffMenu
-              label={language.t("workbench.handoff.fixFile")}
+              row
+              label={language.t("workbench.handoff.fixAll")}
+              title={language.t("workbench.handoff.fixFile")}
               class={ACTION}
               build={() => props.onFixFile(row().file)}
             />
@@ -242,27 +345,25 @@ function Row(props: {
                 data-row="problem"
                 data-problem={problem().id}
                 disabled={!problem().file}
-                aria-label={
-                  problem().file
-                    ? language.t("workbench.problems.open", { file: getFilename(problem().file), line: line() })
-                    : undefined
-                }
+                // The row's content as its name (UX a11y): "Error: Type 'string'…, broken.ts line 1, column 14"
+                aria-label={rowName(problem(), line(), column())}
                 class="flex h-full min-w-0 flex-1 items-center gap-2 pl-8 pr-1 text-left text-[12px] outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)]"
                 onClick={() => props.onOpen(problem())}
               >
                 <span
+                  aria-hidden="true"
                   class={`size-2 shrink-0 rounded-full ${SEVERITY_DOT[problem().severity]}`}
-                  title={language.t(`workbench.problems.severity.${problem().severity}`)}
+                  title={language.t(`workbench.problems.level.${problem().severity}`)}
                 />
                 <span class="min-w-0 truncate text-v2-text-text-base" title={problem().message}>
                   {problem().message}
                 </span>
                 <Show when={problem().code !== undefined}>
-                  <span class="shrink-0 font-mono text-[11px] text-v2-text-text-faint">{String(problem().code)}</span>
+                  <span class="shrink-0 font-mono text-[11px] text-v2-text-text-muted">{String(problem().code)}</span>
                 </Show>
                 <span
                   data-slot="problem-sources"
-                  class="shrink-0 text-[11px] text-v2-text-text-faint"
+                  class="shrink-0 text-[11px] text-v2-text-text-muted"
                   title={sourcesOf(problem())
                     .map((source) => `${source.tool}: ${source.kind}${source.channel ? ` (${source.channel})` : ""}`)
                     .join("\n")}
@@ -289,7 +390,9 @@ function Row(props: {
                 </Show>
               </button>
               <HandoffMenu
-                label={language.t("workbench.handoff.fix")}
+                row
+                label={language.t("workbench.handoff.fixShort")}
+                title={language.t("workbench.handoff.fixRow", { problem: problem().message.split("\n")[0]! })}
                 class={ACTION}
                 build={() => props.onFix(problem())}
               />

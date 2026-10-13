@@ -55,6 +55,10 @@ test("agent hq streams, asks for permission, resyncs on a seq gap; problems open
   )
   await expect(workspace.locator('[data-row="message"][data-role="assistant"]')).toContainText("Looking at it")
   await expect(workspace.locator('[data-row="tool"][data-state="running"]')).toContainText("bun test parser")
+  // Screen readers hear the ask (UX a11y); the history the session had when shown is not read out
+  await expect(workspace.locator('[data-slot="feed-announce"]')).toHaveText(
+    "Ada asks for permission: Run bun test parser",
+  )
 
   // Permission: nothing is answered until the user clicks, and the card resolves only on the server's event
   const permission = workspace.locator('[data-row="permission"][data-request="perm_1"]')
@@ -77,7 +81,8 @@ test("agent hq streams, asks for permission, resyncs on a seq gap; problems open
   await expect(workspace.locator('[data-row="message"][data-role="assistant"]')).toContainText(
     "Looking at it, found the bug",
   )
-  await expect(workspace.locator('[data-row="turn"]')).toContainText("end_turn")
+  // UX #15: a normal end is just "Turn completed", without the provider's stop reason
+  await expect(workspace.locator('[data-row="turn"]')).toHaveText("Turn completed")
 
   // The complete message replaces the streamed text and renders as Markdown (code highlighted, unsafe links dropped)
   mock.emit(
@@ -94,6 +99,13 @@ test("agent hq streams, asks for permission, resyncs on a seq gap; problems open
   await expect(reply.locator('a[href="https://example.com"]')).toHaveAttribute("target", "_blank")
   await expect(reply.locator("a", { hasText: "bad" })).not.toHaveAttribute("href", /.*/)
 
+  // A cancelled turn ends with a divider, not half a sentence
+  mock.emit(
+    envelope(11, { type: "message.delta", messageID: "a2", text: "Let me also chec" }),
+    envelope(12, { type: "status", status: "cancelled" }),
+  )
+  await expect(workspace.locator('[data-row="turn"][data-reason="cancelled"]')).toHaveText("Cancelled by you")
+
   // Attention: a session waiting for approval badges the card and the tab
   await workspace.getByRole("button", { name: "Back to agents" }).click()
   mock.emit({
@@ -108,6 +120,9 @@ test("agent hq streams, asks for permission, resyncs on a seq gap; problems open
   await page.locator('[data-workbench-tab="problems"]').click()
   const problems = page.locator('[data-component="workbench-problems"]')
   await expect(problems.locator('[data-row="file"]')).toContainText("parser.ts")
+  // UX #15: the folder is project-relative
+  await expect(problems.locator('[data-row="file"]')).toContainText("src/")
+  await expect(problems.locator('[data-row="file"]')).not.toContainText(directory)
   await expect(problems.locator('[data-row="problem"]')).toHaveCount(2)
   await expect(problems.locator('[data-problem="p_stale"]')).toContainText("Stale")
   await problems.locator('[data-severity="warning"]').click()
@@ -270,6 +285,80 @@ test("UI-01 5,000 problems stay virtualized while searching and scrolling", asyn
   await panel.getByRole("region", { name: "Problems" }).evaluate((el) => (el.scrollTop = el.scrollHeight))
   await expect(panel.locator('[data-row="problem"]').last()).toContainText("problem 4999")
   expect(await rows.count()).toBeLessThan(200)
+})
+
+test("UX #3 permission cards show what they approve: a diff, a command with its cwd, one line", async ({ page }) => {
+  const mock = await setup(page)
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await page.locator('[data-workbench-tab="agents"]').click()
+  await page.locator('[data-component="agenthq-card"][data-agent="agt_ada"]').click()
+  const workspace = page.locator('[data-component="agenthq-workspace"]')
+  await expect(workspace.locator('[data-row="message"][data-role="user"]')).toContainText("Fix the parser bug")
+  const options = [
+    { id: "once", label: "Allow once", kind: "allow_once" },
+    { id: "always", label: "Always allow", kind: "allow_always" },
+    { id: "reject", label: "Reject", kind: "reject_once" },
+  ]
+  mock.emit(
+    envelope(1, {
+      type: "permission.requested",
+      requestID: "perm_edit",
+      title: "Edit src/parser.ts",
+      tool: "edit",
+      details: '{"filepath":"/private/var/folders/x/src/parser.ts","diff":"…"}',
+      preview: {
+        kind: "edit",
+        path: "src/parser.ts",
+        diff: "Index: src/parser.ts\n===================================================================\n--- src/parser.ts\n+++ src/parser.ts\n@@ -1,2 +1,2 @@\n-const a = 1\n+const a = 2\n const b = 3\n",
+      },
+      options,
+    }),
+    envelope(2, {
+      type: "permission.requested",
+      requestID: "perm_bash",
+      title: `Run the tests in ${directory}/packages/parser`,
+      tool: "bash",
+      preview: { kind: "command", command: "bun test parser", cwd: `${directory}/packages/parser` },
+      options,
+    }),
+    envelope(3, {
+      type: "permission.requested",
+      requestID: "perm_other",
+      title: "Fetch a page",
+      preview: { kind: "other", summary: "GET https://example.com/docs" },
+      options,
+    }),
+    envelope(4, {
+      type: "permission.requested",
+      requestID: "perm_old",
+      title: "Old adapter",
+      details: '{"raw":true}',
+      options,
+    }),
+  )
+  const edit = workspace.locator('[data-row="permission"][data-request="perm_edit"]')
+  await expect(edit.locator('[data-slot="permission-edit"] [data-component="file"][data-mode="diff"]')).toBeVisible()
+  await expect(edit.locator('[data-slot="permission-edit"]')).toContainText("src/parser.ts")
+  await expect(edit).not.toContainText("/private/var/folders")
+  // Only Allow once is primary; "always" says what it covers.
+  await expect(edit.locator("[data-option]")).toHaveText(["Allow once", "Always allow edits in this session", "Reject"])
+  await expect(edit.locator('[data-option="once"]')).toHaveAttribute("data-variant", "contrast")
+  await expect(edit.locator('[data-option="always"]')).not.toHaveAttribute("data-variant", "contrast")
+  const bash = workspace.locator('[data-row="permission"][data-request="perm_bash"]')
+  await expect(bash.locator('[data-slot="permission-command"]')).toContainText("$ bun test parser")
+  // UX #15: paths relative to where the agent works
+  await expect(bash.locator('[data-slot="permission-command"]')).toContainText("in packages/parser")
+  await expect(bash).toContainText("Run the tests in packages/parser")
+  await expect(bash).not.toContainText(directory)
+  await expect(bash.locator('[data-option="always"]')).toHaveText("Always allow this command in this session")
+  await expect(workspace.locator('[data-request="perm_other"] [data-slot="permission-other"]')).toHaveText(
+    "GET https://example.com/docs",
+  )
+  await expect(workspace.locator('[data-request="perm_old"]')).toContainText('{"raw":true}')
+  await edit.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: test.info().outputPath("ux3-permission-preview.png") })
 })
 
 function agent(id: string, name: string, projectDirectory: string) {

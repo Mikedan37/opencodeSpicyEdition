@@ -4,7 +4,7 @@ import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { useLanguage } from "@/context/language"
 import { useDebug } from "./debug-context"
 import { useWorkbench } from "./panel"
-import { PanelState } from "./ui"
+import { PanelState, TAB_FOCUS } from "./ui"
 import "./debug-side.css"
 
 const DebugPanel = lazy(() => import("./debug-panel"))
@@ -36,6 +36,7 @@ export function DebugSideTrigger() {
     <Tabs.Trigger
       value={DEBUG_SIDE_TAB}
       data-workbench-side-tab="debug"
+      class={TAB_FOCUS}
       onPointerDown={(event) => event.pointerType === "mouse" && event.button === 0 && workbench.showSide()}
       onClick={() => workbench.showSide()}
     >
@@ -50,6 +51,8 @@ export function DebugSideTrigger() {
             }}
             title={language.t(`workbench.debug.state.${state()!}`)}
           />
+          {/* The dot's meaning for screen readers: "Debug, Paused" */}
+          <span class="sr-only">{language.t(`workbench.debug.state.${state()!}`)}</span>
         </Show>
       </span>
     </Tabs.Trigger>

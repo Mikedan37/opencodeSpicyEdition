@@ -7,6 +7,10 @@ import { sourcesOf } from "./problems"
 const CONTEXT = 10 // source lines on each side of a problem
 const MAX_PROBLEMS = 50
 
+// The names the snapshots go by as attachments; session-ui's user message shows these as collapsible chips.
+export const PROBLEM_CONTEXT = "Problem context"
+export const STOP_CONTEXT = "Debug stop context"
+
 // Project-relative when inside `root`.
 export function shortPath(root: string, file: string) {
   const base = root.replace(/\/+$/, "")
@@ -160,4 +164,26 @@ export function stopSnapshot(input: { root: string; session: Workbench.DebugSess
     `Top frames:\n${frames.length ? frames.join("\n") : "(none)"}`,
     `Locals of ${top?.name ?? "the top frame"}:\n${locals.length ? locals.join("\n") : "(none)"}`,
   ].join("\n\n")
+}
+
+// The message's one line; the snapshot itself goes along under its name.
+export function problemSummary(input: { root: string; file?: string; problems: readonly Workbench.Problem[] }) {
+  const where = input.file ? shortPath(input.root, input.file) : undefined
+  const first = input.problems[0]
+  if (input.problems.length === 1 && first) {
+    const message = first.message.split("\n")[0]
+    if (!where) return `Fix this problem: ${message}`
+    return `Fix the problem at ${where}${first.range ? `:${first.range.start.line + 1}` : ""}: ${message}`
+  }
+  return where
+    ? `Fix the ${input.problems.length} problems in ${where}.`
+    : `Fix these ${input.problems.length} problems.`
+}
+
+export function stopSummary(input: { root: string; session: Workbench.DebugSessionInfo }) {
+  const stop = input.session.stop
+  const top = stop?.frames[0]
+  const what = stop?.exception?.id ?? stop?.description ?? stop?.reason ?? input.session.state
+  const where = top?.file ? ` at ${shortPath(input.root, top.file)}:${top.line ?? "?"}` : ""
+  return `Investigate the debugger stop: ${what}${where}.`
 }

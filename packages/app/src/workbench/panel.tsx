@@ -30,17 +30,21 @@ import { useSDK } from "@/context/sdk"
 import { useServerSDK } from "@/context/server-sdk"
 import { useTerminal } from "@/context/terminal"
 import { useLayout } from "@/context/layout"
+import { useFile } from "@/context/file"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { Persist, persisted } from "@/utils/persist"
-import { createWorkbenchClient } from "./client"
-import { DebugProvider } from "./debug-context"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { showToast } from "@/utils/toast"
+import { createWorkbenchClient, errorText, WorkbenchRequestError } from "./client"
+import { DebugProvider, useDebug } from "./debug-context"
 import { EditorProvider } from "./editor-context"
-import { createHandoff } from "./handoff"
+import { createHandoff, type HandoffPayload } from "./handoff"
 import { createProblemsState, type ProblemFilter } from "./problems"
 import { createInvestigationsState } from "./investigations"
 import { createRunsState, isFinished } from "./runs"
 import { createToolsState } from "./tools"
-import { PanelState, TONE_CLASS } from "./ui"
+import { latestRun, PROBLEM_CONTEXT, problemSnapshot, problemSummary, shortPath } from "./snapshot"
+import { PanelState, TAB_FOCUS, TONE_CLASS } from "./ui"
 
 const AgentsPanel = lazy(() => import("@/agenthq/agents-panel"))
 const ProblemsPanel = lazy(() => import("./problems-panel"))
@@ -74,6 +78,9 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
     const command = useCommand()
     const language = useLanguage()
     const layout = useLayout()
+    const dialog = useDialog()
+    const agenthq = useAgentHQ()
+    const file = useFile()
     const { sessionKey } = useSessionKey()
     const owner = getOwner()
     // The session page remounts this provider per workspace, so the directory is fixed for its lifetime.
@@ -152,26 +159,148 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       withView((view) => view.terminal.open())
     }
     const handoff = createHandoff({ directory, showAgents: () => show("agents") })
+    // UI-07: what "Fix with agent" sends for these problems, made when a target is picked: a one-line summary, and the
+    // snapshot with the lines around them and the latest verification run.
+    const problemPayload = async (list: readonly Workbench.Problem[], file?: string): Promise<HandoffPayload> => {
+      const [source] = await Promise.all([
+        file
+          ? client.readFile(shortPath(directory, file)).then(
+              (result) => ({ text: result.content }),
+              (error: unknown) => ({ error: errorText(error) }),
+            )
+          : undefined,
+        runs.load(),
+      ])
+      const input = { root: directory, file, problems: list }
+      const latest = latestRun(
+        list,
+        runs.state.runs.map((entry) => entry.info),
+      )
+      return {
+        summary: problemSummary(input),
+        context: problemSnapshot({ ...input, source, run: latest }),
+        name: PROBLEM_CONTEXT,
+      }
+    }
+    // The picker as a dialog, for the editor's lint tooltip and the palette.
+    const fixProblems = (list: readonly Workbench.Problem[], file?: string) =>
+      handoff.choose(language.t("workbench.handoff.fix"), () => problemPayload(list, file))
+    // The open file tab's problems (the palette's Fix); a throwaway root so no layout memos pile up per call.
+    const openFileProblems = () =>
+      runWithOwner(owner, () =>
+        createRoot((dispose) => {
+          const active = layout.tabs(sessionKey()).active()
+          dispose()
+          const path = active ? file.pathFromTab(active) : undefined
+          if (!path) return { problems: [] as Workbench.Problem[] }
+          return {
+            path,
+            problems: (problems.state.snapshot?.problems ?? []).filter(
+              (problem) => problem.file && file.normalize(problem.file) === path,
+            ),
+          }
+        }),
+      )!
     // The Debug tab of the side panel (workbench/debug-side.tsx) shows over whatever tab the panel has selected.
     const [side, setSide] = createSignal(false)
     const showSide = () => {
       withView((view) => !view.reviewPanel.opened() && view.reviewPanel.open())
       setSide(true)
     }
-    command.register("workbench", () => [
-      {
-        id: "workbench.agents",
-        title: language.t("workbench.command.agents"),
-        category: language.t("command.category.view"),
-        onSelect: () => show("agents"),
-      },
-      {
-        id: "workbench.problems",
-        title: language.t("workbench.command.problems"),
-        category: language.t("command.category.view"),
-        onSelect: () => show("problems"),
-      },
-    ])
+    // Checks over the whole project as one folder unit (the server checks up to 200 of its source files); the Output
+    // tab, Problems, the palette and the status strip all start them here.
+    const runChecks = () =>
+      runs.check({ unit: directory }).catch((error: unknown) =>
+        showToast({
+          variant: "error",
+          title: language.t("workbench.output.failed"),
+          description:
+            error instanceof WorkbenchRequestError && error.kind === "unavailable"
+              ? language.t("workbench.output.unavailable")
+              : errorText(error),
+        }),
+      )
+    // Agents that need the user (an ask, a failure, a result not seen yet) plus tasks waiting for review: the Agents
+    // tab's badge and the status strip.
+    const needsYou = createMemo(
+      () =>
+        agenthq.state.agents.filter((agent) =>
+          agentAttention(agentSessions(agenthq.state.sessions, agent.id), agenthq.seen),
+        ).length + agenthq.tasks.state.tasks.filter((task) => task.status === "review").length,
+    )
+    // The dialogs live in the Agents tab's lazy chunks; the palette opens them without opening the tab first.
+    const newAgent = async () => {
+      const { AgentDialog, createAgentDraft } = await import("@/agenthq/agent-dialog")
+      const draft = createAgentDraft(undefined, directory)
+      const showDialog = () => dialog.show(() => <AgentDialog draft={draft} reopen={showDialog} />)
+      showDialog()
+    }
+    const newTask = async () => {
+      const { TaskDialog } = await import("@/agenthq/tasks-panel")
+      dialog.show(() => (
+        <TaskDialog
+          onSaved={(saved) => {
+            agenthq.setView("tasks")
+            agenthq.selectTask(saved.id)
+            show("agents")
+          }}
+        />
+      ))
+    }
+    command.register("workbench", () => {
+      const view = language.t("command.category.view")
+      const ide = language.t("workbench.command.category")
+      return [
+        ...WORKBENCH_TABS.map((tab) => ({
+          id: `workbench.${tab}`,
+          title: language.t(`workbench.command.${tab}`),
+          category: view,
+          onSelect: () => show(tab),
+        })),
+        {
+          id: "workbench.check",
+          title: language.t("workbench.command.check"),
+          category: ide,
+          disabled: runs.state.checking,
+          onSelect: () => {
+            show("output")
+            void runChecks()
+          },
+        },
+        {
+          id: "workbench.agent.new",
+          title: language.t("workbench.command.newAgent"),
+          category: ide,
+          onSelect: newAgent,
+        },
+        {
+          id: "workbench.task.new",
+          title: language.t("workbench.command.newTask"),
+          category: ide,
+          disabled: agenthq.state.agents.length === 0,
+          onSelect: newTask,
+        },
+        {
+          id: "workbench.fix",
+          title: language.t("workbench.command.fix"),
+          category: ide,
+          onSelect: () => {
+            const open = openFileProblems()
+            if (!open.problems.length) return showToast({ title: language.t("workbench.handoff.noProblems") })
+            fixProblems(open.problems, open.problems[0]?.file)
+          },
+        },
+        {
+          id: "workbench.tool.new",
+          title: language.t("workbench.command.newTool"),
+          category: ide,
+          onSelect: () => {
+            tools.setCreating(true)
+            show("tools")
+          },
+        },
+      ]
+    })
 
     return {
       tab,
@@ -199,6 +328,10 @@ export const { use: useWorkbench, provider: WorkbenchProvider } = createSimpleCo
       investigations,
       tools,
       handoff,
+      problemPayload,
+      fixProblems,
+      runChecks,
+      needsYou,
       problemFilter: { state: problemFilter, set: setProblemFilter },
     }
   },
@@ -219,16 +352,13 @@ export function WorkbenchProviders(props: ParentProps) {
 // Tab triggers rendered inside the terminal panel's tab list, pinned to its trailing edge.
 export function WorkbenchTabTriggers() {
   const workbench = useWorkbench()
-  const agenthq = useAgentHQ()
+  const debug = useDebug()
   const language = useLanguage()
+  // UX #13: Run is a debugged program's terminal, so its tab shows once a debug session has one (and while it is open).
+  const shown = (tab: WorkbenchTab) =>
+    tab !== "run" || workbench.tab() === "run" || debug.state.sessions.some((item) => item.ptyID)
   const problemCounts = createMemo(() => workbench.problems.state.snapshot?.counts)
-  // Agents that need the user, plus tasks waiting for the user's review.
-  const attention = createMemo(
-    () =>
-      agenthq.state.agents.filter((agent) =>
-        agentAttention(agentSessions(agenthq.state.sessions, agent.id), agenthq.seen),
-      ).length + agenthq.tasks.state.tasks.filter((task) => task.status === "review").length,
-  )
+  const attention = workbench.needsYou
   const running = createMemo(() => workbench.runs.state.runs.filter((entry) => !isFinished(entry.info.status)).length)
   const badge = (tab: WorkbenchTab) => {
     if (tab === "agents") return attention() ? { count: attention(), tone: TONE_CLASS.warning } : undefined
@@ -251,11 +381,12 @@ export function WorkbenchTabTriggers() {
       data-component="workbench-tabs"
       class="sticky right-0 z-10 ml-auto flex h-full shrink-0 items-center gap-1 pl-2 pr-3"
     >
-      <For each={WORKBENCH_TABS}>
+      <For each={WORKBENCH_TABS.filter(shown)}>
         {(tab) => (
           <Tabs.Trigger
             value={PREFIX + tab}
             data-workbench-tab={tab}
+            class={TAB_FOCUS}
             // Mouse selects on press like the terminal tabs; click covers keyboard and touch activation.
             onPointerDown={(event) => event.pointerType === "mouse" && event.button === 0 && workbench.open(tab)}
             onClick={() => workbench.open(tab)}

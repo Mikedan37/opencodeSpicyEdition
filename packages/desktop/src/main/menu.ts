@@ -2,6 +2,7 @@ import { BrowserWindow, Menu } from "electron"
 import type { MenuItemConstructorOptions } from "electron"
 import {
   DESKTOP_MENU,
+  desktopMenuLabel,
   desktopMenuVisible,
   type DesktopMenuEntry,
   type DesktopMenuRole,
@@ -36,10 +37,12 @@ export function createMenu(deps: Deps) {
 
 function nativeItem(entry: DesktopMenuEntry, deps: Deps): MenuItemConstructorOptions {
   if (entry.type === "separator") return { type: "separator" }
-  if (entry.role) return { role: nativeRole(entry.role), label: entry.labelKey ? nativeT(entry.labelKey) : undefined }
+  // spicy: desktopMenuLabel, so the IDE's entries (fork copy) get their labels too
+  const label = entry.labelKey ? desktopMenuLabel(entry.labelKey, nativeT) : undefined
+  if (entry.role) return { role: nativeRole(entry.role), label }
 
   const item: MenuItemConstructorOptions = {
-    label: entry.labelKey ? nativeT(entry.labelKey) : undefined,
+    label,
     accelerator: entry.accelerator?.macos,
     enabled: entry.enabled === "updater" ? UPDATER_ENABLED : undefined,
   }

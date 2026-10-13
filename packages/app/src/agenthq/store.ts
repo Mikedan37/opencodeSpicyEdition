@@ -24,6 +24,8 @@ export type FeedItem =
       title: string
       tool?: string
       details?: string
+      // What it is about (UX #3): an edit's diff, a command, or one line; `details` is the fallback without it.
+      preview?: AgentHQ.PermissionPreview
       options: readonly PermissionOption[]
       outcome?: "allowed" | "rejected" | "cancelled"
       // optionID whose answer is in flight; the item only resolves on the server's permission.resolved event
@@ -78,14 +80,15 @@ export function createAgentHQStore(seenStore: SeenStore = createStore<Record<str
     batch(() =>
       events.forEach((envelope) => {
         if (!state.feeds[envelope.sessionID]) return
-        if (envelope.event.type !== "status")
-          return setState(
+        // A status changes the session; a cancelled one also leaves a divider in the feed.
+        if (envelope.event.type !== "status" || envelope.event.status === "cancelled")
+          setState(
             "feeds",
             envelope.sessionID,
             "items",
             produce((items) => applyEvent(items, envelope)),
           )
-        if (state.sessions[envelope.sessionID])
+        if (envelope.event.type === "status" && state.sessions[envelope.sessionID])
           setState("sessions", envelope.sessionID, { status: envelope.event.status })
       }),
     )
@@ -314,6 +317,7 @@ export function applyEvent(items: FeedItem[], envelope: Envelope) {
       title: event.title,
       tool: event.tool,
       details: event.details,
+      preview: event.preview,
       options: event.options,
     })
     return
@@ -329,6 +333,9 @@ export function applyEvent(items: FeedItem[], envelope: Envelope) {
   if (event.type === "file.changed") return void items.push({ kind: "note", key, tone: "file", text: event.path })
   if (event.type === "turn.completed")
     return void items.push({ kind: "note", key, tone: "turn", text: event.stopReason ?? "" })
+  // UX #15: a cancelled turn ends with "Cancelled by you", not half a sentence.
+  if (event.type === "status" && event.status === "cancelled")
+    return void items.push({ kind: "note", key, tone: "turn", text: "cancelled" })
   if (event.type === "error") return void items.push({ kind: "note", key, tone: "error", text: event.message })
 }
 

@@ -1,6 +1,19 @@
 // Agent changes review (spicy-review): per-workspace state shared by the review panel ("Agent changes" mode) and
 // the file view's inline diff. HTTP goes through workbench/client.ts; changesets follow review.changeset.* events.
-import { createMemo, createSignal, getOwner, lazy, onCleanup, runWithOwner, Show, Suspense, type JSX } from "solid-js"
+import {
+  createEffect,
+  createMemo,
+  createRoot,
+  createSignal,
+  getOwner,
+  lazy,
+  on,
+  onCleanup,
+  runWithOwner,
+  Show,
+  Suspense,
+  type JSX,
+} from "solid-js"
 import type { Review } from "@opencode-ai/schema/review"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useAgentHQ } from "@/agenthq/context"
@@ -28,7 +41,8 @@ export function ReviewChangesPanel(props: ReviewPanelV2Props) {
   )
 }
 
-export type Focus = { path: string; hunkID?: string }
+// `implicit`: set by showing a file (its first change), not by the user; the first next / previous lands on it.
+export type Focus = { path: string; hunkID?: string; implicit?: boolean }
 
 export const { use: useReview, provider: ReviewProvider } = createSimpleContext({
   name: "Review",
@@ -79,6 +93,8 @@ export const { use: useReview, provider: ReviewProvider } = createSimpleContext(
       if (!all.length) return
       const current = focus()
       const index = current ? all.findIndex((item) => item.path === current.path && item.hunkID === current.hunkID) : -1
+      // UX #9: the change a file opened on is where navigation starts, so the first next goes to the first change.
+      if (index >= 0 && current?.implicit) return setFocus(all[index])
       if (index >= 0) return setFocus(all[(index + direction + all.length) % all.length])
       // The focused hunk is gone (decided): continue in its file, else from the start or the end.
       setFocus(all.find((item) => item.path === current?.path) ?? (direction === 1 ? all[0] : all[all.length - 1]))
@@ -113,6 +129,22 @@ export const { use: useReview, provider: ReviewProvider } = createSimpleContext(
         view.review.setMode("agent")
         view.reviewPanel.open()
       })
+    // UX #9: pending agent changes come first: the review panel switches to Agent changes when some arrive, or are
+    // there when a session opens; another mode the user picks stays until new ones arrive.
+    createEffect(
+      on(
+        () => [sessionKey(), pending().length > 0] as const,
+        ([, has], previous) => {
+          if (!has || (previous?.[1] && previous[0] === sessionKey())) return
+          runWithOwner(owner, () =>
+            createRoot((dispose) => {
+              layout.view(sessionKey()).review.setMode("agent")
+              dispose()
+            }),
+          )
+        },
+      ),
+    )
 
     const current = (run: (input: NonNullable<ReturnType<typeof focused>>) => void) => () => {
       const value = focused()

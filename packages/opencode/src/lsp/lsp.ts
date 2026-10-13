@@ -131,7 +131,8 @@ interface State {
   broken: Map<string, Broken> // spicy: was Set<string>, now keeps the reason and retry schedule
   spawning: Map<string, Promise<LSPClient.Info | undefined>>
   bridge: EffectBridge.Shape // spicy: lets the crash watcher log and publish
-  // spicy: latest merged diagnostics per server, root and file, replayed to new subscribers
+  // spicy: latest diagnostics per server, root and file, replayed to new subscribers; a crashed server's entry keeps
+  // its last report with the exit reason (DIAG-07)
   diagnostics: Map<string, LSPClient.DiagnosticsEvent>
   listeners: Set<(event: LSPClient.DiagnosticsEvent) => void>
 }
@@ -284,7 +285,9 @@ const layer = Layer.effect(
             instance: ctx,
             onDiagnostics: (event) => {
               // spicy: Workbench problem store hook
-              s.diagnostics.set(`${event.serverID}\0${event.root}\0${event.file}`, event)
+              const key = `${event.serverID}\0${event.root}\0${event.file}`
+              const last = s.diagnostics.get(key)
+              s.diagnostics.set(key, event.exited && last ? { ...last, exited: event.exited } : event)
               for (const listener of s.listeners) listener(event)
             },
           }).catch(async (error) => {

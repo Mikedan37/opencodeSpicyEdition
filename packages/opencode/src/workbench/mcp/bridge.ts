@@ -99,6 +99,7 @@ export const problems = define({
     return {
       text: [
         `${counts.error} errors, ${counts.warning} warnings, ${counts.info} info, ${counts.hint} hints`,
+        ...(snapshot.lsp === "off" ? ['Language servers are off: set "lsp": true in opencode.json'] : []),
         ...snapshot.producers
           .filter((producer) => producer.state === "unavailable" || producer.state === "failed")
           .map((producer) => `${producer.tool} ${producer.state}: ${producer.reason ?? "no reason given"}`),
@@ -124,7 +125,11 @@ export const check = define({
     )
     const runs = new Set(report.checks.map((item) => item.run.id))
     const snapshot = fromJson(Workbench.ProblemsSnapshot)(await api.get("/workbench/problems"))
-    const found = sorted(snapshot.problems.filter((item) => item.source.runID && runs.has(item.source.runID)))
+    const found = sorted(
+      snapshot.problems.filter((item) =>
+        (item.sources ?? [item.source]).some((source) => source.runID && runs.has(source.runID)),
+      ),
+    )
     const summary = report.summary
     const relative = (file: string) => path.relative(connection.directory, file) || "."
     return {
@@ -283,7 +288,8 @@ function line(item: Workbench.Problem, directory: string) {
     : "(no file)"
   const code = item.code === undefined ? "" : ` ${item.code}`
   const message = item.message.split("\n").slice(0, 6).join("\n  ")
-  return `${where} ${item.severity}${code} [${item.source.tool}]${item.stale ? " (stale)" : ""} ${message}`
+  const tools = [...new Set((item.sources ?? [item.source]).map((source) => source.tool))].join(", ")
+  return `${where} ${item.severity}${code} [${tools}]${item.stale ? " (stale)" : ""} ${message}`
 }
 
 export * as WorkbenchBridge from "./bridge"

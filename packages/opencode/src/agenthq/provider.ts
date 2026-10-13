@@ -2,6 +2,7 @@
 // Adapters push normalized AgentEvents through `emit`; the session manager assigns seq,
 // persists and publishes. Capabilities are reported honestly and an unsupported action fails
 // with UnsupportedError instead of silently doing nothing.
+import { Pty } from "@opencode-ai/core/pty"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Effect, Schema } from "effect"
 
@@ -46,10 +47,11 @@ export interface Session {
 
 /**
  * The environment for every process a provider spawns: this process's environment without the opencode server's
- * credentials. The Workbench MCP server gets a token of its own instead, through its own `env`.
+ * credentials. The Workbench MCP server gets a token of its own instead, through its own `env`. Shells the agent
+ * starts are not the Terminal.app window opencode came from either (Pty.ownTerminal: no macOS session files).
  */
 export function agentEnv() {
-  const env = { ...process.env }
+  const env = Pty.ownTerminal({ ...process.env }) // spicy(dap): see Pty.ownTerminal
   delete env.OPENCODE_SERVER_USERNAME
   delete env.OPENCODE_SERVER_PASSWORD
   delete env.OPENCODE_SERVER_TOKEN

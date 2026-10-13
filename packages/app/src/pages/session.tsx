@@ -106,6 +106,7 @@ import { createSessionLineage } from "./session/session-lineage"
 import { WorkbenchProviders } from "@/workbench/panel" // spicy: Workbench + Agent HQ (see SPICY.md)
 import { ReviewChangesPanel, ReviewProvider, useReview } from "@/review/context" // spicy: agent changes review
 import { SearchProvider } from "@/workbench/search-side" // spicy: project search (side panel Search tab)
+import { GitCommitArea, GitProvider } from "@/workbench/git-panel" // spicy: git panel (commit area + Git commands)
 
 type FollowupItem = FollowupDraft & { id: string }
 type FollowupEdit = Pick<FollowupItem, "id" | "prompt" | "context">
@@ -325,9 +326,12 @@ function SessionProviders(props: ParentProps) {
           <CommentsProvider>
             {/* spicy: Workbench + Agent HQ state for the bottom panel tabs */}
             <WorkbenchProviders>
-              {/* spicy: agent changes review state (src/review), project search state (workbench/search-side) */}
+              {/* spicy: agent changes review state (src/review), project search state (workbench/search-side) and git
+                  panel state inside it */}
               <ReviewProvider>
-                <SearchProvider>{props.children}</SearchProvider>
+                <SearchProvider>
+                  <GitProvider>{props.children}</GitProvider>
+                </SearchProvider>
               </ReviewProvider>
             </WorkbenchProviders>
           </CommentsProvider>
@@ -1371,6 +1375,7 @@ export default function Page() {
           <ReviewChangesPanel {...reviewPanelV2Props()} />
         </Show>
       </Show>
+      <GitCommitArea /> {/* spicy: git panel commit area, below every review mode */}
     </div>
   )
 
@@ -1390,6 +1395,7 @@ export default function Page() {
           emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
         })}
       </div>
+      <GitCommitArea /> {/* spicy: git panel commit area (legacy layout) */}
     </div>
   )
 

@@ -5,6 +5,7 @@ import { Option, Schema } from "effect"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Review } from "@opencode-ai/schema/review"
 import { Workbench } from "@opencode-ai/schema/workbench"
+import { WorkbenchGit } from "@opencode-ai/schema/workbench-git"
 import type { ServerConnection } from "@/context/server"
 import { authTokenFromCredentials } from "@/utils/server"
 import type { SearchQuery } from "./search"
@@ -142,6 +143,12 @@ const decoders = {
   lspHover: Schema.decodeUnknownOption(Schema.NullOr(Workbench.LspHover)),
   lspLocations: Schema.decodeUnknownOption(Schema.Array(Workbench.LspLocation)),
   searchResult: Schema.decodeUnknownOption(SearchResult),
+  gitStatus: Schema.decodeUnknownOption(WorkbenchGit.Status),
+  gitBranches: Schema.decodeUnknownOption(WorkbenchGit.Branches),
+  gitCommit: Schema.decodeUnknownOption(WorkbenchGit.Commit),
+  gitPush: Schema.decodeUnknownOption(WorkbenchGit.Push),
+  gitPullRequest: Schema.decodeUnknownOption(WorkbenchGit.PullRequest),
+  gitMessage: Schema.decodeUnknownOption(WorkbenchGit.Message),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -321,6 +328,22 @@ export function createWorkbenchClient(input: {
           ...(query.exclude.trim() ? { exclude: query.exclude } : {}),
         })}`,
       ),
+    // Git panel (groups/workbench-git.ts). A refusal is a 409 (400 for bad input) whose message says why, as git or gh
+    // worded it. Push never forces; without an upstream it needs setUpstream, the user's explicit choice.
+    gitStatus: () => decoded(decoders.gitStatus, "GET", "/workbench/git/status"),
+    gitStage: (paths: string[]) => decoded(decoders.gitStatus, "POST", "/workbench/git/stage", { paths }),
+    gitUnstage: (paths: string[]) => decoded(decoders.gitStatus, "POST", "/workbench/git/unstage", { paths }),
+    gitCommit: (message: string) => decoded(decoders.gitCommit, "POST", "/workbench/git/commit", { message }),
+    gitPush: (input: { setUpstream?: boolean; remote?: string } = {}) =>
+      decoded(decoders.gitPush, "POST", "/workbench/git/push", input),
+    gitBranches: () => decoded(decoders.gitBranches, "GET", "/workbench/git/branches"),
+    gitCreateBranch: (name: string, switchTo: boolean) =>
+      decoded(decoders.gitBranches, "POST", "/workbench/git/branches", { name, switch: switchTo }),
+    gitSwitch: (name: string) => decoded(decoders.gitBranches, "POST", "/workbench/git/switch", { name }),
+    gitPullRequest: (input: { title?: string; body?: string } = {}) =>
+      decoded(decoders.gitPullRequest, "POST", "/workbench/git/pr", input),
+    // Only with the config's small_model (status.generate says whether it is set).
+    gitMessage: () => decoded(decoders.gitMessage, "POST", "/workbench/git/message"),
   }
 }
 

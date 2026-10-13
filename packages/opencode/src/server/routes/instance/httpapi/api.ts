@@ -29,6 +29,7 @@ import { AgentHQApi } from "./groups/agenthq" // spicy: Agent HQ routes
 import { WorkbenchApi } from "./groups/workbench" // spicy: Workbench problems routes
 import { WorkbenchDebugApi } from "./groups/workbench-debug" // spicy: Workbench debug routes
 import { WorkbenchToolsApi } from "./groups/workbench-tools" // spicy: tool creator routes
+import { WorkbenchGitApi } from "./groups/workbench-git" // spicy: git panel routes
 import { ReviewApi } from "./groups/review" // spicy: review routes
 import { WorkbenchSearchApi } from "./groups/workbench-search" // spicy: project search routes
 import { makeApi } from "@opencode-ai/protocol/api"
@@ -84,6 +85,7 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(WorkbenchApi) // spicy: Workbench problems routes
   .addHttpApi(WorkbenchDebugApi) // spicy: Workbench debug routes
   .addHttpApi(WorkbenchToolsApi) // spicy: tool creator routes
+  .addHttpApi(WorkbenchGitApi) // spicy: git panel routes
   .addHttpApi(ReviewApi) // spicy: review routes
   .addHttpApi(WorkbenchSearchApi) // spicy: project search routes
   .middleware(SchemaErrorMiddleware)

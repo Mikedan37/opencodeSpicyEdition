@@ -169,7 +169,9 @@ const execDecorations = EditorView.decorations.compute([marksField], (state) => 
     }).range(line.from),
   ]
   if (exception)
-    ranges.push(Decoration.widget({ widget: new NoteWidget("exception", exception), block: true, side: 1 }).range(line.to))
+    ranges.push(
+      Decoration.widget({ widget: new NoteWidget("exception", exception), block: true, side: 1 }).range(line.to),
+    )
   if (values)
     ranges.push(Decoration.widget({ widget: new NoteWidget("values", values), block: true, side: 2 }).range(line.to))
   return Decoration.set(ranges)
@@ -647,7 +649,12 @@ function Editor(props: EditorViewProps) {
       .map((item) => `${item.name} = ${item.value.length > 40 ? `${item.value.slice(0, 40)}…` : item.value}`)
       .join("   ")
     current.dispatch({
-      effects: setMarks.of({ breakpoints, exec: paused?.line, values: values || undefined, exception: paused?.exception }),
+      effects: setMarks.of({
+        breakpoints,
+        exec: paused?.line,
+        values: values || undefined,
+        exception: paused?.exception,
+      }),
     })
   })
   createEffect(

@@ -140,7 +140,8 @@ function MarkedFile<T>(props: { debug: DebugContextValue; text: TextFileProps<T>
         meta.exception,
         "mx-3 my-0.5 whitespace-pre-wrap break-words rounded-[4px] bg-v2-state-bg-danger px-2 font-mono text-[11px] leading-[18px] text-v2-state-fg-danger",
       )
-    if (meta.values) row("values", meta.values, "truncate px-3 font-mono text-[11px] leading-5 text-v2-state-fg-warning")
+    if (meta.values)
+      row("values", meta.values, "truncate px-3 font-mono text-[11px] leading-5 text-v2-state-fg-warning")
     return box
   }
 

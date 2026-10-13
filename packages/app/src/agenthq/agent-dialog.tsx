@@ -60,8 +60,7 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
   const provider = () => agenthq.state.providers.find((item) => item.id === draft.provider)
   // UX #14: a custom ACP agent needs a launch command this dialog has no field for yet, so it is offered only to an
   // agent that already is one.
-  const providers = () =>
-    agenthq.state.providers.filter((item) => item.id !== "acp" || props.agent?.provider === "acp")
+  const providers = () => agenthq.state.providers.filter((item) => item.id !== "acp" || props.agent?.provider === "acp")
   // The composer's model picker, choosing for this agent: opencode agents take "providerID/modelID".
   const chosen = () => local.model.list().find((item) => `${item.provider.id}/${item.id}` === draft.model)
   const models = {

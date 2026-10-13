@@ -5,6 +5,7 @@ import { parse, type ParseError } from "jsonc-parser"
 import { Workbench } from "@opencode-ai/schema/workbench"
 import { Effect, Schema } from "effect"
 import { Filesystem } from "@/util/filesystem"
+import { Redact } from "../redact"
 import { DebugError } from "./client"
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
@@ -237,7 +238,11 @@ const typeMap: Record<string, Adapter | undefined> = {
   lldb: "lldb-dap",
 }
 
-/** Replaces ${...} variables in every string. Returns an error message for an unknown or missing variable. */
+/**
+ * Replaces ${...} variables in every string. Returns an error message for an unknown or missing variable, and for an
+ * ${env:NAME} that names a secret (Redact.secretEnv): the program's output reaches the model, and approving a
+ * configuration is not approving the server's credentials, so nothing is substituted and the start fails.
+ */
 export function substitute(
   value: Record<string, unknown>,
   vars: Record<string, string>,
@@ -246,6 +251,10 @@ export function substitute(
   const walk = (item: unknown): unknown => {
     if (typeof item === "string")
       return item.replace(/\$\{([^}]+)\}/g, (match, name: string) => {
+        if (name.startsWith("env:") && Redact.secretEnv(name.slice(4))) {
+          problems.push(`${match} names a secret and is not passed to the program`)
+          return match
+        }
         if (name.startsWith("env:")) return process.env[name.slice(4)] ?? ""
         if (name in vars) return vars[name]
         problems.push(name === "file" ? "${file} needs the file parameter" : `unsupported variable ${match}`)

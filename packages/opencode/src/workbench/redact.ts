@@ -20,6 +20,15 @@ export function secretName(name: string) {
   return SECRET_NAME.test(name.toLowerCase().replace(/[-_\s.]/g, ""))
 }
 
+/**
+ * An environment variable that must not leave the server (launch.json ${env:NAME}): a secret name as above, any name
+ * with KEY in it (API_KEY, ACCESS_KEY_ID), and the opencode server's own credentials. KEY is too broad for names in a
+ * program, where key, keys and monkey are everyday variables.
+ */
+export function secretEnv(name: string) {
+  return secretName(name) || /key/i.test(name) || /^opencode_server_/i.test(name)
+}
+
 export function text(input: string) {
   return SECRET_VALUE.reduce((result, pattern) => result.replace(pattern, MASK), input)
 }

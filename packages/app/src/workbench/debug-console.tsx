@@ -178,7 +178,11 @@ function Line(props: { row: ConsoleRow; chip: boolean; evidence: boolean }) {
   const debug = useDebug()
   const workbench = useWorkbench()
   const openAt = useFileLineOpener()
-  const text = () => props.row.text.replace(ANSI, "")
+  // The debugger's own lines name files project-relative (UX #15): "debugpy session started · launch app.py".
+  const text = () => {
+    const plain = props.row.text.replace(ANSI, "")
+    return props.row.kind === "system" ? plain.replaceAll(`${workbench.directory.replace(/\/+$/, "")}/`, "") : plain
+  }
   const by = () => (props.row.by === "system" ? undefined : props.row.by)
   // A result's reference lives only until the program moves on, so only results from the current pause expand.
   const expandable = () => {

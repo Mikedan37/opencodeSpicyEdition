@@ -181,7 +181,13 @@ test("debug console: backlog and live rows merge, filters, attribution, evaluate
   const panel = page.locator('[data-component="workbench-debug-console"]')
 
   // The backlog leads with the server's truncation row; a live row and a duplicate merge by seq
-  mock.emit(output(row(8, "stop", "adapter", "paused on breakpoint"), row(9, "stdout", "program", "live line")))
+  mock.emit(
+    output(
+      row(8, "stop", "adapter", "paused on breakpoint"),
+      row(9, "stdout", "program", "live line"),
+      row(10, "system", "system", `debugpy session started · launch ${directory}/app.py`),
+    ),
+  )
   const rows = panel.locator("[data-console-row]")
   await expect(rows).toHaveText([
     /… 4 earlier rows dropped/,
@@ -190,6 +196,8 @@ test("debug console: backlog and live rows merge, filters, attribution, evaluate
     /debuggerdebugpy attached/,
     /paused on breakpointapp\.py:4/,
     /programlive line/,
+    // The debugger's own lines name files project-relative (UX #15)
+    /^debugpy session started · launch app\.py$/,
   ])
   await expect(panel.locator('[data-console-row="6"] [data-slot="console-chip"]')).toHaveCount(0)
 

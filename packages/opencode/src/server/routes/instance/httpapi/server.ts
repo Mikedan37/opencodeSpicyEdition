@@ -115,10 +115,14 @@ import { WorkbenchProblems } from "@/workbench/problems/store" // spicy: Workben
 import { workbenchDebugHandlers } from "./handlers/workbench-debug" // spicy: Workbench debug routes
 import { workbenchToolsHandlers } from "./handlers/workbench-tools" // spicy: tool creator routes
 import { WorkbenchTools } from "@/workbench/tools/tools" // spicy: tool creator service
+import { workbenchGitHandlers } from "./handlers/workbench-git" // spicy: git panel routes
+import { GitPanel } from "@/workbench/git/panel" // spicy: git panel service
 import { DebugToolNode } from "@/workbench/tool/debug" // spicy: Workbench debug and investigation routes
 import { reviewHandlers } from "./handlers/review" // spicy: review routes
 import { ReviewChanges } from "@/review/changes" // spicy: review service
 import { WorkbenchVerify } from "@/workbench/verify/verify" // spicy: Workbench services
+import { workbenchSearchHandlers } from "./handlers/workbench-search" // spicy: project search routes
+import { WorkbenchSearch } from "@/workbench/search" // spicy: project search service
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
 import { disposeMiddleware } from "./lifecycle"
@@ -185,7 +189,9 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     workbenchHandlers, // spicy: Workbench problems routes
     workbenchDebugHandlers, // spicy: Workbench debug routes
     workbenchToolsHandlers, // spicy: tool creator routes
+    workbenchGitHandlers, // spicy: git panel routes
     reviewHandlers, // spicy: review routes
+    workbenchSearchHandlers, // spicy: project search routes
   ]),
 )
 
@@ -290,8 +296,10 @@ const app = LayerNode.group([
   WorkbenchProblems.node, // spicy: Workbench services
   DebugToolNode, // spicy: Workbench debug and investigation routes
   WorkbenchTools.node, // spicy: tool creator service
+  GitPanel.node, // spicy: git panel service
   ReviewChanges.node, // spicy: review service
   WorkbenchVerify.node, // spicy: Workbench services
+  WorkbenchSearch.node, // spicy: project search service
 ])
 
 export function createRoutes(

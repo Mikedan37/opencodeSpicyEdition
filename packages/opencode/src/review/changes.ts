@@ -87,6 +87,14 @@ export interface Interface {
     agent: AgentHQ.AgentIdentity,
     envelopes: readonly AgentHQ.AgentEventEnvelope[],
   ) => Effect.Effect<void>
+  /**
+   * The IDE editor's rename (src/workbench/editor-lsp.ts): writes `edits` and records them as pending hunks of
+   * `owner`'s changeset, the way an agent's edits are. Undefined when the project keeps no snapshots.
+   */
+  readonly recordEdits: (
+    owner: Review.Owner,
+    edits: ReadonlyArray<{ readonly file: string; readonly content: string }>,
+  ) => Effect.Effect<Review.ChangeSet | undefined, ConflictError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ReviewChanges") {}
@@ -721,7 +729,35 @@ const layer = Layer.effect(
       ),
     )
 
-    return Service.of({ list, get, content, hunk, file, all, undo, observeAgent })
+    // ---------------------------------------------------------------- the editor's own edits
+
+    // Minimal on purpose: the baseline is a snapshot taken just before the writes, then the files are recorded like
+    // an agent turn's.
+    // ponytail: nothing holds the files between the snapshot and the writes; an agent writing one of them in that
+    // moment would have its edit counted in this changeset.
+    const recordEdits = Effect.fn("ReviewChanges.recordEdits")(function* (
+      owner: Review.Owner,
+      edits: ReadonlyArray<{ readonly file: string; readonly content: string }>,
+    ) {
+      const where = yield* here
+      const tree = yield* snapshot.track()
+      if (!tree) return undefined
+      yield* Effect.forEach(edits, (edit) => put(edit.file, new TextEncoder().encode(edit.content), edit.file), {
+        discard: true,
+      })
+      yield* record(
+        where,
+        owner,
+        undefined,
+        tree,
+        edits.map((edit) => edit.file),
+      )
+      const doc = yield* load(where)
+      const id = changesetID(owner)
+      return doc.changesets[id] ? yield* view(where, doc, id) : undefined
+    })
+
+    return Service.of({ list, get, content, hunk, file, all, undo, observeAgent, recordEdits })
   }),
 )
 
@@ -805,13 +841,16 @@ function present(
     additions: item?.additions ?? 0,
     deletions: item?.deletions ?? 0,
     hunks,
+    // A file decided both ways is partly kept (UX audit #9), not accepted.
     state: hunks.length
       ? accepted + rejected
         ? "partial"
         : "pending"
-      : rejected && !accepted
-        ? "rejected"
-        : "accepted",
+      : accepted && rejected
+        ? "partial"
+        : rejected
+          ? "rejected"
+          : "accepted",
     undoable,
     accepted,
     rejected,

@@ -3,7 +3,7 @@
 // "required" only where the CLI itself answers, and "unknown" otherwise.
 import { Global } from "@opencode-ai/core/global"
 import { AppProcess } from "@opencode-ai/core/process"
-import { existsSync, realpathSync, statSync } from "fs"
+import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "fs"
 import os from "os"
 import path from "path"
 import { which } from "@opencode-ai/core/util/which"
@@ -60,14 +60,6 @@ export const status = Effect.fn("AgentHQ.detect.status")(function* (
   // The first version-looking token: "2.1.296 (Claude Code)", "codex-cli 0.162.1", "2026.10.01-1a2b3c".
   const version = (yield* run(bin, ["--version"])).match(/\d+\.\d+[\w.+-]*/)?.[0]
   if (!version) return { ...base, available: false, reason: `${cli.binary} --version failed or timed out` }
-  // cursor-agent's headless -p mode runs every tool without approval; only an ACP mode would be usable.
-  if (id === "cursor" && !/^\s+acp\b/m.test(yield* run(bin, ["--help"])))
-    return {
-      ...base,
-      version,
-      available: false,
-      reason: "Cursor's CLI has no ACP mode; Agent HQ needs approvals routed to you",
-    }
   return { ...base, version, available: true }
 })
 
@@ -84,10 +76,16 @@ export const prober = Effect.fn("AgentHQ.detect.prober")(function* (
   return probe
 })
 
-// Codex through Zed's ACP bridge. `untrusted` makes Codex ask before anything but known-safe reads (every edit, every
-// other command); approved commands still run in its workspace-write sandbox; and every approval goes to the human
-// as `session/request_permission`, never to Codex's own reviewer. Set explicitly, whatever ~/.codex/config.toml says.
-export const CODEX_BRIDGE = "@zed-industries/codex-acp@0.16.0"
+// Codex through its maintained ACP bridge, in its `read-only` mode: Codex's sandbox is read-only, so every edit and every
+// command that writes has to escalate, and escalations go to the human (reviewer "user") as `session/request_permission`.
+// The bridge sends the mode's approval policy, reviewer and sandbox with every turn, whatever ~/.codex/config.toml says.
+// Agent HQ never calls session/set_mode. A mode id it does not know would make the bridge fall back to "agent" (Codex's
+// automatic reviewer), so the id is exact.
+export const CODEX_BRIDGE = "@agentclientprotocol/codex-acp@2.2.2"
+export const CODEX_MODE = { INITIAL_AGENT_MODE: "read-only" } as const
+// The archived Zed bridge, which takes the policy as `-c` overrides: `untrusted` asks before anything but known-safe
+// reads, approved commands run in the workspace-write sandbox, approvals go to the human.
+export const CODEX_LEGACY_BRIDGE = "@zed-industries/codex-acp@0.16.0"
 export const CODEX_POLICY = [
   "-c",
   'approval_policy="untrusted"',
@@ -96,22 +94,28 @@ export const CODEX_POLICY = [
   "-c",
   'approvals_reviewer="user"',
 ]
+// ponytail: the archived bridge stays one switch away until the maintained one has proven itself; drop it after.
+const CODEX_LEGACY = false
 
-/** What to spawn for Codex: `codex-acp` from PATH, else the pinned bridge through npx; undefined when neither runs. */
+/**
+ * What to spawn for Codex: `codex-acp` from PATH, else the pinned bridge through npx; undefined when neither runs. A
+ * `codex-acp` on PATH gets both forms of the policy (the Zed bridge reads `-c`, the maintained one its environment).
+ */
 export function codexLaunch(env: Env = { PATH: process.env.PATH }) {
   const PATH = env.PATH ?? ""
   const own = which("codex-acp", { PATH })
-  if (own) return { command: own, args: CODEX_POLICY }
+  if (own) return { command: own, args: CODEX_POLICY, env: CODEX_MODE }
   const npx = which("npx", { PATH })
-  if (npx) return { command: npx, args: ["-y", CODEX_BRIDGE, ...CODEX_POLICY] }
-  return undefined
+  if (!npx) return undefined
+  if (CODEX_LEGACY) return { command: npx, args: ["-y", CODEX_LEGACY_BRIDGE, ...CODEX_POLICY] }
+  return { command: npx, args: ["-y", CODEX_BRIDGE], env: CODEX_MODE }
 }
 
 const codexCapabilities: AgentHQ.ProviderCapabilities = {
   ...AcpProvider.capabilities,
   notes: [
-    `Runs Zed's ACP bridge (codex-acp from PATH, else npx ${CODEX_BRIDGE})`,
-    "Codex asks before every edit and every command but known-safe reads; approved commands run in its workspace-write sandbox",
+    `Runs the codex-acp bridge (codex-acp from PATH, else npx ${CODEX_BRIDGE}) in its read-only mode`,
+    "Codex works in a read-only sandbox: every edit and every command that writes asks you first, and nothing goes to Codex's automatic reviewer",
     ...(AcpProvider.capabilities.notes ?? []),
   ],
 }
@@ -143,7 +147,7 @@ export const codex = Effect.fn("AgentHQ.detect.codex")(function* (env?: Env) {
         ...found,
         available: false,
         auth: "ok" as const,
-        reason: "Codex needs Zed's codex-acp bridge: put codex-acp or npx on PATH",
+        reason: "Codex needs the codex-acp bridge: put codex-acp or npx on PATH",
       }
     return { ...found, auth: "ok" as const }
   }).pipe(Effect.provideService(AppProcess.Service, proc))
@@ -411,27 +415,103 @@ export const agentkit = Effect.fn("AgentHQ.detect.agentkit")(function* (env?: Ag
   })
 })
 
-/** Cursor through its ACP mode; refuses to start while detection says it is unavailable. */
-export const cursor = Effect.fn("AgentHQ.detect.cursor")(function* (env?: Env) {
+// Cursor through its ACP mode, `cursor-agent acp`. `acp` is a hidden subcommand: the top-level help never lists it,
+// and an older CLI answers `acp --help` with its top-level help. Never a bare `agent` from PATH: that name is anyone's.
+export interface CursorEnv extends Env {
+  /** Explicit cursor-agent binary; when set, nothing else is searched. */
+  readonly OPENCODE_CURSOR_AGENT?: string
+}
+
+/** The cursor-agent binary: OPENCODE_CURSOR_AGENT, else PATH. */
+export function cursorBinary(
+  env: CursorEnv = { PATH: process.env.PATH, OPENCODE_CURSOR_AGENT: process.env.OPENCODE_CURSOR_AGENT },
+) {
+  if (env.OPENCODE_CURSOR_AGENT) return existsSync(env.OPENCODE_CURSOR_AGENT) ? env.OPENCODE_CURSOR_AGENT : undefined
+  return which(CLIS.cursor.binary, { PATH: env.PATH ?? "" }) ?? undefined
+}
+
+/**
+ * Cursor's config folder for Agent HQ (CURSOR_CONFIG_DIR), with an empty allowlist: Cursor then asks through
+ * session/request_permission about every edit, delete, read, command and MCP call instead of running what the owner's
+ * own Cursor config allows. Allow always is remembered here, never in ~/.cursor. Cursor's login is not in it.
+ */
+export function cursorConfig() {
+  const dir = path.join(Global.Path.state, "agenthq", "cursor")
+  const file = path.join(dir, "cli-config.json")
+  if (!existsSync(file)) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(file, JSON.stringify({ version: 1, permissions: { allow: [], deny: [] } }, null, 2) + "\n")
+  }
+  return dir
+}
+
+const cursorCapabilities: AgentHQ.ProviderCapabilities = {
+  ...AcpProvider.capabilities,
+  notes: [
+    "Runs `cursor-agent acp` (OPENCODE_CURSOR_AGENT, else PATH) or the identity's launch command, never with --force, --yolo, --auto-review or --approve-mcps",
+    "Cursor gets a config folder of its own with an empty allowlist, so it asks before every edit, command and MCP call",
+    "Uses Cursor's own login; when Cursor is not logged in, run `cursor-agent login`",
+    ...(AcpProvider.capabilities.notes ?? []),
+  ],
+}
+
+/** Cursor; available when its `acp` subcommand exists. Probing runs only `--version` and `acp --help`. */
+export const cursor = Effect.fn("AgentHQ.detect.cursor")(function* (env?: CursorEnv) {
   const proc = yield* AppProcess.Service
-  const detected: Effect.Effect<AgentHQ.ProviderStatus> = status("cursor", {
-    env,
-    capabilities: AcpProvider.capabilities,
+  const base = { id: "cursor", name: "Cursor", auth: "unknown", capabilities: cursorCapabilities } as const
+  const run = (bin: string, args: string[]) =>
+    proc
+      .run(ChildProcess.make(bin, args, { stdin: "ignore", env: AgentProvider.agentEnv() }), { timeout: "5 seconds" })
+      .pipe(
+        Effect.map((result) => ({
+          code: result.exitCode,
+          text: result.stdout.toString("utf8") + result.stderr.toString("utf8"),
+        })),
+        Effect.orElseSucceed(() => ({ code: -1, text: "" })),
+      )
+  const detected: Effect.Effect<AgentHQ.ProviderStatus> = Effect.gen(function* () {
+    const bin = cursorBinary(env)
+    const explicit = env ? env.OPENCODE_CURSOR_AGENT : process.env.OPENCODE_CURSOR_AGENT
+    if (!bin)
+      return {
+        ...base,
+        available: false,
+        reason: explicit ? "OPENCODE_CURSOR_AGENT does not point to a file" : "cursor-agent not found on PATH",
+      }
+    const version = (yield* run(bin, ["--version"])).text.match(/\d+\.\d+[\w.+-]*/)?.[0]
+    if (!version) return { ...base, available: false, reason: "cursor-agent --version failed or timed out" }
+    const usage = yield* run(bin, ["acp", "--help"])
+    if (usage.code !== 0 || !/Agent Client Protocol|\bACP\b/.test(usage.text))
+      return {
+        ...base,
+        version,
+        available: false,
+        reason: `This cursor-agent (${version.split("-")[0]}) has no ACP mode; update the Cursor CLI`,
+      }
+    return { ...base, version, available: true }
   }).pipe(Effect.provideService(AppProcess.Service, proc))
   return yield* AcpProvider.make({
     id: "cursor",
     status: detected,
-    launch: () =>
+    authRequired: "Cursor is not logged in; run `cursor-agent login`",
+    launch: (agent) =>
       Effect.gen(function* () {
+        const config = { CURSOR_CONFIG_DIR: cursorConfig() }
+        if (agent.launch?.command)
+          return {
+            command: agent.launch.command,
+            args: agent.launch.args.length ? [...agent.launch.args] : ["acp"],
+            env: config,
+          }
         const current = yield* detected
-        const bin = binary("cursor", env)
+        const bin = cursorBinary(env)
         if (!current.available || !bin)
           return yield* new AgentProvider.UnsupportedError({
             provider: "cursor",
             action: "createSession",
             message: current.reason ?? "cursor-agent is unavailable",
           })
-        return { command: bin, args: ["acp"] }
+        return { command: bin, args: ["acp"], env: config }
       }),
   })
 })

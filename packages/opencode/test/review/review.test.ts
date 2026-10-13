@@ -141,8 +141,9 @@ describe("review", () => {
       )
       expect(rejected.status).toBe(200)
       expect(yield* read(dir, "a.txt")).toBe(TEN.replace("two", "TWO"))
+      // Decided both ways: partly kept, with the kept (accepted) and reverted (rejected) counts.
       expect(fileOf(rejected.body, "a.txt")).toMatchObject({
-        state: "accepted",
+        state: "partial",
         hunks: [],
         undoable: true,
         accepted: 1,

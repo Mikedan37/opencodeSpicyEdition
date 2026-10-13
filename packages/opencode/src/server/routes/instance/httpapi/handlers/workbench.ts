@@ -19,13 +19,26 @@ import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { LSP } from "@/lsp/lsp"
 import { WorkbenchEditorFile } from "@/workbench/editor-file"
+import { WorkbenchEditorLsp } from "@/workbench/editor-lsp"
+import { Format } from "@/format"
+import { ReviewChanges } from "@/review/changes"
 import { SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionAutoApprove } from "@/workbench/auto-approve"
 import { mapStorageNotFound } from "./session-errors"
 import { InstanceHttpApi } from "../api"
 import { ConflictError, ForbiddenError, InvalidRequestError, notFound } from "../errors"
-import { AutoApprove, CheckPayload, FileQuery, FileWritePayload, ProblemsQuery } from "../groups/workbench"
+import {
+  AutoApprove,
+  CheckPayload,
+  FileQuery,
+  FileWritePayload,
+  LspFormatPayload,
+  LspQuery,
+  LspRenamePayload,
+  LspSyncPayload,
+  ProblemsQuery,
+} from "../groups/workbench"
 
 export const workbenchHandlers = HttpApiBuilder.group(
   InstanceHttpApi,
@@ -41,6 +54,8 @@ export const workbenchHandlers = HttpApiBuilder.group(
       const lsp = yield* LSP.Service
       const events = yield* EventV2Bridge.Service
       const shares = yield* SessionShare.Service
+      const formatter = yield* Format.Service
+      const review = yield* ReviewChanges.Service
       const sessions = yield* Session.Service
 
       const refuse = (failure: WorkbenchEditorFile.Failure) => {
@@ -69,6 +84,81 @@ export const workbenchHandlers = HttpApiBuilder.group(
         // may still be starting.
         yield* lsp.touchFile(result.file).pipe(Effect.forkDetach)
         return { hash: result.hash }
+      })
+
+      // An existing project file, named as its language servers know it.
+      const projectFile = Effect.fn("WorkbenchHttpApi.lspFile")(function* (file: string) {
+        const instance = yield* InstanceState.context
+        const found = yield* Effect.promise(() => WorkbenchEditorFile.existing(instance, file))
+        if (WorkbenchEditorFile.isFailure(found)) return yield* refuse(found)
+        return { file: found, directory: instance.directory }
+      })
+      const at = Effect.fn("WorkbenchHttpApi.lspAt")(function* (query: {
+        path: string
+        line: number
+        character: number
+      }) {
+        const found = yield* projectFile(query.path)
+        return { at: { file: found.file, line: query.line, character: query.character }, directory: found.directory }
+      })
+      const lspSync = Effect.fn("WorkbenchHttpApi.lspSync")(function* (ctx: { payload: typeof LspSyncPayload.Type }) {
+        yield* WorkbenchEditorLsp.sync(lsp, (yield* projectFile(ctx.payload.path)).file, ctx.payload.text)
+        return true
+      })
+      const lspCompletion = Effect.fn("WorkbenchHttpApi.lspCompletion")(function* (ctx: {
+        query: typeof LspQuery.Type
+      }) {
+        return yield* WorkbenchEditorLsp.completion(lsp, (yield* at(ctx.query)).at)
+      })
+      // The rename is written to disk and becomes pending hunks of the session's review changeset: the person accepts
+      // or rejects it like an agent's edits. Then the language servers and the open views read the files again.
+      const lspRename = Effect.fn("WorkbenchHttpApi.lspRename")(function* (ctx: {
+        payload: typeof LspRenamePayload.Type
+      }) {
+        const place = yield* at(ctx.payload)
+        const result = yield* WorkbenchEditorLsp.rename(lsp, place.at, ctx.payload.newName, place.directory)
+        if ("error" in result) return yield* new InvalidRequestError({ message: result.error })
+        if (!result.files.length) return { files: [], edits: 0 }
+        const changeset = yield* review
+          .recordEdits({ kind: "opencode-session", id: ctx.payload.sessionID }, result.files)
+          .pipe(Effect.mapError((error) => new ConflictError({ message: error.message })))
+        if (!changeset)
+          return yield* new InvalidRequestError({
+            message: "This project keeps no snapshots, so a rename cannot be reviewed",
+          })
+        yield* Effect.forEach(
+          result.files,
+          (item) =>
+            WorkbenchEditorLsp.sync(lsp, item.file).pipe(
+              Effect.andThen(events.publish(Watcher.Event.Updated, { file: item.file, event: "change" })),
+            ),
+          { discard: true },
+        )
+        return { files: result.files.map((item) => item.file), edits: result.edits, changeset: changeset.id }
+      })
+      const lspFormat = Effect.fn("WorkbenchHttpApi.lspFormat")(function* (ctx: {
+        payload: typeof LspFormatPayload.Type
+      }) {
+        const found = yield* projectFile(ctx.payload.path)
+        return yield* WorkbenchEditorLsp.format(lsp, formatter, found.file, ctx.payload.text, {
+          tabSize: ctx.payload.tabSize ?? 2,
+          insertSpaces: ctx.payload.insertSpaces ?? true,
+        })
+      })
+      const lspHover = Effect.fn("WorkbenchHttpApi.lspHover")(function* (ctx: { query: typeof LspQuery.Type }) {
+        return yield* WorkbenchEditorLsp.hover(lsp, (yield* at(ctx.query)).at)
+      })
+      const lspDefinition = Effect.fn("WorkbenchHttpApi.lspDefinition")(function* (ctx: {
+        query: typeof LspQuery.Type
+      }) {
+        const place = yield* at(ctx.query)
+        return yield* WorkbenchEditorLsp.definition(lsp, place.at, place.directory)
+      })
+      const lspReferences = Effect.fn("WorkbenchHttpApi.lspReferences")(function* (ctx: {
+        query: typeof LspQuery.Type
+      }) {
+        const place = yield* at(ctx.query)
+        return yield* WorkbenchEditorLsp.references(lsp, place.at, place.directory)
       })
 
       const list = Effect.fn("WorkbenchHttpApi.problems")(function* (ctx: { query: typeof ProblemsQuery.Type }) {
@@ -164,6 +254,13 @@ export const workbenchHandlers = HttpApiBuilder.group(
         .handle("run", run)
         .handle("doctor", doctor)
         .handle("session", session)
+        .handle("lspHover", lspHover)
+        .handle("lspDefinition", lspDefinition)
+        .handle("lspReferences", lspReferences)
+        .handle("lspSync", lspSync)
+        .handle("lspCompletion", lspCompletion)
+        .handle("lspRename", lspRename)
+        .handle("lspFormat", lspFormat)
         .handle("file", file)
         .handle("writeFile", writeFile)
         .handle("autoApprove", autoApprove)

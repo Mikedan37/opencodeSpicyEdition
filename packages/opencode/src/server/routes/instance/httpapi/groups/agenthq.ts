@@ -159,6 +159,14 @@ export const AgentHQApi = HttpApi.make("agenthq").add(
         success: described(AgentHQ.TaskReview, "What approving would merge, as of the branch commit `head`"),
         error: [ApiNotFoundError],
       }).annotateMerge(doc("agenthq.tasks.review", "Dry run of approving a task")),
+      HttpApiEndpoint.get("reviewTaskDiff", `${root}/tasks/:taskID/review/diff`, {
+        params: taskParams,
+        query: Schema.Struct({ ...WorkspaceRoutingQueryFields, ...AgentOrchestrator.ReviewDiffInput.fields }),
+        success: described(AgentHQ.TaskReviewDiff, "The unified diff approving would merge"),
+        error: [ApiNotFoundError, InvalidRequestError, ConflictError],
+      }).annotateMerge(
+        doc("agenthq.tasks.reviewDiff", "Diff of a task's review: base...head for one file or all of them"),
+      ),
       HttpApiEndpoint.post("approveTask", `${root}/tasks/:taskID/approve`, {
         params: taskParams,
         query: WorkspaceRoutingQuery,

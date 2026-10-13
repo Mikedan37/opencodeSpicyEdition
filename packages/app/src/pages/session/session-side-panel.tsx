@@ -57,6 +57,7 @@ import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { SessionFileBrowserTab, type SessionFileBrowserState } from "@/pages/session/v2/session-file-browser-tab"
 import { DebugSideContent, DebugSideTrigger, useDebugSideTab } from "@/workbench/debug-side" // spicy: Debug tab
+import { SearchSideContent, SearchSideTrigger, useSearchSideTab } from "@/workbench/search-side" // spicy: Search tab
 
 type ReviewDiff = FileDiffInfo | SnapshotFileDiff | VcsFileDiff
 type RenderDiff = FileDiffInfo | (SnapshotFileDiff & { file: string }) | VcsFileDiff
@@ -190,6 +191,7 @@ export function SessionSidePanel(props: {
   const activeFileTab = tabState.activeFileTab
   // spicy: the Workbench Debug tab shows over the selected tab until another tab or file is opened
   const debugSide = useDebugSideTab(() => tabs().active())
+  const searchSide = useSearchSideTab(() => tabs().active()) // spicy: project search, like the Debug tab
 
   const fileTreeTab = () => layout.fileTree.tab()
 
@@ -548,9 +550,12 @@ export function SessionSidePanel(props: {
                       }}
                     >
                       <Tabs
-                        value={debugSide.value() ?? activeTab()}
-                        onChange={(value: string) => debugSide.select(value) || activateTab(value)}
+                        value={debugSide.value() ?? searchSide.value() ?? activeTab()}
+                        onChange={(value: string) =>
+                          debugSide.select(value) || searchSide.select(value) || activateTab(value)
+                        }
                         data-workbench-side={debugSide.value() ? "" : undefined}
+                        data-workbench-search={searchSide.value() ? "" : undefined}
                       >
                         <div class="session-review-v2-tabs-bar sticky top-0 shrink-0 flex items-center">
                           <Tabs.List
@@ -613,6 +618,7 @@ export function SessionSidePanel(props: {
                               </Tabs.Trigger>
                             </Show>
                             <DebugSideTrigger /> {/* spicy: Workbench Debug tab */}
+                            <SearchSideTrigger /> {/* spicy: Search tab */}
                             <For each={panelTabs()}>
                               {(tab) => (
                                 <Show
@@ -758,6 +764,7 @@ export function SessionSidePanel(props: {
                           </div>
                         </Show>
                         <DebugSideContent /> {/* spicy: Workbench Debug tab */}
+                        <SearchSideContent /> {/* spicy: Search tab */}
                       </Tabs>
                     </DndKitProvider>
                   </Show>

@@ -14,6 +14,10 @@ export const EDITOR_KEYS = {
   save: "workbench.editor.save",
 } as const
 
+export const SEARCH_KEYS = {
+  show: "workbench.search.show",
+} as const
+
 // Fork commands whose keys also fire while typing, like an IDE's run keys. context/command.tsx spreads this list into
 // EDITABLE_KEYBIND_IDS, so later fork keys are added here, not there.
 export const SPICY_EDITABLE_KEYBIND_IDS = [
@@ -25,4 +29,5 @@ export const SPICY_EDITABLE_KEYBIND_IDS = [
   DEBUG_KEYS.stop,
   DEBUG_KEYS.toggleBreakpoint,
   DEBUG_KEYS.show,
+  SEARCH_KEYS.show,
 ]

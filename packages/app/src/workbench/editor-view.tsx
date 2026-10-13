@@ -1,4 +1,19 @@
-import { createEffect, createSignal, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js"
+import {
+  createEffect,
+  createSignal,
+  For,
+  getOwner,
+  Match,
+  on,
+  onCleanup,
+  onMount,
+  runWithOwner,
+  Show,
+  Switch,
+  untrack,
+  type JSX,
+} from "solid-js"
+import { render } from "solid-js/web"
 import {
   Compartment,
   EditorSelection,
@@ -23,6 +38,7 @@ import {
   keymap,
   lineNumbers,
   showTooltip,
+  tooltips,
   WidgetType,
   type BlockInfo,
   type DecorationSet,
@@ -34,6 +50,7 @@ import { openSearchPanel, search, searchKeymap } from "@codemirror/search"
 import { forEachDiagnostic, lintKeymap, setDiagnostics } from "@codemirror/lint"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import type { FileSearchControl } from "@opencode-ai/session-ui/file"
+import { Markdown } from "@opencode-ai/session-ui/markdown"
 import { useTheme } from "@opencode-ai/ui/theme/context"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { getFilename } from "@opencode-ai/core/util/path"
@@ -44,8 +61,19 @@ import { showToast } from "@/utils/toast"
 import { errorText } from "./client"
 import { HIGHLIGHT, loadLanguage, THEME } from "./codemirror"
 import { useDebug } from "./debug-context"
-import { diagnosticsFor, glyphFor, lineSeparator, type BreakpointMark, type GlyphKind } from "./editor"
+import {
+  diagnosticsFor,
+  glyphFor,
+  lineSeparator,
+  offsetOf,
+  type BreakpointMark,
+  type CodePosition,
+  type GlyphKind,
+  type Spot,
+} from "./editor"
 import { useEditor } from "./editor-context"
+import { codeIntelligence, createSync, type CodeIntelligence } from "./editor-lsp"
+import { useFileLineOpener } from "./open-file"
 import { useWorkbench } from "./panel"
 
 // ---------------------------------------------------------------- debugger and comment decorations
@@ -256,7 +284,9 @@ function Editor(props: EditorViewProps) {
   const language = useLanguage()
   const theme = useTheme()
   const file = useFile()
-  const { tabs } = useSessionLayout()
+  const { tabs, params } = useSessionLayout()
+  const openLine = useFileLineOpener()
+  const owner = getOwner()
   const path = props.path
   const name = getFilename(path)
   const buffer = () => editor.store.state.files[path]
@@ -323,6 +353,56 @@ function Editor(props: EditorViewProps) {
     ]
   }
 
+  // Code intelligence. A jump remembers where it started (Back); another file opens in its tab, and its editor puts
+  // the cursor on the spot when it mounts (or at once when it already shows).
+  const [references, setReferences] = createSignal<{
+    items: readonly Workbench.LspLocation[]
+    from: CodePosition
+  }>()
+  const jump = (target: Spot) => {
+    if (target.path === path) return editor.store.reveal(path, target)
+    openLine(target.path, target.line + 1, false)
+    requestAnimationFrame(() => editor.store.reveal(target.path, target))
+  }
+  const go = (location: Workbench.LspLocation, from: CodePosition) => {
+    editor.store.remember({ path, ...from })
+    jump({ path: file.normalize(location.file), ...location.range.start })
+  }
+  // The editor's unsaved text reaches the language servers before each request, so answers match what it shows.
+  const sync = createSync((text) => workbench.client.lspSync(path, text))
+  const intelligence: CodeIntelligence = {
+    hover: (at) => sync.flush().then(() => workbench.client.lspHover(path, at)),
+    definition: (at) => sync.flush().then(() => workbench.client.lspDefinition(path, at)),
+    references: (at) => sync.flush().then(() => workbench.client.lspReferences(path, at)),
+    completion: (at) => sync.flush().then(() => workbench.client.lspCompletion(path, at)),
+    // A rename is written to disk and reviewed there, so no file may hold unsaved edits.
+    renameBlocked: () =>
+      !params.id
+        ? language.t("workbench.editor.lsp.renameNoSession")
+        : editor.store.anyDirty()
+          ? language.t("workbench.editor.lsp.renameUnsaved")
+          : undefined,
+    rename: (at, newName) => sync.flush().then(() => workbench.client.lspRename(path, at, newName, params.id!)),
+    renamed: () => showToast({ variant: "success", title: language.t("workbench.editor.lsp.renamed") }),
+    format: (text, options) => workbench.client.lspFormat(path, text, options),
+    open: go,
+    showReferences: (items, from) => setReferences({ items, from }),
+    dismiss: () => {
+      if (!references()) return false
+      setReferences(undefined)
+      return true
+    },
+    back: () => {
+      const spot = editor.store.back()
+      if (spot) jump(spot)
+      return !!spot
+    },
+    render: (dom, markdown) =>
+      runWithOwner(owner, () => render(() => <Markdown text={markdown} class="select-text text-[12px]" />, dom)) ??
+      (() => {}),
+    text: (key, values) => language.t(`workbench.editor.lsp.${key}`, values),
+  }
+
   const extensions = (separator: string): Extension => [
     EditorState.lineSeparator.of(separator),
     marksField,
@@ -358,11 +438,15 @@ function Editor(props: EditorViewProps) {
     darkCompartment.of(dark()),
     search({ top: true }),
     commentTooltip,
+    codeIntelligence(intelligence),
+    // Tooltips (hover, lint, comment) live in the page, so the side panel's edge does not cut them.
+    tooltips({ parent: document.body }),
     THEME,
     keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, ...lintKeymap, indentWithTab]),
     EditorView.contentAttributes.of({ "aria-label": language.t("workbench.editor.label", { file: name }) }),
     EditorView.updateListener.of((update) => {
       if (!update.docChanged) return
+      sync.edit(() => update.view.state.sliceDoc())
       const dirty = !update.state.doc.eq(base)
       // Editing a preview tab keeps it open, like any edited file.
       if (dirty && !editor.store.dirty(path)) void tabs().open(file.tab(path))
@@ -454,7 +538,23 @@ function Editor(props: EditorViewProps) {
     if (refocus === path) current.focus()
     refocus = undefined
     followDisk()
+    const show = (at: CodePosition) => {
+      const pos = offsetOf(current.state.doc, at)
+      current.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: "center" }) })
+      current.focus()
+    }
+    editor.store.showing.set(path, show)
+    const target = editor.store.targets.get(path)
+    editor.store.targets.delete(path)
+    // After this editor's own first scroll (a selected line).
+    if (target) queueMicrotask(() => alive && show(target))
+    // Unsaved text kept from an earlier view goes to the language servers too.
+    if (editor.store.dirty(path)) sync.edit(() => current.state.sliceDoc())
     onCleanup(() => {
+      if (editor.store.showing.get(path) === show) editor.store.showing.delete(path)
+      // A kept buffer still sends its last edit; a discarded one does not (the store re-syncs from disk).
+      if (editor.store.state.files[path]) void sync.flush()
+      if (!editor.store.state.files[path]) sync.stop()
       props.search?.register(null)
       if (debug.viewers.get(path) === cursorLine) debug.viewers.delete(path)
       if (editor.store.live.get(path)) editor.store.live.delete(path)
@@ -612,6 +712,52 @@ function Editor(props: EditorViewProps) {
         </div>
       </Show>
       <div ref={host} />
+      <Show when={references()}>
+        {(found) => (
+          <div
+            data-slot="editor-references"
+            class="sticky bottom-0 z-20 max-h-48 overflow-auto border-t border-v2-border-border-muted bg-v2-background-bg-base text-[12px] text-v2-text-text-base"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setReferences(undefined)
+            }}
+          >
+            <div class="flex items-center gap-2 px-3 py-1 text-v2-text-text-weak">
+              <span class="min-w-0 flex-1">
+                {language.t("workbench.editor.lsp.references", { count: String(found().items.length) })}
+              </span>
+              <ButtonV2
+                size="small"
+                variant="ghost"
+                data-action="close-references"
+                onClick={() => setReferences(undefined)}
+              >
+                {language.t("workbench.editor.lsp.references.close")}
+              </ButtonV2>
+            </div>
+            <For each={found().items}>
+              {(item) => {
+                const place = `${item.outside ? item.file : file.normalize(item.file)}:${item.range.start.line + 1}`
+                return (
+                  <Show
+                    when={!item.outside}
+                    fallback={<div class="truncate px-3 py-0.5 text-v2-text-text-weak">{place}</div>}
+                  >
+                    <button
+                      type="button"
+                      data-slot="editor-reference"
+                      class="flex w-full min-w-0 gap-3 px-3 py-0.5 text-left hover:bg-v2-overlay-simple-overlay-hover"
+                      onClick={() => go(item, found().from)}
+                    >
+                      <span class="shrink-0 font-mono">{place}</span>
+                      <span class="min-w-0 truncate font-mono text-v2-text-text-weak">{item.preview}</span>
+                    </button>
+                  </Show>
+                )
+              }}
+            </For>
+          </div>
+        )}
+      </Show>
     </div>
   )
 }

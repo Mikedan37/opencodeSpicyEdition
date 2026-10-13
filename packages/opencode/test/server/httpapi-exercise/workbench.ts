@@ -64,6 +64,61 @@ export const workbenchScenarios: Scenario[] = [
         }),
       "status",
     ),
+  // Code intelligence: language servers are off in the exercise's projects, so the answers are empty.
+  http.protected
+    .get("/workbench/lsp/hover", "workbench.lsp.hover")
+    .seeded(editable)
+    .at((ctx) => ({ path: "/workbench/lsp/hover?path=edit.txt&line=0&character=1", headers: ctx.headers() }))
+    .json(200, (body) => check(body === null, "no language server: no hover")),
+  http.protected
+    .get("/workbench/lsp/definition", "workbench.lsp.definition")
+    .seeded(editable)
+    .at((ctx) => ({ path: "/workbench/lsp/definition?path=edit.txt&line=0&character=1", headers: ctx.headers() }))
+    .json(200, (body) => {
+      array(body)
+      check(body.length === 0, "no language server: no definition")
+    }),
+  http.protected
+    .post("/workbench/lsp/sync", "workbench.lsp.sync")
+    .mutating()
+    .seeded(editable)
+    .at((ctx) => ({ path: "/workbench/lsp/sync", headers: ctx.headers(), body: { path: "edit.txt", text: "typed\n" } }))
+    .json(200, (body) => check(body === true, "the text is accepted")),
+  http.protected
+    .get("/workbench/lsp/completion", "workbench.lsp.completion")
+    .seeded(editable)
+    .at((ctx) => ({ path: "/workbench/lsp/completion?path=edit.txt&line=0&character=1", headers: ctx.headers() }))
+    .json(200, (body) => {
+      object(body)
+      check(Array.isArray(body.items) && body.items.length === 0, "no language server: no items")
+    }),
+  http.protected
+    .post("/workbench/lsp/rename", "workbench.lsp.rename")
+    .mutating()
+    .seeded(editable)
+    .at((ctx) => ({
+      path: "/workbench/lsp/rename",
+      headers: ctx.headers(),
+      body: { path: "edit.txt", line: 0, character: 1, newName: "renamed", sessionID: "ses_httpapi" },
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(Array.isArray(body.files) && body.files.length === 0 && body.edits === 0, "no language server: no rename")
+    }),
+  http.protected
+    .post("/workbench/lsp/format", "workbench.lsp.format")
+    .mutating()
+    .seeded(editable)
+    .at((ctx) => ({ path: "/workbench/lsp/format", headers: ctx.headers(), body: { path: "edit.txt", text: "hi\n" } }))
+    .json(200, (body) => {
+      object(body)
+      check(Object.keys(body).length === 0, "no language server and no formatter: nothing to format")
+    }),
+  http.protected
+    .get("/workbench/lsp/references", "workbench.lsp.references")
+    .seeded(editable)
+    .at((ctx) => ({ path: "/workbench/lsp/references?path=../outside.txt&line=0&character=1", headers: ctx.headers() }))
+    .status(403),
   http.protected
     .get("/workbench/sessions/{sessionID}/auto-approve", "workbench.autoApprove.get")
     .seeded((ctx) => ctx.session({ title: "Auto-approve owner" }))

@@ -107,6 +107,56 @@ export const ProblemsSnapshot = Schema.Struct({
 }).annotate({ identifier: "WorkbenchProblemsSnapshot" })
 export interface ProblemsSnapshot extends Schema.Schema.Type<typeof ProblemsSnapshot> {}
 
+// ---------------------------------------------------------------- code intelligence (the IDE editor)
+
+export const LspHover = Schema.Struct({
+  markdown: Schema.String, // the server's hover text as markdown (plain text arrives fenced)
+  range: optional(Range), // the word it describes
+}).annotate({ identifier: "WorkbenchLspHover" })
+export interface LspHover extends Schema.Schema.Type<typeof LspHover> {}
+
+export const LspLocation = Schema.Struct({
+  file: Schema.String, // absolute; under the project directory unless `outside`
+  range: Range,
+  outside: optional(Schema.Boolean), // outside the project directory: the editor cannot open it
+  preview: optional(Schema.String), // references: the line's text, trimmed (files inside the project)
+}).annotate({ identifier: "WorkbenchLspLocation" })
+export interface LspLocation extends Schema.Schema.Type<typeof LspLocation> {}
+
+export const LspCompletion = Schema.Struct({
+  label: Schema.String,
+  kind: optional(Schema.String), // a CodeMirror completion type: function, method, variable, class, keyword, ...
+  detail: optional(Schema.String),
+  documentation: optional(Schema.String), // markdown
+  insert: optional(Schema.String), // what to insert when it is not the label (snippets arrive flattened)
+  range: optional(Range), // what the insert replaces, when the server says
+}).annotate({ identifier: "WorkbenchLspCompletion" })
+export interface LspCompletion extends Schema.Schema.Type<typeof LspCompletion> {}
+
+export const LspCompletionList = Schema.Struct({
+  items: Schema.Array(LspCompletion),
+  incomplete: Schema.Boolean, // more items exist: ask again as the word grows
+}).annotate({ identifier: "WorkbenchLspCompletionList" })
+export interface LspCompletionList extends Schema.Schema.Type<typeof LspCompletionList> {}
+
+export const LspTextEdit = Schema.Struct({ range: Range, newText: Schema.String })
+export interface LspTextEdit extends Schema.Schema.Type<typeof LspTextEdit> {}
+
+// Formatting the editor's text: a language server's edits against the text sent, or opencode's formatter's whole
+// text; neither when nothing formats this file.
+export const LspFormat = Schema.Struct({
+  edits: optional(Schema.Array(LspTextEdit)),
+  text: optional(Schema.String),
+}).annotate({ identifier: "WorkbenchLspFormat" })
+export interface LspFormat extends Schema.Schema.Type<typeof LspFormat> {}
+
+export const LspRename = Schema.Struct({
+  files: Schema.Array(Schema.String), // absolute paths written
+  edits: NonNegativeInt,
+  changeset: optional(Schema.String), // the review changeset (Review.ChangeSetID) holding them as pending hunks
+}).annotate({ identifier: "WorkbenchLspRename" })
+export interface LspRename extends Schema.Schema.Type<typeof LspRename> {}
+
 // ---------------------------------------------------------------- verification
 
 // A timeout, a skip, a missing tool or a cancelled run is never a pass.
@@ -306,6 +356,12 @@ export const InvestigationStatus = Schema.Literals([
 ])
 export type InvestigationStatus = typeof InvestigationStatus.Type
 
+// The supervisor rule that stopped an investigation or handed it to the user: S1 repair attempts used up, S2 no
+// progress (same error after 2 patches), S3 repeated identical patch, S4 each fix adds errors, S5 debug step budget,
+// S6 duration limit, S7 permission denied, S8 debugger unstable.
+export const SupervisorRule = Schema.Literals(["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"])
+export type SupervisorRule = typeof SupervisorRule.Type
+
 export const EvidenceKind = Schema.Literals([
   "repro-run",
   "check-run",
@@ -357,7 +413,11 @@ export const InvestigationSummary = Schema.Struct({
   agentID: optional(Schema.String), // Agent HQ identity, when started by one
   attempts: NonNegativeInt,
   evidenceCount: NonNegativeInt,
-  reason: optional(Schema.String), // latest checkpoint reason, e.g. supervisor rule S2
+  // From the latest checkpoint with a reason: the sentence, the supervisor rule, and what it refers to.
+  reason: optional(Schema.String),
+  rule: optional(SupervisorRule),
+  runIDs: optional(Schema.Array(RunID)),
+  evidenceID: optional(EvidenceID),
   updatedAt: Schema.Finite,
 }).annotate({ identifier: "WorkbenchInvestigation" })
 export interface InvestigationSummary extends Schema.Schema.Type<typeof InvestigationSummary> {}
@@ -383,7 +443,9 @@ export const InvestigationAttempt = Schema.Struct({
 export const InvestigationCheckpoint = Schema.Struct({
   status: InvestigationStatus,
   at: Schema.Finite,
-  reason: optional(Schema.String),
+  reason: optional(Schema.String), // a sentence for people, without the rule or run ids
+  rule: optional(SupervisorRule), // set when a supervisor rule made the change
+  runIDs: optional(Schema.Array(RunID)), // the check runs the reason refers to
   evidenceID: optional(EvidenceID),
 })
 

@@ -1300,3 +1300,156 @@ test fail.
 Results: `bun test test/agenthq test/workbench/{security-bridge-token,mcp,mcp-debug}.test.ts test/workbench/tools
 test/server/{auth,httpapi-instance-route-auth}.test.ts` 80 pass, 4 skip, 0 fail; `bun run test:httpapi` coverage,
 auth and effect each 270 pass, 0 fail, 0 missing; `bun run typecheck` clean.
+
+# Cursor through its ACP mode (`cursor-agent acp`)
+
+Cursor's CLI does have ACP: `acp` is a hidden subcommand, absent from the top-level help. In the 2026.10.01 build,
+`cursor-agent acp --help` prints "Start the Cursor Agent as an ACP (Agent Client Protocol) server"; the installed
+2025.09.12 answers `acp --help` with its top-level help.
+
+- Detection (`AgentDetect.cursor`): `OPENCODE_CURSOR_AGENT` (a path, alone when set), else `cursor-agent` on PATH;
+  never a bare `agent` (on this Mac `~/.local/bin/agent` is the ProjectBlaze AgentKit CLI). Available when
+  `cursor-agent acp --help` exits 0 and mentions ACP; otherwise "This cursor-agent (2025.09.12) has no ACP mode; update
+  the Cursor CLI". Probing runs only `--version` and `acp --help`; it does not check the login.
+- Launch: `cursor-agent acp` and nothing else (never `--force`, `--yolo`, `--auto-review`, `--approve-mcps` or
+  `--trust`), through the ACP adapter with its credential stripping, Workbench token and process-group handling. An
+  identity's `launch` replaces the command. `CURSOR_CONFIG_DIR` points at Agent HQ's own folder
+  (`<state>/agenthq/cursor`, made with `permissions: { allow: [], deny: [] }`), so the owner's Cursor allowlist and
+  MCP config are not used and "Allow always" is remembered there, not in `~/.cursor`. The login is in the keychain, not
+  in that folder (`cursor-agent status` gives the same answer with either folder).
+- Approvals: Cursor's docs say tools that need approval go through `session/request_permission` (allow-once,
+  allow-always, reject-once). Its code (the ACP decision provider) asks for every write, delete, read, shell command
+  and MCP call in its default "allowlist" approval mode, except what the allowlist already allows (by default
+  `Shell(ls)`). Run Everything needs `--force`/`--yolo`, Auto-review needs `--auto-review`; Agent HQ passes neither, and
+  the folder above starts with an empty allowlist, so Cursor asks before everything.
+- Login: Agent HQ never calls ACP `authenticate`. Cursor's handler for `cursor_login` opens a browser login when there
+  is no login, and the server already checks the login the same way at startup, so after an auth_required answer
+  authenticate would always start that browser flow. Instead `session/new`'s auth_required becomes "Cursor is not
+  logged in; run `cursor-agent login`" (`AcpProvider.make({ authRequired })`).
+
+Tests (`test/agenthq/cursor.test.ts`): a bare `agent` is ignored; an old cursor-agent says to update; a new one is
+available; `OPENCODE_CURSOR_AGENT` finds a build outside PATH and, pointing nowhere, is not replaced by PATH; a session
+starts with exactly `acp` as arguments and `CURSOR_CONFIG_DIR` at the folder with the empty allowlist; a Cursor that
+answers auth_required fails the start with the login message and is never sent `authenticate`. AHQ-07 now checks the
+old CLI's reason and keeps the manager away from this machine's own Cursor.
+
+Free real check (`SPICY_REAL_CURSOR=status`, `OPENCODE_CURSOR_AGENT` = the unpacked 2026.10.01-e373342 build, no
+prompt): available; `session/new` answered auth_required after 14.4 s, reported as "Cursor is not logged in; run
+`cursor-agent login`". `cursor-agent status` from that build says "Not logged in" with the owner's default config and
+with Agent HQ's folder alike, so the owner's Cursor login is not there for this CLI; nothing logged in. The owner's
+`~/.cursor/cli-config.json` was not touched; Cursor made an empty `~/.cursor/projects/<temp dir>` folder for the test
+project, which was removed.
+
+Results: `bun test --timeout 120000 test/agenthq` 50 pass, 5 skip (the opt-in real checks), 0 fail; typecheck clean.
+
+# UX audit fixes
+
+## #12 An approval cut off mid-merge
+
+The audit aborted an approve after 1 s: the merge was on `main`, the task stayed in Review, its worktree was gone but
+still recorded and its branch was left. Merge, worktree removal and the status save were all interruptible.
+
+- `approve` records the reviewed head as `merging` on the task (an additive, optional `AgentHQ.Task` field), then
+  merges, removes the worktree and its branch, and saves `done`, all in one uninterruptible step: a client that goes
+  away no longer stops it halfway. A merge that fails is aborted and `merging` cleared.
+- `reconcile` finishes or undoes what a crash cut off, on the first call after a start (`ready`), and before `review`
+  and `approve`: with `merging` recorded, the task is done when that head is in the project, and back to plain review
+  otherwise; without it (an approval from before), a merge commit of the branch tip in the project counts. A branch
+  with no commits of its own never counts, so such a task keeps waiting for the human. Finishing removes the worktree
+  and deletes the branch, which `Worktree.remove` leaves when git no longer lists the worktree.
+- A second approve after the first one finished is refused ("Task is done"); one whose merge already landed but was
+  not yet marked is answered with the done task.
+
+Tests (`orchestrator.test.ts`): an approval interrupted while its merge runs (a slow `post-merge` hook) still ends done,
+merged (`HEAD^2` is the head), worktree and branch gone; after a crash at each point (merged with worktree and branch
+left; merged with the worktree removed; recorded but not merged; merged by an approval without the record) a new
+server lifetime finishes or undoes each, and a task whose branch has nothing of its own stays in review. Without the
+uninterruptible step the first test fails.
+
+## #3 Structured permission previews
+
+Approval cards printed `JSON.stringify(metadata).slice(0, 2000)`; temp paths ate the budget and diffs were cut off as
+escaped strings. `permission.requested` now also carries `preview` (`AgentHQ.PermissionPreview`, additive; `details`
+stays):
+
+- `{ kind: "edit", path, diff, truncated? }`: a unified diff, file headers relative to the project, capped at 32,000
+  characters (`truncated: true` when cut). Several files: their paths comma-separated and their diffs one after
+  another.
+- `{ kind: "command", command, cwd? }`.
+- `{ kind: "other", summary }`: one line, at most 500 characters.
+
+Built in `src/agenthq/preview.ts` and filled by every adapter:
+
+- opencode: `edit` asks (write, edit, apply_patch) bring the tool's own diff, whose absolute headers become
+  project-relative; `bash` asks show the tool call's full command line (the ask's patterns are only its parsed
+  commands) and the session's directory; anything else its title.
+- ACP (Codex, Cursor, AgentKit, custom agents): the request's `diff` content becomes the diff; an `execute` call shows
+  `rawInput.command` (an array is joined) and `rawInput.cwd`, else its title without backticks and the session's
+  directory; anything else its title and text.
+- Claude Code: Edit and MultiEdit are applied to the file as it is now to make the diff (the strings alone when the
+  file cannot be read or the text is not in it), Write diffs against the current file (empty when new), Bash shows
+  its command and the session's directory.
+
+Tests: opencode's bash ask previews the command and directory (AHQ-04) and a write previews `notes/plan.txt` with no
+temp path in the diff (AHQ-17); ACP previews "Delete everything", `npm test` in `<cwd>/pkg` from raw input, and an
+AgentKit-style proposal's diff of `src/fixed.txt` (AHQ-15, AHQ-16); Claude Code previews an Edit of a real file as
+`-one +two` with context, a new file whole, and a Bash command (`claude-code.test.ts`); `preview.test.ts` checks that
+only a leading root leaves the headers and that a long diff is cut and flagged.
+
+## #4 The merge gate diff
+
+`GET /agenthq/tasks/:taskID/review/diff?path=&head=` (`AgentOrchestrator.reviewDiff`, `AgentHQ.TaskReviewDiff`)
+returns the unified diff approving would merge, `git diff HEAD...<head>` in the project, for one file (`path`) or all
+of them. `head` is the review's `head` (the default is the branch tip); it must be a commit id (400 otherwise) and a
+commit of the task's branch (409 otherwise). The result is `{ taskID, head, base, path?, diff, truncated? }`, cut at
+1,000,000 characters with `truncated: true`. A task without a branch has nothing to merge: `{ taskID, diff: "" }`.
+It reads only; unlike the review it commits nothing.
+
+`opencode.json +1 −0` in a merge: opencode's config loader (`config.ts`, `loadConfig`) adds `"$schema"` to every config
+file it loads without one, and the agent's instance loads the project's `opencode.json` in the task's worktree; the
+review then commits that as the agent's change. The loader now writes nothing into worktrees opencode made
+(`<data>/worktree/…`, where Agent HQ's task worktrees live), so the diff holds only the agent's work. The edit is in an
+upstream file, marked `// spicy:`.
+
+Tests (`orchestrator.test.ts`): the diff of all files, of one, and of an earlier reviewed head; a commit of another
+branch is 409 and a non-commit 400; a task without a branch gives an empty diff; a project whose `opencode.json` has
+no `$schema` gets a task review listing only the agent's file, and the worktree's config is untouched (without the
+loader change the review lists `opencode.json`). The httpapi exercise covers the route.
+
+Results: `bun test --timeout 120000 test/agenthq test/config` 287 pass, 8 skip, 0 fail; schema tests 15 pass;
+`bun run test:httpapi` coverage, auth and effect each 271 pass, 0 fail, 0 missing; typecheck clean in
+`packages/opencode` and `packages/app`.
+
+# Codex on the maintained bridge, `@agentclientprotocol/codex-acp@2.2.2`, in read-only mode
+
+The Zed bridge pinned before (0.16.0) is archived, and Codex has retired the `untrusted` approval policy it was run
+with. Agent HQ now runs `npx -y @agentclientprotocol/codex-acp@2.2.2` with `INITIAL_AGENT_MODE=read-only` (through the
+new `Launch.env`). That mode is `on-request` with the human as reviewer and a read-only sandbox without network, and the
+bridge sends it with every turn, whatever `~/.codex/config.toml` says: every edit and every command that writes has to
+escalate, and escalations reach the human as `session/request_permission`. Agent HQ never calls `session/set_mode`. The
+id is exact because an unknown one makes the bridge fall back to `agent` (Codex's automatic reviewer). A `codex-acp` on
+PATH gets both the mode and the old `-c` policy, so either bridge is safe. The 0.16.0 path stays behind
+`CODEX_LEGACY` (false) for now.
+
+Free status check (`SPICY_REAL_CODEX=status`, the owner's codex 0.162.1 as `CODEX_PATH` with file-only credentials):
+codex-acp 2.2.2 initializes (`loadSession`, `resume`, MCP over HTTP), `session/new` needs no authenticate, the mode is
+`read-only`, and the config options offer models gpt-6.1-sol … gpt-5.6-luna and efforts low … ultra.
+
+The one real prompt (`SPICY_REAL_CODEX=1`, approved once by the owner; `CODEX_CONFIG` set the cheapest model and effort
+for it): in a temp git repo, "create hello.txt containing hi" on gpt-5.6-luna, effort low. Codex answered "I'll create
+`hello.txt` in the workspace with the text `hi`" and asked ("Edit files": allow once, allow for these files, reject);
+the test rejected it; the turn ended `cancelled` after 5.9 s; `hello.txt` does not exist and `git status` is empty.
+Tokens, as the bridge reported them (`usage` on the prompt result): 19,553 in total, 8,409 input, 11,008 cached input,
+136 output, 33 reasoning. 2.2.2 is safe in this mode, so it is the default.
+
+The logged exchange showed two things the ACP adapter now handles for every agent:
+
+- Codex sends the edit's diff in the call's `tool_call` update and then asks naming only the call and its locations.
+  The permission preview now falls back to that call's latest content (here `hello.txt`, `+hi`), and to its locations
+  when there is no diff.
+- A diff in a call's content was reported as `file.changed` at once, so a refused edit looked like a change. Now only a
+  call that completed reports its diffs, once per file.
+
+Tests: the launch test records `-y @agentclientprotocol/codex-acp@2.2.2` and `INITIAL_AGENT_MODE=read-only`; a
+`codex-acp` on PATH gets both the mode and the `-c` policy; AHQ-15 replays Codex's exchange with the fake agent
+(`codex-edit`): the preview shows the diff, and the refused edit reports no `file.changed`.

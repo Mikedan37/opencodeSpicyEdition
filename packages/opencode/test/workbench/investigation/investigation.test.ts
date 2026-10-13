@@ -33,6 +33,46 @@ const alive = (pid: number) => {
 
 describe("investigation service", () => {
   it.instance(
+    "UX #15 a record stored with the old reason format is listed and read with rule, sentence and runs apart",
+    () =>
+      Effect.gen(function* () {
+        const investigations = yield* WorkbenchInvestigation.Service
+        const storage = yield* Storage.Service
+        const test = yield* TestInstance
+        const created = yield* investigations.open({ sessionID: "ses_legacy", title: "legacy reasons" })
+        const stored = {
+          ...(yield* storage.read<Record<string, unknown>>([
+            "workbench",
+            "investigation",
+            created.projectID,
+            created.id,
+          ])),
+          status: "blocked",
+          checkpoints: [
+            { status: "created", at: 1 },
+            { status: "blocked", at: 2, reason: "S1: repair attempts used up (checks run_1, run_2, run_3)" },
+          ],
+        }
+        yield* storage.write(["workbench", "investigation", created.projectID, created.id], stored)
+        expect(test.directory).toBe(created.directory)
+
+        const full = yield* investigations.full(created.id)
+        expect(full.investigation.checkpoints.at(-1)).toEqual({
+          status: "blocked",
+          at: 2,
+          rule: "S1",
+          reason: "repair attempts used up",
+          runIDs: ["run_1", "run_2", "run_3"].map((id) => Workbench.RunID.make(id)),
+        })
+        expect(full.report).toContain("Status: blocked (S1: repair attempts used up (checks run_1, run_2, run_3))")
+        expect(yield* investigations.list()).toEqual([
+          expect.objectContaining({ id: created.id, rule: "S1", reason: "repair attempts used up" }),
+        ])
+      }),
+    { git: true },
+  )
+
+  it.instance(
     "INV-02 concurrent updates to one record lose nothing",
     () =>
       Effect.gen(function* () {

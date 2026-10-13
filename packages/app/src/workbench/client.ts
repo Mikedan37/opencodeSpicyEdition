@@ -5,8 +5,10 @@ import { Option, Schema } from "effect"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Review } from "@opencode-ai/schema/review"
 import { Workbench } from "@opencode-ai/schema/workbench"
+import { WorkbenchGit } from "@opencode-ai/schema/workbench-git"
 import type { ServerConnection } from "@/context/server"
 import { authTokenFromCredentials } from "@/utils/server"
+import type { SearchQuery } from "./search"
 
 export class WorkbenchRequestError extends Error {
   // "unavailable": 404 or a non-JSON reply, i.e. this server has no fork routes yet.
@@ -79,6 +81,21 @@ const FileWritten = Schema.Struct({ hash: Schema.String })
 // The main chat's per-session switch (groups/workbench.ts `AutoApprove`): edits and bash run without asking there.
 const AutoApprove = Schema.Struct({ enabled: Schema.Boolean })
 
+// Project search (groups/workbench-search.ts `SearchResult`): matching lines by file, each file with the hash of its
+// bytes when searched (absent when the editor does not open it); `listed` of `total` matches were sent.
+const SearchResult = Schema.Struct({
+  files: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      hash: Schema.optional(Schema.String),
+      lines: Schema.Array(Schema.Struct({ line: Schema.Int, text: Schema.String })),
+    }),
+  ),
+  listed: Schema.Int,
+  total: Schema.Int,
+})
+export type SearchResult = typeof SearchResult.Type
+
 // Agent HQ orchestration (groups/agenthq.ts; docs/spicy/notes-agenthq.md "Routes (wave 2)"). `description: null`
 // clears it on edit.
 export type TaskDraft = {
@@ -125,6 +142,19 @@ const decoders = {
   tool: Schema.decodeUnknownOption(Workbench.CustomTool),
   toolResult: Schema.decodeUnknownOption(Workbench.CustomToolResult),
   fileWritten: Schema.decodeUnknownOption(FileWritten),
+  lspHover: Schema.decodeUnknownOption(Schema.NullOr(Workbench.LspHover)),
+  lspLocations: Schema.decodeUnknownOption(Schema.Array(Workbench.LspLocation)),
+  searchResult: Schema.decodeUnknownOption(SearchResult),
+  gitStatus: Schema.decodeUnknownOption(WorkbenchGit.Status),
+  gitBranches: Schema.decodeUnknownOption(WorkbenchGit.Branches),
+  gitCommit: Schema.decodeUnknownOption(WorkbenchGit.Commit),
+  gitPush: Schema.decodeUnknownOption(WorkbenchGit.Push),
+  gitPullRequest: Schema.decodeUnknownOption(WorkbenchGit.PullRequest),
+  gitMessage: Schema.decodeUnknownOption(WorkbenchGit.Message),
+  lspCompletion: Schema.decodeUnknownOption(Workbench.LspCompletionList),
+  lspRename: Schema.decodeUnknownOption(Workbench.LspRename),
+  lspFormat: Schema.decodeUnknownOption(Workbench.LspFormat),
+  accepted: Schema.decodeUnknownOption(Schema.Boolean),
   autoApprove: Schema.decodeUnknownOption(AutoApprove),
 }
 
@@ -180,6 +210,9 @@ export function createWorkbenchClient(input: {
   const session = (id: string) => `/agenthq/sessions/${encodeURIComponent(id)}`
   const changeset = (id: string) => `/review/changesets/${encodeURIComponent(id)}`
   const tool = (name: string) => `/workbench/tools/${encodeURIComponent(name)}`
+  // Code intelligence (groups/workbench.ts `workbench.lsp.*`): a 0-based line and UTF-16 column in a project file.
+  const lsp = (route: string, path: string, at: { line: number; character: number }) =>
+    `/workbench/lsp/${route}?${new URLSearchParams({ path, line: String(at.line), character: String(at.character) })}`
   const autoApprove = (sessionID: string) => `/workbench/sessions/${encodeURIComponent(sessionID)}/auto-approve`
 
   return {
@@ -202,6 +235,22 @@ export function createWorkbenchClient(input: {
     readFile: (path: string) => decoded(decoders.fileText, "GET", `/workbench/file?path=${encodeURIComponent(path)}`),
     writeFile: (body: { path: string; content: string; baseHash: string | null }) =>
       decoded(decoders.fileWritten, "PUT", "/workbench/file", body),
+    // Empty answers (null, []) when the file has no language server or it knows nothing there.
+    lspHover: (path: string, at: { line: number; character: number }) =>
+      decoded(decoders.lspHover, "GET", lsp("hover", path, at)),
+    lspDefinition: (path: string, at: { line: number; character: number }) =>
+      decoded(decoders.lspLocations, "GET", lsp("definition", path, at)),
+    lspReferences: (path: string, at: { line: number; character: number }) =>
+      decoded(decoders.lspLocations, "GET", lsp("references", path, at)),
+    // The editor's unsaved text for the file's language servers; without text they read the file on disk again.
+    lspSync: (path: string, text?: string) => decoded(decoders.accepted, "POST", "/workbench/lsp/sync", { path, text }),
+    lspCompletion: (path: string, at: { line: number; character: number }) =>
+      decoded(decoders.lspCompletion, "GET", lsp("completion", path, at)),
+    // Writes the rename and records it as the session's review changeset; 400 with the reason when refused.
+    lspRename: (path: string, at: { line: number; character: number }, newName: string, sessionID: string) =>
+      decoded(decoders.lspRename, "POST", "/workbench/lsp/rename", { path, ...at, newName, sessionID }),
+    lspFormat: (path: string, text: string, options: { tabSize: number; insertSpaces: boolean }) =>
+      decoded(decoders.lspFormat, "POST", "/workbench/lsp/format", { path, text, ...options }),
     // Tool creator (groups/workbench-tools.ts). Approve and enable send the hash of the reviewed source: 409 when the
     // file changed since. The test run is the user's own call and does not ask.
     tools: () => decoded(decoders.tools, "GET", "/workbench/tools"),
@@ -287,6 +336,36 @@ export function createWorkbenchClient(input: {
     investigation: (id: string) => decoded(decoders.investigation, "GET", investigation(id)),
     resumeInvestigation: (id: string) => decoded(decoders.investigationSummary, "POST", `${investigation(id)}/resume`),
     cancelInvestigation: (id: string) => decoded(decoders.investigationSummary, "POST", `${investigation(id)}/cancel`),
+    // A 400 carries ripgrep's message for a pattern or glob it refuses.
+    search: (query: SearchQuery) =>
+      decoded(
+        decoders.searchResult,
+        "GET",
+        `/workbench/search?${new URLSearchParams({
+          query: query.pattern,
+          ...(query.regex ? { regex: "true" } : {}),
+          ...(query.caseSensitive ? { case: "true" } : {}),
+          ...(query.word ? { word: "true" } : {}),
+          ...(query.include.trim() ? { include: query.include } : {}),
+          ...(query.exclude.trim() ? { exclude: query.exclude } : {}),
+        })}`,
+      ),
+    // Git panel (groups/workbench-git.ts). A refusal is a 409 (400 for bad input) whose message says why, as git or gh
+    // worded it. Push never forces; without an upstream it needs setUpstream, the user's explicit choice.
+    gitStatus: () => decoded(decoders.gitStatus, "GET", "/workbench/git/status"),
+    gitStage: (paths: string[]) => decoded(decoders.gitStatus, "POST", "/workbench/git/stage", { paths }),
+    gitUnstage: (paths: string[]) => decoded(decoders.gitStatus, "POST", "/workbench/git/unstage", { paths }),
+    gitCommit: (message: string) => decoded(decoders.gitCommit, "POST", "/workbench/git/commit", { message }),
+    gitPush: (input: { setUpstream?: boolean; remote?: string } = {}) =>
+      decoded(decoders.gitPush, "POST", "/workbench/git/push", input),
+    gitBranches: () => decoded(decoders.gitBranches, "GET", "/workbench/git/branches"),
+    gitCreateBranch: (name: string, switchTo: boolean) =>
+      decoded(decoders.gitBranches, "POST", "/workbench/git/branches", { name, switch: switchTo }),
+    gitSwitch: (name: string) => decoded(decoders.gitBranches, "POST", "/workbench/git/switch", { name }),
+    gitPullRequest: (input: { title?: string; body?: string } = {}) =>
+      decoded(decoders.gitPullRequest, "POST", "/workbench/git/pr", input),
+    // Only with the config's small_model (status.generate says whether it is set).
+    gitMessage: () => decoded(decoders.gitMessage, "POST", "/workbench/git/message"),
   }
 }
 

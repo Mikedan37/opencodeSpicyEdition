@@ -31,6 +31,8 @@ export const Hunk = Schema.Struct({
 })
 export interface Hunk extends Schema.Schema.Type<typeof Hunk> {}
 
+// pending: hunks left, none decided. partial: some hunks decided and some left, or all decided with both outcomes
+// (File.accepted kept, File.rejected reverted). accepted / rejected: all decided one way.
 export const FileState = Schema.Literals(["pending", "partial", "accepted", "rejected"])
 export type FileState = typeof FileState.Type
 

@@ -455,3 +455,158 @@ Wave 4 results:
   23ab5a476, ours) were deleted after `git worktree prune`; the stray `packages/opencode/config.json` was removed. No
   rust-analyzer or fake server processes left running.
 - `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 35 before the runs, 35 after.
+
+## Code intelligence in the IDE editor, phase 1 (hover, definition, references, Back)
+
+Branch fast-forwarded to `spicy-ide` e38ce9f1e; the cache-only install changed nothing.
+
+Routes (`groups/workbench.ts`, `handlers/workbench.ts`, `src/workbench/editor-lsp.ts`), query `path` (inside the project,
+absolute or relative), `line`, `character` (0-based, UTF-16 columns as in LSP and CodeMirror):
+
+| Route | Answer |
+|---|---|
+| `GET /workbench/lsp/hover` | `Workbench.LspHover \| null`: `{ markdown, range? }` |
+| `GET /workbench/lsp/definition` | `Workbench.LspLocation[]` |
+| `GET /workbench/lsp/references` | `Workbench.LspLocation[]`, declaration included, sorted by file and line, with `preview` |
+
+```ts
+LspHover = { markdown: string; range?: Range } // MarkupContent, MarkedString or a list; plain text arrives fenced
+LspLocation = { file: string; range: Range; outside?: boolean; preview?: string }
+```
+
+- Paths are confined like the editor's file route (symlinks resolved): outside → 403, missing → 404. No server for
+  the file, a server that fails or knows nothing, or `"lsp"` off: `null` / `[]`, never an error.
+- `LSP.Service.forFile(file, fn)` (the one upstream interface addition) runs a request against the file's servers,
+  starting them if needed. The fork opens a file once per running server (a WeakMap per client), so hovering never
+  re-reads or re-syncs it; saves and agent edits re-sync through the existing touch. A server that answers with the
+  real path of a symlinked project folder is mapped back to the project's name for it; anything else outside the
+  project directory comes back `outside: true` (the app's tabs cannot open it).
+- The client now advertises `hover.contentFormat: ["markdown", "plaintext"]`, so clangd answers markdown.
+
+Editor (`packages/app/src/workbench`):
+
+- `editor-lsp.ts` (new): the CodeMirror extension. Hover (350 ms) renders the server's markdown with session-ui's
+  `Markdown` (sanitized, highlighted code) and re-measures when it grows; F12 or Mod-click (Cmd on macOS, Ctrl
+  elsewhere) goes to the definition; Shift-F12 lists references; Ctrl+- goes back; Escape closes the list. No answer,
+  a failed request, or a definition outside the project is a quiet note at the cursor ("No definition found",
+  "Defined outside the project: <file>:<line>"), cleared by the next edit or cursor move; never a toast.
+- `editor.ts`: `positionOf` / `offsetOf` (LSP position ⇄ offset, clamped); the store keeps jump targets per file
+  (taken by the file's editor when it mounts, or at once while it shows) and the Back trail (50 places).
+- `editor-view.tsx`: wires the extension to `client.ts`; a jump records where it started, opens the target with the
+  panel's file opener and puts the cursor on the spot; the references list is a small sticky panel under the editor
+  (outside-project rows are plain text). Editor tooltips now live in `document.body`, so the side panel's edge no
+  longer cuts them (hover, lint and the comment button).
+- `client.ts` (+`lspHover`, `lspDefinition`, `lspReferences`) and `en.ts` (+5 strings) are add-only.
+
+Tests:
+
+| Case | Where |
+|---|---|
+| fake server (`test/fixture/workbench/lsp-nav.js`): hover markdown + range, cross-file definition, sorted references with previews, outside definition, empty answers, file opened once (one didOpen, no didChange) | `test/workbench/editor-lsp.test.ts` |
+| 403 outside, 404 missing, a file without a server → `null` / `[]` | same |
+| real clangd: hover has `int add(int a, int b)`, definition and references of a C function | same (skips without clangd) |
+| hover shapes → markdown; symlinked real path → project name; malformed URI dropped | same |
+| CodeMirror: definition opens / outside / none / failure notes, references list / none, F12, Shift-F12, Ctrl+-, Escape bindings, hover tooltip over the range, positions, targets and the Back trail | `packages/app/src/workbench/editor-lsp.test.ts` |
+| e2e, real server + real clangd: hover shows the signature, Ctrl-click opens `util.h` on the definition, Ctrl+- returns, Shift+F12 lists both references and a click moves there, Escape closes | `packages/app/e2e/regression/editor-code-intelligence.spec.ts` |
+
+Limits: until phase 2 syncs the buffer, positions in a file with unsaved edits are answered against the saved text.
+Without a compilation database clangd only finds references in the open translation unit. On the Windows desktop
+build Ctrl+- is the menu's Zoom Out accelerator, which takes the key first.
+
+Phase 1 results: `packages/opencode` full `bun test --timeout 30000` 3892 pass, 28 skip, 1 todo, 0 fail (301 files);
+`test:httpapi` 273/273 in coverage, auth and effect modes (leftover `opencode/eager-island` and
+`opencode/stellar-circuit`, tips e38ce9f1e, deleted after `git worktree prune`; stray `config.json` removed);
+`packages/app` unit 819 pass, 0 fail (116 files); typecheck clean in opencode, schema and app; the e2e spec passes
+(Playwright 1.59.1 with the cached Chromium 1228 through a `PLAYWRIGHT_BROWSERS_PATH` shim, nothing downloaded).
+DiagnosticReports: the first five runs of the e2e spec each left a clangd crash report (23:12-23:15): stopping the
+server with SIGTERM orphaned clangd, which aborts in `raw_fd_ostream::~raw_fd_ostream` on exit with its pipes gone.
+The spec now calls `POST /global/dispose` first, so clangd gets shutdown + exit; runs since add no report. The same
+orphaning is a product issue for any `opencode serve` stopped by a signal while clangd runs (not changed here).
+
+## Code intelligence in the IDE editor, phase 2 (sync, completion, rename, format) and clean LSP shutdown
+
+Branch fast-forwarded to `spicy-ide` 6e279bb4c (phase 1 merged, plus the coordinator's TS2774 fix in the test).
+
+Dependency: `@codemirror/autocomplete` 6.20.3 is a direct dependency of `packages/app` (approved). It was already in
+`bun.lock` for the language packages; the lockfile gained only the workspace entry (`bun install --offline`
+re-resolves everything and needs the uncached `ghostty-web`, so the one line was added by hand and
+`bun install --frozen-lockfile --offline --ignore-scripts` accepted it and linked the package).
+
+Routes (`groups/workbench.ts`, `handlers/workbench.ts`, `src/workbench/editor-lsp.ts`):
+
+| Route | Answer |
+|---|---|
+| `POST /workbench/lsp/sync` `{ path, text? }` | `true`; the file's servers get the editor's text (one full didChange, versioned by the client), or without text the file on disk again |
+| `GET /workbench/lsp/completion` (path, line, character) | `Workbench.LspCompletionList` |
+| `POST /workbench/lsp/rename` `{ path, line, character, newName, sessionID }` | `Workbench.LspRename`; 400 with the reason when refused |
+| `POST /workbench/lsp/format` `{ path, text, tabSize?, insertSpaces? }` | `Workbench.LspFormat`; nothing is written |
+
+```ts
+LspCompletion = { label: string; kind?: string; detail?: string; documentation?: string; insert?: string; range?: Range }
+LspCompletionList = { items: LspCompletion[]; incomplete: boolean } // at most 1000 items
+LspTextEdit = { range: Range; newText: string }
+LspFormat = { edits?: LspTextEdit[]; text?: string } // server edits against the text sent, or the formatter's text
+LspRename = { files: string[]; edits: number; changeset?: string } // changeset: the review changeset id
+```
+
+- Completion is plain text: the client advertises `snippetSupport: false`, and snippets that arrive anyway are
+  flattened (placeholders keep their text, tab stops go). `kind` is a CodeMirror completion type (function, method,
+  variable, class, …); labels are trimmed (clangd pads them where it would add an include).
+- Rename: the server's WorkspaceEdit (`changes` or `documentChanges`) is applied to each file's text on disk; edits to
+  files outside the project, or creating, renaming or deleting files, refuse it. The files are written and recorded by
+  `ReviewChanges.recordEdits(owner, edits)`, a minimal new method in `src/review/changes.ts`: a snapshot taken just
+  before the writes is the baseline, then the files are recorded like an agent turn's, in the changeset of the
+  session the editor belongs to (`{ kind: "opencode-session", id: sessionID }`, so `chg_<sessionID>`). A project
+  without snapshots refuses the rename instead of writing unreviewed edits. Afterwards the servers re-read the files
+  and a file-changed event goes out for each. Known corner (marked `ponytail:`): nothing holds the files between the
+  snapshot and the writes.
+- Format: the servers' `textDocument/formatting` edits for the text sent; when no server formats the file, opencode's
+  formatter (`formatter` config, `Format.Service.file`) runs on a hidden copy beside the file (`.<name>.<random><ext>`,
+  so it finds the project's formatter settings), which is read back and removed.
+- `LSPClient.shutdown()` now ends the LSP way: `shutdown` (answer within 1 s), `exit`, up to 1 s for the process to
+  end, then the old kill. `opencode serve` stops its server on SIGTERM or SIGINT (closing the listener disposes its
+  instances, so every language server gets shutdown and exit), then the same signal ends the process (bounded at 8 s;
+  a second signal ends it at once). Note: the serve command's own `InstanceStore` is not the server's; the
+  listener's scope owns the instances, which is why the signal stops the server rather than disposing a store.
+
+Editor (`packages/app/src/workbench`; files touched: `editor-lsp.ts`, `editor.ts`, `editor-view.tsx`, add-only
+`client.ts` and `en.ts`, the app's `package.json`):
+
+- The buffer reaches the servers 300 ms after the last edit and at once before every request (`createSync`: one send
+  at a time, in order). A dirty buffer restored from an earlier view is sent on mount. Saving re-syncs from disk as
+  before (the file route touches the file); discarding unsaved edits re-syncs from disk (`store.discard`); a reload
+  from disk is an edit of the buffer and goes out like one. Diagnostics follow the buffer: an unsaved error reaches
+  Problems and goes when the text on disk comes back (tested with clangd).
+- Completion: `@codemirror/autocomplete` with the servers as the only source, asked 150 ms after typing stops; an
+  answer that arrives after more typing is dropped; while the server says the list is complete it is narrowed locally.
+  A server range replaces from its start.
+- F2: a box over the word asks for the new name; Enter renames, Escape or leaving it cancels. It refuses while any
+  open file has unsaved edits (the rename is written to disk) or without a session. A finished rename is a success
+  toast, not a note: the files changed on disk, so the file tab switches to the review gate with the rename's hunks
+  (Accept / Reject). Refused or nothing to rename: a note.
+- Shift+Alt+F: the edits, or the formatter's text as one change over the part that differs, applied as one undoable
+  step; if the text changed while the server formatted, nothing is applied (a note). Tab size and spaces are guessed
+  from the text (`ponytail:`).
+- Notes now outlive the editor's own changes and go with the person's next edit or cursor move.
+
+Tests:
+
+| Case | Where |
+|---|---|
+| fake server: sync makes completion answer against unsaved text, sync without text goes back to disk; snippet flattened, kind mapped | `test/workbench/editor-lsp.test.ts` |
+| fake server: rename writes both files and the session's changeset lists them pending; outside file → 400; nothing → no change | same |
+| format: server edits; `formatter` fallback on a copy (gone afterwards, file untouched); nothing formats → `{}` | same |
+| real clangd: completion of unsaved text, unsaved diagnostics reach Problems and leave with the disk text, rename (2 edits) into the review changeset, clang-format edits | same |
+| `opencode serve` + SIGTERM: the fake server logs `shutdown` then `exit`; with clangd the child is gone and no new `clangd-*.ips` appears | `test/cli/serve/serve-signal.test.ts` |
+| CodeMirror: sync debounce / flush order / dropped edit, completion options and server ranges, F2 box (Enter, refused, Escape, blocked), format (edits, whole text, none, stale), indent guess | `packages/app/src/workbench/editor-lsp.test.ts` |
+| e2e, real server + clangd: Shift+Alt+F formats, F2 with unsaved edits is refused, completion inserts `add`, F2 renames to `sum`, the changeset lists main.c pending, the tab shows 2 hunks, Accept file brings the editor back with `sum` | `packages/app/e2e/regression/editor-code-intelligence.spec.ts` (the spec no longer calls `/global/dispose` before stopping the server) |
+
+Phase 2 results: `packages/opencode` full `bun test --timeout 30000` 3901 pass, 28 skip, 1 todo, 0 fail (302 files);
+`packages/schema` 15 pass; `packages/app` unit 824 pass, 0 fail (116 files); `bun run typecheck` clean in opencode,
+schema and app (the app's `tsgo -b`, tests included); `test:httpapi` 277/277 in coverage, auth and effect modes (my
+leftover branches `opencode/neon-lagoon` and `opencode/neon-squid`, tips 7c103b0ae, deleted after
+`git worktree prune`; `opencode/mighty-moon` and `opencode/stellar-otter` belong to `spicy-validate` and were left;
+stray `config.json` removed); both e2e tests pass. DiagnosticReports: one more clangd crash report
+(`clangd-2026-10-12-233616.ips`) came from the serve signal test's first run, before the server was stopped on the
+signal (the serve command's own instance store was empty, so nothing shut clangd down); none since, across the
+signal tests, the clangd route tests, the e2e runs and the full suites.

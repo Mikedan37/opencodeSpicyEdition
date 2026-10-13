@@ -12,6 +12,8 @@ export const EDITOR_MAX_CHARS = 500_000
 export type EditorFileClient = {
   readFile: (path: string) => Promise<{ content: string; hash: string }>
   writeFile: (input: { path: string; content: string; baseHash: string | null }) => Promise<{ hash: string }>
+  // The language servers read the file on disk again (after unsaved text was discarded).
+  lspSync?: (path: string) => Promise<unknown>
 }
 
 export type EditorBuffer = {
@@ -27,12 +29,22 @@ export type EditorBuffer = {
 
 export type SaveResult = "saved" | "conflict" | "busy"
 
+// A place in a file as LSP names it: 0-based line, UTF-16 column (CodeMirror counts columns the same way).
+export type CodePosition = { line: number; character: number }
+export type Spot = CodePosition & { path: string }
+const TRAIL_MAX = 50
+
 export function createEditorStore(client: EditorFileClient) {
   const [state, setState] = createStore({ files: {} as Record<string, EditorBuffer> })
   // The CodeMirror state a view leaves behind (text, selection, undo history), so switching tabs keeps unsaved edits;
   // and the live text of a mounted view.
   const saved = new Map<string, EditorState>()
   const live = new Map<string, () => string>()
+  // Code navigation: where a jump wants the cursor in a file (its editor takes it when it mounts, or at once through
+  // `showing` while it is mounted), and the places jumped from, for Back.
+  const targets = new Map<string, CodePosition>()
+  const showing = new Map<string, (at: CodePosition) => void>()
+  const trail: Spot[] = []
 
   // The buffer's base, read once per file (or again with `force`, for Reload). A server without the route marks the
   // file unavailable, so the read-only viewer stays.
@@ -77,6 +89,19 @@ export function createEditorStore(client: EditorFileClient) {
     text,
     saved,
     live,
+    targets,
+    showing,
+    reveal(path: string, at: CodePosition) {
+      const show = showing.get(path)
+      if (show) return show(at)
+      targets.set(path, at)
+    },
+    // A jump remembers where it started; Back returns the latest one.
+    remember(spot: Spot) {
+      trail.push(spot)
+      if (trail.length > TRAIL_MAX) trail.shift()
+    },
+    back: () => trail.pop(),
     dirty: (path: string) => !!state.files[path]?.dirty,
     anyDirty: () => Object.values(state.files).some((buffer) => buffer?.dirty),
     setDirty: (path: string, dirty: boolean) => {
@@ -98,10 +123,12 @@ export function createEditorStore(client: EditorFileClient) {
       )
       return write(path, content, disk)
     },
-    // Drops unsaved edits: the next view starts from the file on disk.
+    // Drops unsaved edits: the next view starts from the file on disk, and so do the language servers.
     discard(path: string) {
+      const dirty = state.files[path]?.dirty
       saved.delete(path)
       setState("files", path, undefined!)
+      if (dirty) void client.lspSync?.(path).catch(() => undefined)
     },
   }
 }
@@ -184,10 +211,6 @@ export type EditorDiagnostic = {
 // Problems of one file as document ranges. LSP positions are 0-based lines and UTF-16 columns, which is how
 // CodeMirror counts too; positions past a line's end clamp to it. Problems without a range stay in the Problems tab.
 export function diagnosticsFor(problems: readonly Workbench.Problem[], doc: Text): EditorDiagnostic[] {
-  const at = (position: { line: number; character: number }) => {
-    const line = doc.line(Math.min(Math.max(position.line + 1, 1), doc.lines))
-    return Math.min(line.from + position.character, line.to)
-  }
   // A point (tsc reports one) marks the word that starts there.
   const word = (from: number) => {
     const line = doc.lineAt(from)
@@ -195,8 +218,8 @@ export function diagnosticsFor(problems: readonly Workbench.Problem[], doc: Text
   }
   return problems.flatMap((problem) => {
     if (!problem.range) return []
-    const from = at(problem.range.start)
-    const to = at(problem.range.end)
+    const from = offsetOf(doc, problem.range.start)
+    const to = offsetOf(doc, problem.range.end)
     return [
       {
         from,
@@ -207,6 +230,17 @@ export function diagnosticsFor(problems: readonly Workbench.Problem[], doc: Text
       },
     ]
   })
+}
+
+export function positionOf(doc: Text, offset: number): CodePosition {
+  const line = doc.lineAt(offset)
+  return { line: line.number - 1, character: offset - line.from }
+}
+
+// Positions past the last line or a line's end clamp to them.
+export function offsetOf(doc: Text, position: CodePosition) {
+  const line = doc.line(Math.min(Math.max(position.line + 1, 1), doc.lines))
+  return Math.min(line.from + Math.max(position.character, 0), line.to)
 }
 
 export type BreakpointMark = { line: number; kind: "line" | "condition" | "log"; verified: boolean }

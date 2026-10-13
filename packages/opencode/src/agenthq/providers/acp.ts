@@ -1,5 +1,5 @@
 // Generic Agent Client Protocol adapter: spawns an ACP agent over stdio and drives it as the client.
-// Used for Cursor (`cursor-agent acp`, once it exists) and for custom ACP agents (`provider: "acp"`).
+// Used for Cursor (`cursor-agent acp`), Codex, AgentKit and custom ACP agents (`provider: "acp"`).
 //
 // The client advertises no file-system or terminal capabilities, so the agent does its own file and shell
 // work and must ask through `session/request_permission`; those requests wait for the human.
@@ -23,6 +23,8 @@ import { Cause, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { realpathSync } from "fs"
 import path from "path"
+import { createTwoFilesPatch } from "diff"
+import { AgentPreview } from "../preview"
 import { AgentProvider } from "../provider"
 
 const PREVIEW_LIMIT = 2_000
@@ -43,6 +45,8 @@ export const capabilities: AgentHQ.ProviderCapabilities = {
 export interface Launch {
   readonly command: string
   readonly args: readonly string[]
+  /** Set for this agent on top of the stripped environment (never a credential). */
+  readonly env?: Readonly<Record<string, string>>
 }
 
 const TOOL_STATE: Record<ToolCallStatus, Extract<AgentHQ.AgentEvent, { type: "tool" }>["state"]> = {
@@ -59,6 +63,8 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
   readonly launch: (
     agent: AgentHQ.AgentIdentity,
   ) => Effect.Effect<Launch, AgentProvider.UnsupportedError | AgentProvider.ProviderError>
+  /** What to tell the human when the agent answers that it needs a login (ACP auth_required). */
+  readonly authRequired?: string
 }) {
   const spawner = yield* AppProcess.Service
   const parent = yield* Scope.Scope
@@ -76,7 +82,7 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
           cwd,
           // Never this server's credentials. An agent that is opencode itself (`opencode acp`) runs a listener of
           // its own, which keeps a password that way; other agents ignore it.
-          env: { ...AgentProvider.agentEnv(), OPENCODE_SERVER_PASSWORD: crypto.randomUUID() },
+          env: { ...AgentProvider.agentEnv(), ...launch.env, OPENCODE_SERVER_PASSWORD: crypto.randomUUID() },
           stdin: { stream: Stream.fromQueue(stdin) },
           forceKillAfter: "3 seconds",
         }),
@@ -112,8 +118,18 @@ export const make = Effect.fn("AgentHQ.acp.make")(function* (input: {
         Stream.toReadableStream<Uint8Array>()(proc.stdout),
       ),
     )
+    // Never `authenticate`: an agent may answer it with a login of its own (Cursor opens a browser). The human logs
+    // in with the agent's own CLI instead.
     const call = <A>(what: string, run: () => Promise<A>) =>
-      Effect.tryPromise({ try: run, catch: (error) => failure(`${what} failed: ${describe(error)}${tail()}`) })
+      Effect.tryPromise({
+        try: run,
+        catch: (error) =>
+          failure(
+            input.authRequired && code(error) === AUTH_REQUIRED
+              ? input.authRequired
+              : `${what} failed: ${describe(error)}${tail()}`,
+          ),
+      })
 
     // An exit we did not ask for is reported once; the manager keeps the history.
     yield* proc.exitCode.pipe(
@@ -295,6 +311,9 @@ class ClientState {
   // completed message keeps its own text.
   private readonly segments = new Map<string, number>()
   private readonly tools = new Map<string, { tool: string; title?: string; state?: string }>()
+  // Each call's latest content, and the files a completed call was reported changing.
+  private readonly contents = new Map<string, readonly ToolCallContent[]>()
+  private readonly changed = new Map<string, Set<string>>()
   private block: string | undefined
   private requests = 0
 
@@ -303,7 +322,7 @@ class ClientState {
 
   constructor(
     readonly emit: AgentProvider.Emit,
-    cwd: string,
+    readonly cwd: string,
   ) {
     this.roots = [
       cwd,
@@ -325,6 +344,41 @@ class ClientState {
       if (inside && !inside.startsWith("..") && !path.isAbsolute(inside)) return inside
     }
     return file
+  }
+
+  /**
+   * What a request is about: the diffs in its content (Codex, Cursor and AgentKit send them for edits), else the command
+   * of an `execute` call (from rawInput, else its title), else its title and text.
+   */
+  private preview(call: RequestPermissionRequest["toolCall"]) {
+    // Codex sends the diff in the call's update and asks with only its locations.
+    const content = call.content?.length ? call.content : (this.contents.get(call.toolCallId) ?? [])
+    const diffs = content.flatMap((item) => (item.type === "diff" ? [item] : []))
+    if (diffs.length) {
+      const files = diffs.map((item) => this.relative(item.path))
+      const text = diffs
+        .map((item, index) =>
+          createTwoFilesPatch(files[index]!, files[index]!, item.oldText ?? "", item.newText, undefined, undefined, {
+            context: 3,
+          }),
+        )
+        .join("\n")
+      return AgentPreview.edit(files.join(", "), text)
+    }
+    const raw = call.rawInput && typeof call.rawInput === "object" ? (call.rawInput as Record<string, unknown>) : {}
+    if (call.kind === "execute") {
+      const line = Array.isArray(raw.command)
+        ? raw.command.map(String).join(" ")
+        : typeof raw.command === "string"
+          ? raw.command
+          : (call.title ?? "").replace(/^`(.*)`$/s, "$1")
+      return AgentPreview.command(line, typeof raw.cwd === "string" ? raw.cwd : this.cwd)
+    }
+    const text = content
+      .flatMap((item) => (item.type === "content" && item.content.type === "text" ? [item.content.text] : []))
+      .join(" ")
+    const places = (call.locations ?? []).map((location) => this.relative(location.path)).join(", ")
+    return AgentPreview.other([call.title, text || places].filter(Boolean).join(": ") || "Permission requested")
   }
 
   readonly client: Client = {
@@ -384,9 +438,18 @@ class ClientState {
         const title = update.title ?? known?.title
         const state = update.status ? TOOL_STATE[update.status] : known ? undefined : "started"
         this.tools.set(update.toolCallId, { tool, title, state: state ?? known?.state })
-        update.content
-          ?.flatMap((item) => (item.type === "diff" ? [item.path] : []))
-          .forEach((file) => this.emit({ type: "file.changed", path: this.relative(file) }))
+        // A call's diffs say what it changes, but only a completed call changed anything: Codex sends them before it
+        // asks, and a refused or failed call never wrote them.
+        if (update.content?.length) this.contents.set(update.toolCallId, update.content)
+        if ((state ?? known?.state) === "completed") {
+          const reported = this.changed.get(update.toolCallId) ?? new Set<string>()
+          this.changed.set(update.toolCallId, reported)
+          for (const item of this.contents.get(update.toolCallId) ?? []) {
+            if (item.type !== "diff" || reported.has(item.path)) continue
+            reported.add(item.path)
+            this.emit({ type: "file.changed", path: this.relative(item.path) })
+          }
+        }
         if (!state || state === known?.state) return
         const output =
           state === "completed" || state === "error" ? preview(update.content, update.rawOutput) : undefined
@@ -433,6 +496,7 @@ class ClientState {
         title: request.toolCall.title ?? "Permission requested",
         ...(request.toolCall.kind ? { tool: request.toolCall.kind } : {}),
         ...(details ? { details: details.slice(0, PREVIEW_LIMIT) } : {}),
+        preview: this.preview(request.toolCall),
         options: request.options.map((option) => ({ id: option.optionId, label: option.name, kind: option.kind })),
       })
     })
@@ -457,6 +521,13 @@ function preview(content: readonly ToolCallContent[] | null | undefined, raw: un
     .join("\n")
   const value = text || (typeof raw === "string" ? raw : raw === undefined ? "" : JSON.stringify(raw))
   return value.slice(0, PREVIEW_LIMIT) || undefined
+}
+
+// ACP's auth_required error code.
+const AUTH_REQUIRED = -32000
+
+function code(error: unknown) {
+  return error && typeof error === "object" && "code" in error ? error.code : undefined
 }
 
 function describe(error: unknown) {

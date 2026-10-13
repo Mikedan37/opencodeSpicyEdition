@@ -38,7 +38,9 @@ import { runtime } from "./runtime"
 import { type Scenario } from "./types"
 import { agenthqScenarios } from "./agenthq" // spicy: Agent HQ route scenarios
 import { reviewScenarios } from "./review" // spicy: review route scenarios
+import { searchScenarios } from "./search" // spicy: project search route scenarios
 import { workbenchScenarios } from "./workbench" // spicy: Workbench route scenarios
+import { workbenchGitScenarios } from "./workbench-git" // spicy: git panel route scenarios
 
 function cursor(input: Record<string, unknown>) {
   return Buffer.from(JSON.stringify(input)).toString("base64url")
@@ -1917,7 +1919,9 @@ const scenarios: Scenario[] = [
     .status(400),
   ...agenthqScenarios, // spicy: Agent HQ route scenarios
   ...reviewScenarios, // spicy: review route scenarios
+  ...searchScenarios, // spicy: project search route scenarios
   ...workbenchScenarios, // spicy: Workbench route scenarios
+  ...workbenchGitScenarios, // spicy: git panel route scenarios
 ]
 
 const llmScenarios = new Set([

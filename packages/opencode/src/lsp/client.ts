@@ -303,6 +303,7 @@ export async function create(input: {
           publishDiagnostics: {
             versionSupport: false,
           },
+          hover: { contentFormat: ["markdown", "plaintext"] }, // spicy: the IDE editor's hover renders markdown
         },
       },
     }),

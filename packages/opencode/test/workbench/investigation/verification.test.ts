@@ -94,6 +94,7 @@ const lsp = Layer.mock(LSP.Service, {
   touchFile: () => Effect.void,
   diagnostics: () => Effect.succeed({}),
   diagnosticEvents: () => Stream.empty,
+  forFile: () => Effect.succeed([]),
 })
 const mcp = Layer.mock(MCP.Service, {
   status: () => Effect.succeed({}),

@@ -154,6 +154,8 @@ export interface Interface {
   readonly outgoingCalls: (input: LocInput) => Effect.Effect<any[]>
   // spicy: current diagnostics per server, root and file, then every replacement (Workbench problem store)
   readonly diagnosticEvents: () => Stream.Stream<LSPClient.DiagnosticsEvent>
+  // spicy: runs `fn` against each language server of `file`, started if needed (the IDE editor's requests)
+  readonly forFile: <T>(file: string, fn: (client: LSPClient.Info) => Promise<T>) => Effect.Effect<T[]>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LSP") {}
@@ -582,6 +584,7 @@ const layer = Layer.effect(
       incomingCalls,
       outgoingCalls,
       diagnosticEvents, // spicy:
+      forFile: (file, fn) => run(file, fn), // spicy:
     })
   }),
 )

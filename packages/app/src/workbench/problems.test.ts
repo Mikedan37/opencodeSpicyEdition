@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import type { Workbench } from "@opencode-ai/schema/workbench"
-import { createProblemsState, filterProblems, groupProblems, problemRows, type ProblemFilter } from "./problems"
+import {
+  crashReason,
+  createProblemsState,
+  filterProblems,
+  groupProblems,
+  problemRows,
+  sourceLabel,
+  type ProblemFilter,
+} from "./problems"
 
 const problem = (
   id: string,
@@ -15,7 +23,12 @@ const problem = (
   severity: extra.severity ?? "error",
   message: extra.message ?? `message ${id}`,
   code: extra.code,
-  source: { kind: extra.kind ?? "typecheck", tool: extra.tool ?? "tsc", producer: "check:tsc:/repo" },
+  source: extra.sources?.[0] ?? {
+    kind: extra.kind ?? "typecheck",
+    tool: extra.tool ?? "tsc",
+    producer: "check:tsc:/repo",
+  },
+  ...(extra.sources ? { sources: extra.sources } : {}),
   observedAt: 1,
   stale: extra.stale ?? false,
 })
@@ -63,6 +76,62 @@ describe("problems", () => {
       "file:-:1",
       "d",
     ])
+  })
+
+  test("DIAG-01 a merged problem lists every source; the kind filter and search match any of them", () => {
+    const lsp = { kind: "lsp" as const, tool: "typescript", producer: "lsp:typescript:/repo" }
+    const merged = problem("m", {
+      file: "/repo/src/c.ts",
+      line: 4,
+      sources: [
+        { kind: "typecheck", tool: "tsc", producer: "check:tsc:/repo" },
+        { ...lsp, channel: "push" },
+        { ...lsp, channel: "pull" },
+      ],
+    })
+    expect(sourceLabel(merged)).toBe("tsc · LSP (push, pull)")
+    expect(sourceLabel(problems[0]!)).toBe("eslint")
+    expect(
+      sourceLabel(
+        problem("p", {
+          sources: [
+            { ...lsp, channel: "push" },
+            { ...lsp, channel: "pull" },
+          ],
+        }),
+      ),
+    ).toBe("LSP (push, pull)")
+    // `source` is the first of `sources` (tsc), yet the language-server filter and a search for its tool find it.
+    expect(filterProblems([...problems, merged], { ...all, kind: "lsp" }).map((p) => p.id)).toEqual(["e", "m"])
+    expect(filterProblems([...problems, merged], { ...all, query: "typescript" }).map((p) => p.id)).toEqual(["e", "m"])
+  })
+
+  test("DIAG-07 a stale problem of a failed language server carries the exit reason", () => {
+    const source = { kind: "lsp" as const, tool: "clangd", producer: "lsp:clangd:/repo" }
+    const producers: Workbench.ProblemsSnapshot["producers"] = [
+      {
+        producer: "lsp:clangd:/repo",
+        kind: "lsp",
+        tool: "clangd",
+        state: "failed",
+        reason: "exited with code 139",
+        updatedAt: 1,
+      },
+      {
+        producer: "check:tsc:/repo",
+        kind: "typecheck",
+        tool: "tsc",
+        state: "failed",
+        reason: "tsc not found",
+        updatedAt: 1,
+      },
+    ]
+    const stale = problem("s", { stale: true, sources: [source] })
+    expect(crashReason(stale, producers)).toBe("exited with code 139")
+    // Fresh, or stale for another reason (a checker that failed is not a crashed server), says nothing.
+    expect(crashReason({ ...stale, stale: false }, producers)).toBeUndefined()
+    expect(crashReason(problem("t", { stale: true }), producers)).toBeUndefined()
+    expect(crashReason(stale, [{ ...producers[0]!, state: "idle" }])).toBeUndefined()
   })
 
   test("debounces invalidations and never overlaps refetches", async () => {

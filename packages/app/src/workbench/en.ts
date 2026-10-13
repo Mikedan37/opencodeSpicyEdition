@@ -332,6 +332,8 @@ export const dict = {
   "workbench.problems.noFile": "Without a file",
   "workbench.problems.stale": "Stale",
   "workbench.problems.stale.description": "The file changed after this problem was reported",
+  "workbench.problems.stale.crashed": "Language server crashed: {{reason}}; showing its last results",
+  "workbench.problems.lspOff": 'Language servers are off: set "lsp": true in your opencode config.',
   "workbench.problems.open": "Open {{file}} at line {{line}}",
   "workbench.problems.producer.running": "{{tool}} running",
   "workbench.problems.producer.unavailable": "{{tool}} unavailable",

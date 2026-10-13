@@ -8,7 +8,17 @@ import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { useLanguage } from "@/context/language"
 import { useWorkbench } from "./panel"
-import { filterProblems, groupProblems, problemRows, SEVERITIES, SOURCE_KINDS, type ProblemRow } from "./problems"
+import {
+  crashReason,
+  filterProblems,
+  groupProblems,
+  problemRows,
+  SEVERITIES,
+  SOURCE_KINDS,
+  sourceLabel,
+  sourcesOf,
+  type ProblemRow,
+} from "./problems"
 import { PanelState, RequestErrorState } from "./ui"
 import { VirtualList } from "./virtual-list"
 import { useFileLineOpener } from "./open-file"
@@ -36,6 +46,8 @@ export default function ProblemsPanel() {
   const open = (problem: Workbench.Problem) => {
     if (problem.file) openAt(problem.file, (problem.range?.start.line ?? 0) + 1)
   }
+  const crashed = (problem: Workbench.Problem) => crashReason(problem, problems.state.snapshot?.producers ?? [])
+  const lspOff = () => problems.state.snapshot?.lsp === "off"
 
   return (
     <div data-component="workbench-problems" class="flex min-h-0 flex-1 flex-col">
@@ -103,6 +115,16 @@ export default function ProblemsPanel() {
           onClick={() => void problems.refresh()}
         />
       </div>
+      {/* DIAG-12: the project's config leaves language servers off. */}
+      <Show when={lspOff() && !!problems.state.snapshot?.problems.length}>
+        <div
+          data-slot="problems-lsp-off"
+          class="mx-3 mb-1 flex shrink-0 items-center gap-1.5 rounded-[6px] bg-v2-background-bg-layer-02 px-2 py-1 text-[12px] text-v2-text-text-muted"
+        >
+          <Icon name="warning" size="small" />
+          {language.t("workbench.problems.lspOff")}
+        </div>
+      </Show>
       <Switch
         fallback={
           <VirtualList
@@ -113,7 +135,12 @@ export default function ProblemsPanel() {
             class="flex-1 pb-2"
           >
             {(row) => (
-              <Row row={row} onOpen={open} onToggle={(key) => filter.set("collapsed", key, (value) => !value)} />
+              <Row
+                row={row}
+                crashed={crashed}
+                onOpen={open}
+                onToggle={(key) => filter.set("collapsed", key, (value) => !value)}
+              />
             )}
           </VirtualList>
         }
@@ -125,7 +152,10 @@ export default function ProblemsPanel() {
           <PanelState icon={<LoaderV2 />} title={language.t("workbench.problems.loading")} />
         </Match>
         <Match when={problems.state.snapshot?.problems.length === 0}>
-          <PanelState title={language.t("workbench.problems.empty")} />
+          <PanelState
+            title={language.t("workbench.problems.empty")}
+            description={lspOff() ? language.t("workbench.problems.lspOff") : undefined}
+          />
         </Match>
         <Match when={rows().length === 0}>
           <PanelState title={language.t("workbench.problems.empty.filtered")} />
@@ -137,6 +167,7 @@ export default function ProblemsPanel() {
 
 function Row(props: {
   row: ProblemRow
+  crashed: (problem: Workbench.Problem) => string | undefined
   onOpen: (problem: Workbench.Problem) => void
   onToggle: (key: string) => void
 }) {
@@ -192,9 +223,25 @@ function Row(props: {
               <Show when={problem().code !== undefined}>
                 <span class="shrink-0 font-mono text-[11px] text-v2-text-text-faint">{String(problem().code)}</span>
               </Show>
-              <span class="shrink-0 text-[11px] text-v2-text-text-faint">{problem().source.tool}</span>
+              <span
+                data-slot="problem-sources"
+                class="shrink-0 text-[11px] text-v2-text-text-faint"
+                title={sourcesOf(problem())
+                  .map((source) => `${source.tool}: ${source.kind}${source.channel ? ` (${source.channel})` : ""}`)
+                  .join("\n")}
+              >
+                {sourceLabel(problem())}
+              </span>
               <Show when={problem().stale}>
-                <Tag class="shrink-0" title={language.t("workbench.problems.stale.description")}>
+                <Tag
+                  class="shrink-0"
+                  data-slot="problem-stale"
+                  title={
+                    props.crashed(problem()) === undefined
+                      ? language.t("workbench.problems.stale.description")
+                      : language.t("workbench.problems.stale.crashed", { reason: props.crashed(problem())! })
+                  }
+                >
                   {language.t("workbench.problems.stale")}
                 </Tag>
               </Show>

@@ -105,6 +105,7 @@ import { createSessionOwnership } from "./session/session-ownership"
 import { createSessionLineage } from "./session/session-lineage"
 import { WorkbenchProviders } from "@/workbench/panel" // spicy: Workbench + Agent HQ (see SPICY.md)
 import { ReviewChangesPanel, ReviewProvider, useReview } from "@/review/context" // spicy: agent changes review
+import { SearchProvider } from "@/workbench/search-side" // spicy: project search (side panel Search tab)
 
 type FollowupItem = FollowupDraft & { id: string }
 type FollowupEdit = Pick<FollowupItem, "id" | "prompt" | "context">
@@ -324,8 +325,10 @@ function SessionProviders(props: ParentProps) {
           <CommentsProvider>
             {/* spicy: Workbench + Agent HQ state for the bottom panel tabs */}
             <WorkbenchProviders>
-              {/* spicy: agent changes review state (src/review) */}
-              <ReviewProvider>{props.children}</ReviewProvider>
+              {/* spicy: agent changes review state (src/review), project search state (workbench/search-side) */}
+              <ReviewProvider>
+                <SearchProvider>{props.children}</SearchProvider>
+              </ReviewProvider>
             </WorkbenchProviders>
           </CommentsProvider>
         </PromptProvider>

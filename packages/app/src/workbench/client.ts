@@ -7,6 +7,7 @@ import { Review } from "@opencode-ai/schema/review"
 import { Workbench } from "@opencode-ai/schema/workbench"
 import type { ServerConnection } from "@/context/server"
 import { authTokenFromCredentials } from "@/utils/server"
+import type { SearchQuery } from "./search"
 
 export class WorkbenchRequestError extends Error {
   // "unavailable": 404 or a non-JSON reply, i.e. this server has no fork routes yet.
@@ -77,6 +78,21 @@ export type DebugAction = "continue" | "pause" | "next" | "stepIn" | "stepOut"
 const FileText = Schema.Struct({ content: Schema.String, hash: Schema.String })
 const FileWritten = Schema.Struct({ hash: Schema.String })
 
+// Project search (groups/workbench-search.ts `SearchResult`): matching lines by file, each file with the hash of its
+// bytes when searched (absent when the editor does not open it); `listed` of `total` matches were sent.
+const SearchResult = Schema.Struct({
+  files: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      hash: Schema.optional(Schema.String),
+      lines: Schema.Array(Schema.Struct({ line: Schema.Int, text: Schema.String })),
+    }),
+  ),
+  listed: Schema.Int,
+  total: Schema.Int,
+})
+export type SearchResult = typeof SearchResult.Type
+
 // Agent HQ orchestration (groups/agenthq.ts; docs/spicy/notes-agenthq.md "Routes (wave 2)"). `description: null`
 // clears it on edit.
 export type TaskDraft = {
@@ -125,6 +141,7 @@ const decoders = {
   fileWritten: Schema.decodeUnknownOption(FileWritten),
   lspHover: Schema.decodeUnknownOption(Schema.NullOr(Workbench.LspHover)),
   lspLocations: Schema.decodeUnknownOption(Schema.Array(Workbench.LspLocation)),
+  searchResult: Schema.decodeUnknownOption(SearchResult),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -290,6 +307,20 @@ export function createWorkbenchClient(input: {
     investigation: (id: string) => decoded(decoders.investigation, "GET", investigation(id)),
     resumeInvestigation: (id: string) => decoded(decoders.investigationSummary, "POST", `${investigation(id)}/resume`),
     cancelInvestigation: (id: string) => decoded(decoders.investigationSummary, "POST", `${investigation(id)}/cancel`),
+    // A 400 carries ripgrep's message for a pattern or glob it refuses.
+    search: (query: SearchQuery) =>
+      decoded(
+        decoders.searchResult,
+        "GET",
+        `/workbench/search?${new URLSearchParams({
+          query: query.pattern,
+          ...(query.regex ? { regex: "true" } : {}),
+          ...(query.caseSensitive ? { case: "true" } : {}),
+          ...(query.word ? { word: "true" } : {}),
+          ...(query.include.trim() ? { include: query.include } : {}),
+          ...(query.exclude.trim() ? { exclude: query.exclude } : {}),
+        })}`,
+      ),
   }
 }
 

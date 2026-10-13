@@ -30,6 +30,7 @@ import { WorkbenchApi } from "./groups/workbench" // spicy: Workbench problems r
 import { WorkbenchDebugApi } from "./groups/workbench-debug" // spicy: Workbench debug routes
 import { WorkbenchToolsApi } from "./groups/workbench-tools" // spicy: tool creator routes
 import { ReviewApi } from "./groups/review" // spicy: review routes
+import { WorkbenchSearchApi } from "./groups/workbench-search" // spicy: project search routes
 import { makeApi } from "@opencode-ai/protocol/api"
 import { LocationMiddleware } from "@opencode-ai/server/location"
 import { SessionLocationMiddleware } from "@opencode-ai/server/middleware/session-location"
@@ -84,6 +85,7 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(WorkbenchDebugApi) // spicy: Workbench debug routes
   .addHttpApi(WorkbenchToolsApi) // spicy: tool creator routes
   .addHttpApi(ReviewApi) // spicy: review routes
+  .addHttpApi(WorkbenchSearchApi) // spicy: project search routes
   .middleware(SchemaErrorMiddleware)
 
 export const OpenCodeHttpApi = HttpApi.make("opencode")

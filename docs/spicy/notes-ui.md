@@ -681,3 +681,89 @@ changed in wave 8.
   (`--workers=2`, the three real-server specs included). Screenshots: scratchpad `wave8-shots/`.
 - Build: CodeMirror core is one lazy chunk (`codemirror-*.js`, 341.6 KB) shared by `editor-view` (39.5 KB) and
   `tools-panel` (18.4 KB).
+
+## Wave 9: console input, real-server checks, evidence chips, the LLDB ask, problem sources, Fix with agent
+
+Started from `spicy-ide` 23ab5a476 (fast-forward, cache-only install); merged `spicy-ide` again at 1955d4d53
+(debugger wave 6: CON-05, CON-07) and 0e2d40d76 (problems wave 4: DIAG-01, DIAG-07, DIAG-12).
+
+### What changed
+
+- **Cold Vite flake.** On a fresh worktree Vite found the Markdown renderer's packages mid-test and reloaded the page
+  (`agenthq-panel.spec.ts:17` failed cold). `vite.config.ts` now pre-bundles them (`optimizeDeps.include`: `marked`,
+  `marked-shiki`, `@opencode-ai/ui > katex`, `@opencode-ai/session-ui > remend`,
+  `@opencode-ai/session-ui > @shikijs/stream`). Three cold runs (`node_modules/.vite` removed) passed; Vite
+  reported nothing discovered later.
+- **CON-03.** The Debug Console input is a textarea: Enter evaluates, Shift+Enter adds a line (up to 8 rows shown),
+  Up and Down recall history only from the first and the last line, completions are for the cursor's line, Tab and
+  Esc as before.
+- **CON-05.** An agent's `eval` and `result`/`exception` rows that carry `evidenceID` get one "Evidence" chip per
+  evaluation. It opens the Activity tab on the debug session's investigation (`investigationID`), selected, with the
+  evidence item highlighted (`aria-current`) and scrolled into view (`investigations.focus`; the record reloads when
+  it does not have the item yet). Human rows have no `evidenceID`, so no chip.
+- **CON-07.** A human's `` ` `` LLDB command waits for a `debug.lldbCommand` ask. The console finds it in the
+  permission store by `permission` and `metadata.debugSessionID` (its session is synthetic) and shows it under the
+  typed command with Allow once / Allow always / Reject (`POST /permission/:id/reply`). A failed evaluation (the 403
+  after Reject, or any other error) stays in the console under its expression, where it was typed, instead of a
+  toast (`debug.state.attempts`). The session notification skips these asks: its "Go to session" link would 404.
+- **DIAG-01.** A problem with several `sources` shows them all: "tsc · LSP (push, pull)" (each source in the
+  tooltip). The kind filter and the search look at every source, so a merged problem whose first source is a checker
+  is listed under Language servers.
+- **DIAG-07.** A stale problem whose language-server producer is `failed` explains its Stale badge: "Language server
+  crashed: <reason>; showing its last results".
+- **DIAG-12.** With `lsp: "off"` in the snapshot, a banner above the list and the empty state say: Language servers
+  are off: set "lsp": true in your opencode config.
+- **UI-07.** "Fix with agent" on a problem row, "Fix all in file" on a file group (the problems the group shows),
+  "Investigate with agent" in the Debug tab header while stopped. Each opens a picker: this opencode session or an
+  Agent HQ identity, the last used first ("Last used", persisted per workspace). The snapshot is built when a target
+  is picked (`workbench/snapshot.ts`):
+  - problems: file, range (1-based), severity, code (and its link), message, every source (`tool (kind, channel, run
+id)`), related locations, a stale note; the file's lines ±10 around them, merged, `>` on the problem lines, in a
+    fence longer than any backtick run inside (read with `GET /workbench/file`, or why it could not be); the latest
+    verification run (the run that reported them, else the newest finished check or test);
+  - a stop: program, adapter and debug session, reason, exception, the frames with file:line, the top frame's locals
+    as the backend capped them (`dap/snapshot.ts` `fit`; value-less adapter groups such as debugpy's "special
+    variables" left out), the investigation ID.
+    This session gets it through the composer's own follow-up path (`sendFollowupDraft`: the selected agent and model,
+    shown at once in the timeline); an identity through `POST /agenthq/messages`, which picks its newest session or
+    starts one ("Messages") and prefixes "Message from the user:" (the message's `text` is the snapshot). Only a
+    message is sent; nothing is approved on the agent's behalf. A toast says "Sent to <name>", with "Open session" for
+    an Agent HQ session (it opens in the Agents tab).
+- **E2E-01 (UI half), CON-10, CON-11**: see the tests below.
+
+### Files
+
+Fork: `workbench/{debug,debug.test,debug-context,debug-console,debug-panel,investigations,investigations.test,
+activity-panel,problems,problems.test,problems-panel,handoff,snapshot,snapshot.test,client,panel,en}`,
+`e2e/regression/` specs `debug-panel`, `run-stdin`, `investigation-activity`, `output-swift`, `problems-panel` and
+`investigate-with-agent`.
+Upstream-owned files changed: `packages/app/vite.config.ts` (`optimizeDeps.include`, `// spicy:`) and
+`packages/app/src/pages/layout.tsx` (no notification for a `debug.lldbCommand` ask, `// spicy:`).
+
+### Wave 9 tests and verification
+
+- Unit: `debug.test.ts` (CON-07: the attempt while it waits, cleared by the result, kept with the 403's error,
+  replaced by the next one), `investigations.test.ts` (CON-05: focus counts requests, reloads a record that lacks the
+  evidence), `problems.test.ts` (DIAG-01 label, filter and search by any source; DIAG-07 crash reason only for a
+  stale problem of a failed language server), `snapshot.test.ts` 5 (ranges, excerpt windows, marks, gutter, fences,
+  lines past the end; the latest run; a problem's and a file's exact text, an unreadable source; a stop's exact
+  text with and without exception, investigation and locals). App unit tests 814: 813 pass, 1 known ICU failure;
+  `test-browser` 44/44; typecheck clean.
+- Mocked e2e: `debug-panel.spec.ts` 18 (new: CON-03 Shift+Enter; CON-05 chip → Activity, scrolled to the evidence;
+  CON-07 ask under the command, Allow once runs it, Reject shows the 403 under the command and keeps its place, no
+  "Permission required" toast; UI-07 Investigate with agent → Ada gets the stop's exact text, the button goes when
+  running), `problems-panel.spec.ts` 4 (DIAG-01, DIAG-07, DIAG-12; UI-07: the picker, this session's prompt carries
+  exactly the problem's text, Fix all in file sends Ada exactly the file's text, "Open session" opens Ada's session,
+  Ada is the default after a reload; v1 mock protocol, the v2 mock has no model for the composer),
+  `output-swift.spec.ts` (CON-11: the problems agent's real `swift build` capture through the Output tab: bold red
+  `error:`, cyan gutter, no escape codes left, `main.swift:1:18` opens the file).
+- Real server (isolated XDG dirs, scripted model, real debugpy): `run-stdin.spec.ts` (CON-10: typed in the Run tab
+  terminal, echoed by the program, "Exited with code 0"), `investigation-activity.spec.ts` (E2E-01: failing test →
+  stop → patch → check → resolved; the Activity tab shows the evidence classes and the links open the Output run and
+  the Debug tab), `investigate-with-agent.spec.ts` (UI-07: debugpy stops on `ZeroDivisionError`, Investigate with
+  agent → This session, the session stores exactly the snapshot of the stop the server reports, the model answers).
+- e2e set (debug, output, activity, Agent HQ, problems, review, terminal and file-browser specs): 49/49 mocked and
+  5/5 real-server, `--workers=2`. Screenshots: scratchpad `wave9-shots/`.
+- `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 35 before and after (8 new `intelligencetasksd`
+  reports, a system daemon writing one every 20 minutes). No Electron, no lldb; no server, debugpy or temp project
+  left behind.

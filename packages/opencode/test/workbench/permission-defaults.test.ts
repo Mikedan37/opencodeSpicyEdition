@@ -12,6 +12,7 @@ import { Provider } from "@/provider/provider"
 import { SessionID } from "@/session/schema"
 import { Skill } from "@/skill"
 import { SessionAutoApprove } from "@/workbench/auto-approve"
+import { WorkbenchApprovals } from "@/workbench/approvals"
 import { OpenCodeProvider } from "@/agenthq/providers/opencode"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -27,6 +28,7 @@ const it = testEffect(
       Skill.node,
       RuntimeFlags.node,
       Permission.node,
+      WorkbenchApprovals.node,
     ]),
   ),
 )
@@ -220,32 +222,46 @@ describe("per-session auto-approve", () => {
   )
 })
 
+// An edit ask the way the edit tool makes it: "always" covers every file.
+const edit = (sessionID: string, file: string, ruleset: PermissionV1.Ruleset) =>
+  Permission.Service.use((svc) =>
+    svc.ask({
+      sessionID: SessionID.make(sessionID),
+      permission: "edit",
+      patterns: [file],
+      always: ["*"],
+      metadata: {},
+      ruleset,
+    }),
+  )
+const pending = Effect.gen(function* () {
+  while (true) {
+    const list = yield* Permission.Service.use((svc) => svc.list())
+    if (list.length) return list
+    yield* Effect.sleep("10 millis")
+  }
+}).pipe(Effect.timeout("2 seconds"))
+const answer = (reply: "always" | "reject") =>
+  Effect.gen(function* () {
+    const [asked] = yield* pending
+    yield* Permission.Service.use((svc) => svc.reply({ requestID: asked.id, reply }))
+    return asked
+  })
+const denied = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.exit,
+    Effect.map((exit) => Exit.isFailure(exit) && Cause.squash(exit.cause) instanceof PermissionV1.DeniedError),
+  )
+// Asks, and the test answers like a person who says no: the ask's request, for assertions.
+const asks = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const fiber = yield* effect.pipe(Effect.forkScoped)
+    const asked = yield* answer("reject")
+    yield* Fiber.await(fiber)
+    return asked
+  })
+
 describe('"Allow always" is remembered for its session and never beats a deny', () => {
-  // An edit ask the way the edit tool makes it: "always" covers every file.
-  const edit = (sessionID: string, file: string, ruleset: PermissionV1.Ruleset) =>
-    Permission.Service.use((svc) =>
-      svc.ask({
-        sessionID: SessionID.make(sessionID),
-        permission: "edit",
-        patterns: [file],
-        always: ["*"],
-        metadata: {},
-        ruleset,
-      }),
-    )
-  const pending = Effect.gen(function* () {
-    while (true) {
-      const list = yield* Permission.Service.use((svc) => svc.list())
-      if (list.length) return list
-      yield* Effect.sleep("10 millis")
-    }
-  }).pipe(Effect.timeout("2 seconds"))
-  const answer = (reply: "always" | "reject") =>
-    Effect.gen(function* () {
-      const [asked] = yield* pending
-      yield* Permission.Service.use((svc) => svc.reply({ requestID: asked.id, reply }))
-      return asked
-    })
   const alwaysForEdits = (sessionID: string, ruleset: PermissionV1.Ruleset) =>
     Effect.gen(function* () {
       const first = yield* edit(sessionID, "src/a.ts", ruleset).pipe(Effect.forkScoped)
@@ -290,5 +306,46 @@ describe('"Allow always" is remembered for its session and never beats a deny', 
         yield* edit("ses_a", "src/b.ts", build)
       }),
     { config: { permission: { edit: { "*.lock": "deny" } } } },
+  )
+})
+
+describe('"Always allow in this project": saved approvals', () => {
+  const saved = (...rules: WorkbenchApprovals.Rule[]) => WorkbenchApprovals.Service.use((svc) => svc.save(rules))
+  const unsaved = (rule: WorkbenchApprovals.Rule) => WorkbenchApprovals.Service.use((svc) => svc.remove(rule))
+
+  it.instance(
+    "a saved rule skips the ask in every session of the project; removing it asks again",
+    () =>
+      Effect.gen(function* () {
+        const build = (yield* agents)("build").permission
+        expect(yield* saved({ permission: "edit", pattern: "*" })).toEqual([{ permission: "edit", pattern: "*" }])
+        // Saving it again keeps one copy.
+        expect(yield* saved({ permission: "edit", pattern: "*" })).toHaveLength(1)
+        yield* edit("ses_a", "src/a.ts", build)
+        yield* edit("ses_child", "src/b.ts", build)
+        expect(yield* Permission.Service.use((svc) => svc.list())).toEqual([])
+        expect(yield* unsaved({ permission: "edit", pattern: "*" })).toEqual([])
+        expect((yield* asks(edit("ses_a", "src/c.ts", build))).patterns).toEqual(["src/c.ts"])
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "a saved rule never lifts a deny, and never approves an edit under .git",
+    () =>
+      Effect.gen(function* () {
+        const agent = yield* agents
+        // A remembered "always" for every file still asks for .git.
+        const first = yield* edit("ses_b", "src/a.ts", []).pipe(Effect.forkScoped)
+        yield* answer("always")
+        yield* Fiber.join(first)
+        expect((yield* asks(edit("ses_b", ".git/hooks/pre-commit", []))).patterns).toEqual([".git/hooks/pre-commit"])
+        // So does a saved one, and denies hold.
+        yield* saved({ permission: "edit", pattern: "*" })
+        expect(yield* denied(edit("ses_a", "src/app.ts", agent("plan").permission))).toBe(true)
+        expect(yield* denied(edit("ses_a", "bun.lock", agent("build").permission))).toBe(true)
+        expect((yield* asks(edit("ses_a", ".git/config", agent("build").permission))).patterns).toEqual([".git/config"])
+      }),
+    { git: true, config: { permission: { edit: { "*.lock": "deny" } } } },
   )
 })

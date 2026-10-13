@@ -34,7 +34,7 @@ const views: EditorView[] = []
 afterEach(() => views.splice(0).forEach((view) => view.destroy()))
 // theme-preload.test.ts leaves a window.matchMedia stub behind that CodeMirror cannot listen to.
 beforeEach(() => {
-  if (window.matchMedia("print").addEventListener) return
+  if (typeof window.matchMedia("print").addEventListener === "function") return
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
     value: (media: string) => ({ media, matches: false, addEventListener() {}, removeEventListener() {} }),

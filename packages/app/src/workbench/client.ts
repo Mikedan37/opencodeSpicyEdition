@@ -146,6 +146,8 @@ const decoders = {
   toolResult: Schema.decodeUnknownOption(Workbench.CustomToolResult),
   fileWritten: Schema.decodeUnknownOption(FileWritten),
   doctor: Schema.decodeUnknownOption(DoctorReport),
+  lspHover: Schema.decodeUnknownOption(Schema.NullOr(Workbench.LspHover)),
+  lspLocations: Schema.decodeUnknownOption(Schema.Array(Workbench.LspLocation)),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -200,6 +202,9 @@ export function createWorkbenchClient(input: {
   const session = (id: string) => `/agenthq/sessions/${encodeURIComponent(id)}`
   const changeset = (id: string) => `/review/changesets/${encodeURIComponent(id)}`
   const tool = (name: string) => `/workbench/tools/${encodeURIComponent(name)}`
+  // Code intelligence (groups/workbench.ts `workbench.lsp.*`): a 0-based line and UTF-16 column in a project file.
+  const lsp = (route: string, path: string, at: { line: number; character: number }) =>
+    `/workbench/lsp/${route}?${new URLSearchParams({ path, line: String(at.line), character: String(at.character) })}`
 
   return {
     providers: () => decoded(decoders.providers, "GET", "/agenthq/providers"),
@@ -222,6 +227,13 @@ export function createWorkbenchClient(input: {
     readFile: (path: string) => decoded(decoders.fileText, "GET", `/workbench/file?path=${encodeURIComponent(path)}`),
     writeFile: (body: { path: string; content: string; baseHash: string | null }) =>
       decoded(decoders.fileWritten, "PUT", "/workbench/file", body),
+    // Empty answers (null, []) when the file has no language server or it knows nothing there.
+    lspHover: (path: string, at: { line: number; character: number }) =>
+      decoded(decoders.lspHover, "GET", lsp("hover", path, at)),
+    lspDefinition: (path: string, at: { line: number; character: number }) =>
+      decoded(decoders.lspLocations, "GET", lsp("definition", path, at)),
+    lspReferences: (path: string, at: { line: number; character: number }) =>
+      decoded(decoders.lspLocations, "GET", lsp("references", path, at)),
     // Tool creator (groups/workbench-tools.ts). Approve and enable send the hash of the reviewed source: 409 when the
     // file changed since. The test run is the user's own call and does not ask.
     tools: () => decoded(decoders.tools, "GET", "/workbench/tools"),

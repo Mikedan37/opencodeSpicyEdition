@@ -393,6 +393,21 @@ export const agenthqScenarios: Scenario[] = [
       "status",
     ),
   http.protected
+    .get("/agenthq/tasks/{taskID}/review/diff", "agenthq.tasks.reviewDiff")
+    .seeded((ctx) => seedTask(ctx, "review"))
+    .at((ctx) => ({
+      path: route("/agenthq/tasks/{taskID}/review/diff", { taskID: ctx.state.task.id }) + "?path=shared.txt",
+      headers: ctx.headers(),
+    }))
+    .json(
+      200,
+      (body, ctx) => {
+        object(body)
+        check(body.taskID === ctx.state.task.id && body.diff === "", "a task without a branch has nothing to diff")
+      },
+      "status",
+    ),
+  http.protected
     .post("/agenthq/tasks/{taskID}/approve", "agenthq.tasks.approve")
     .seeded((ctx) => seedTask(ctx, "review"))
     .at((ctx) => ({

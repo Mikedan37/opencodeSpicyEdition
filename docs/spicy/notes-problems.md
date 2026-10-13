@@ -455,3 +455,70 @@ Wave 4 results:
   23ab5a476, ours) were deleted after `git worktree prune`; the stray `packages/opencode/config.json` was removed. No
   rust-analyzer or fake server processes left running.
 - `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 35 before the runs, 35 after.
+
+## Code intelligence in the IDE editor, phase 1 (hover, definition, references, Back)
+
+Branch fast-forwarded to `spicy-ide` e38ce9f1e; the cache-only install changed nothing.
+
+Routes (`groups/workbench.ts`, `handlers/workbench.ts`, `src/workbench/editor-lsp.ts`), query `path` (inside the project,
+absolute or relative), `line`, `character` (0-based, UTF-16 columns as in LSP and CodeMirror):
+
+| Route | Answer |
+|---|---|
+| `GET /workbench/lsp/hover` | `Workbench.LspHover \| null`: `{ markdown, range? }` |
+| `GET /workbench/lsp/definition` | `Workbench.LspLocation[]` |
+| `GET /workbench/lsp/references` | `Workbench.LspLocation[]`, declaration included, sorted by file and line, with `preview` |
+
+```ts
+LspHover = { markdown: string; range?: Range } // MarkupContent, MarkedString or a list; plain text arrives fenced
+LspLocation = { file: string; range: Range; outside?: boolean; preview?: string }
+```
+
+- Paths are confined like the editor's file route (symlinks resolved): outside → 403, missing → 404. No server for
+  the file, a server that fails or knows nothing, or `"lsp"` off: `null` / `[]`, never an error.
+- `LSP.Service.forFile(file, fn)` (the one upstream interface addition) runs a request against the file's servers,
+  starting them if needed. The fork opens a file once per running server (a WeakMap per client), so hovering never
+  re-reads or re-syncs it; saves and agent edits re-sync through the existing touch. A server that answers with the
+  real path of a symlinked project folder is mapped back to the project's name for it; anything else outside the
+  project directory comes back `outside: true` (the app's tabs cannot open it).
+- The client now advertises `hover.contentFormat: ["markdown", "plaintext"]`, so clangd answers markdown.
+
+Editor (`packages/app/src/workbench`):
+
+- `editor-lsp.ts` (new): the CodeMirror extension. Hover (350 ms) renders the server's markdown with session-ui's
+  `Markdown` (sanitized, highlighted code) and re-measures when it grows; F12 or Mod-click (Cmd on macOS, Ctrl
+  elsewhere) goes to the definition; Shift-F12 lists references; Ctrl+- goes back; Escape closes the list. No answer,
+  a failed request, or a definition outside the project is a quiet note at the cursor ("No definition found",
+  "Defined outside the project: <file>:<line>"), cleared by the next edit or cursor move; never a toast.
+- `editor.ts`: `positionOf` / `offsetOf` (LSP position ⇄ offset, clamped); the store keeps jump targets per file
+  (taken by the file's editor when it mounts, or at once while it shows) and the Back trail (50 places).
+- `editor-view.tsx`: wires the extension to `client.ts`; a jump records where it started, opens the target with the
+  panel's file opener and puts the cursor on the spot; the references list is a small sticky panel under the editor
+  (outside-project rows are plain text). Editor tooltips now live in `document.body`, so the side panel's edge no
+  longer cuts them (hover, lint and the comment button).
+- `client.ts` (+`lspHover`, `lspDefinition`, `lspReferences`) and `en.ts` (+5 strings) are add-only.
+
+Tests:
+
+| Case | Where |
+|---|---|
+| fake server (`test/fixture/workbench/lsp-nav.js`): hover markdown + range, cross-file definition, sorted references with previews, outside definition, empty answers, file opened once (one didOpen, no didChange) | `test/workbench/editor-lsp.test.ts` |
+| 403 outside, 404 missing, a file without a server → `null` / `[]` | same |
+| real clangd: hover has `int add(int a, int b)`, definition and references of a C function | same (skips without clangd) |
+| hover shapes → markdown; symlinked real path → project name; malformed URI dropped | same |
+| CodeMirror: definition opens / outside / none / failure notes, references list / none, F12, Shift-F12, Ctrl+-, Escape bindings, hover tooltip over the range, positions, targets and the Back trail | `packages/app/src/workbench/editor-lsp.test.ts` |
+| e2e, real server + real clangd: hover shows the signature, Ctrl-click opens `util.h` on the definition, Ctrl+- returns, Shift+F12 lists both references and a click moves there, Escape closes | `packages/app/e2e/regression/editor-code-intelligence.spec.ts` |
+
+Limits: until phase 2 syncs the buffer, positions in a file with unsaved edits are answered against the saved text.
+Without a compilation database clangd only finds references in the open translation unit. On the Windows desktop
+build Ctrl+- is the menu's Zoom Out accelerator, which takes the key first.
+
+Phase 1 results: `packages/opencode` full `bun test --timeout 30000` 3892 pass, 28 skip, 1 todo, 0 fail (301 files);
+`test:httpapi` 273/273 in coverage, auth and effect modes (leftover `opencode/eager-island` and
+`opencode/stellar-circuit`, tips e38ce9f1e, deleted after `git worktree prune`; stray `config.json` removed);
+`packages/app` unit 819 pass, 0 fail (116 files); typecheck clean in opencode, schema and app; the e2e spec passes
+(Playwright 1.59.1 with the cached Chromium 1228 through a `PLAYWRIGHT_BROWSERS_PATH` shim, nothing downloaded).
+DiagnosticReports: the first five runs of the e2e spec each left a clangd crash report (23:12-23:15): stopping the
+server with SIGTERM orphaned clangd, which aborts in `raw_fd_ostream::~raw_fd_ostream` on exit with its pipes gone.
+The spec now calls `POST /global/dispose` first, so clangd gets shutdown + exit; runs since add no report. The same
+orphaning is a product issue for any `opencode serve` stopped by a signal while clangd runs (not changed here).

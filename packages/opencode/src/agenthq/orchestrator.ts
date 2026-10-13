@@ -32,6 +32,8 @@ const WAITING = new Set<AgentHQ.TaskStatus>(["pending", "ready", "blocked"])
 const STARTABLE = new Set<AgentHQ.TaskStatus>(["ready", "failed", "cancelled"])
 const WORKING = "The agent is still working; review again when it finishes"
 const CHANGED = "The task changed since you reviewed it; review again"
+// A review diff longer than this is cut and says so.
+const DIFF_LIMIT = 1_000_000
 
 export const CreateTaskInput = Schema.Struct({
   title: Schema.String,
@@ -55,6 +57,14 @@ export type UpdateTaskInput = typeof UpdateTaskInput.Type
 // The branch commit the human reviewed (`TaskReview.head`); a task with a worktree merges only that commit.
 export const ApproveInput = Schema.Struct({ head: Schema.optional(Schema.String) })
 export type ApproveInput = typeof ApproveInput.Type
+
+export const ReviewDiffInput = Schema.Struct({
+  path: Schema.optional(Schema.String).annotate({ description: "One file of the review, relative to the project" }),
+  head: Schema.optional(Schema.String).annotate({
+    description: "The branch commit to diff (the review's `head`); the branch tip by default",
+  }),
+})
+export type ReviewDiffInput = typeof ReviewDiffInput.Type
 
 export const SendInput = Schema.Struct({
   from: Schema.optional(Schema.Union([AgentHQ.AgentID, Schema.Literals(["user", "system"])])),
@@ -87,6 +97,10 @@ export interface Interface {
   >
   readonly cancel: (id: AgentHQ.TaskID) => Effect.Effect<AgentHQ.Task, NotFound>
   readonly review: (id: AgentHQ.TaskID) => Effect.Effect<AgentHQ.TaskReview, NotFound>
+  readonly reviewDiff: (
+    id: AgentHQ.TaskID,
+    input: ReviewDiffInput,
+  ) => Effect.Effect<AgentHQ.TaskReviewDiff, NotFound | Conflict | Invalid>
   readonly approve: (id: AgentHQ.TaskID, head?: string) => Effect.Effect<AgentHQ.Task, NotFound | Conflict>
   readonly messages: (filter: {
     readonly taskID?: AgentHQ.TaskID
@@ -452,7 +466,7 @@ const layer = Layer.effect(
     // ---------------------------------------------------------------- review gate
 
     const review = Effect.fn("AgentHQOrchestrator.review")(function* (id: AgentHQ.TaskID) {
-      const task = yield* get(id)
+      const task = yield* lock.withPermit(get(id).pipe(Effect.flatMap(reconcile)))
       const waiting = task.status !== "review" ? `Task is ${task.status}` : (yield* working(task)) ? WORKING : undefined
       if (!task.worktree)
         return {
@@ -514,52 +528,131 @@ const layer = Layer.effect(
       }
     })
 
+    /** The last steps of an approval once its head is in the project: the worktree and its branch go, the task is done. */
+    const finish = Effect.fnUntraced(function* (task: AgentHQ.Task, project: string | undefined) {
+      if (task.worktree && project) {
+        yield* store
+          .provide({ directory: project }, worktrees.remove({ directory: task.worktree.path }))
+          .pipe(Effect.ignore)
+        // Worktree.remove deletes the branch only while git still lists the worktree.
+        if (yield* tip(project, task.worktree.branch)) yield* git(project, ["branch", "-D", task.worktree.branch])
+      }
+      const done = yield* save({
+        ...task,
+        status: "done",
+        worktree: undefined,
+        merging: undefined,
+        reason: undefined,
+        updatedAt: Date.now(),
+      })
+      yield* settle()
+      return done
+    })
+
+    /**
+     * A task in review that an approval already merged: finished. With `merging` recorded, the merge landed when that
+     * head is in the project, and otherwise the task goes back to plain review. Without it (an approval from before
+     * the record existed), a merge commit of the branch tip in the project counts; a branch that never had commits of
+     * its own is not "merged" that way, so its task keeps waiting for the human.
+     */
+    const reconcile = Effect.fnUntraced(function* (task: AgentHQ.Task) {
+      if (task.status !== "review" || !task.worktree) return task
+      const project = Option.getOrUndefined(yield* registry.get(task.assignee).pipe(Effect.option))?.projectDirectory
+      if (!project) return task
+      if (task.merging) {
+        const landed = (yield* git(project, ["merge-base", "--is-ancestor", task.merging, "HEAD"])).code === 0
+        if (landed) return yield* finish(task, project)
+        return yield* save({ ...task, merging: undefined, updatedAt: Date.now() })
+      }
+      const head = yield* tip(project, task.worktree.branch)
+      if (!head) return task
+      const merges = (yield* git(project, ["rev-list", "--merges", "--parents", "--ancestry-path", `${head}..HEAD`]))
+        .out
+      const merged = merges.split("\n").some((line) => line.split(" ").slice(2).includes(head))
+      return merged ? yield* finish(task, project) : task
+    })
+
+    /** What approving `head` (the branch tip by default) would merge, as a unified diff of one file or all. */
+    const reviewDiff = Effect.fn("AgentHQOrchestrator.reviewDiff")(function* (
+      id: AgentHQ.TaskID,
+      input: ReviewDiffInput,
+    ) {
+      const task = yield* get(id)
+      if (!task.worktree) return { taskID: id, diff: "" }
+      if (input.head !== undefined && !/^[0-9a-f]{7,40}$/.test(input.head))
+        return yield* new AgentProvider.InvalidInputError({ message: "head must be a commit id" })
+      const project = Option.getOrUndefined(yield* registry.get(task.assignee).pipe(Effect.option))?.projectDirectory
+      if (!project) return yield* conflict("The assignee no longer exists")
+      const branch = yield* tip(project, task.worktree.branch)
+      if (!branch) return yield* conflict("The task's branch is gone")
+      const head = input.head ?? branch
+      // Only commits of the task's own branch: its tip or one before it.
+      if ((yield* git(project, ["merge-base", "--is-ancestor", head, branch])).code !== 0)
+        return yield* conflict(`${head} is not a commit of the task's branch`)
+      const base = (yield* git(project, ["rev-parse", "--abbrev-ref", "HEAD"])).out
+      const diff = (yield* git(project, [
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        `HEAD...${head}`,
+        ...(input.path ? ["--", input.path] : []),
+      ])).raw
+      return {
+        taskID: id,
+        head,
+        base,
+        ...(input.path ? { path: input.path } : {}),
+        ...(diff.length > DIFF_LIMIT ? { diff: diff.slice(0, DIFF_LIMIT), truncated: true } : { diff }),
+      }
+    })
+
     // Merges exactly the commit the human reviewed: never while the agent works, never after the branch moved on.
     const approve = Effect.fn("AgentHQOrchestrator.approve")(function* (id: AgentHQ.TaskID, head?: string) {
       return yield* lock.withPermit(
         Effect.gen(function* () {
-          const task = yield* get(id)
+          const before = yield* get(id)
+          const task = yield* reconcile(before)
+          // An approval that already merged it (a retry after the first one was cut off) is done.
+          if (task.status === "done" && before.status === "review") return task
           if (task.status !== "review")
             return yield* conflict(`Task is ${task.status}; only a task in review can be approved`)
           if (yield* working(task)) return yield* conflict(WORKING)
-          if (task.worktree) {
-            const agent = yield* registry
-              .get(task.assignee)
-              .pipe(Effect.mapError(() => conflict("The assignee no longer exists")))
-            const project = agent.projectDirectory
-            yield* snapshot(task)
-            if (!head || (yield* tip(project, task.worktree.branch)) !== head) return yield* conflict(CHANGED)
-            const dirty = (yield* git(project, ["status", "--porcelain", "--untracked-files=no"])).raw
-            if (dirty.trim())
-              return yield* conflict(
-                `The project has uncommitted changes (${names(dirty).join(", ")}); commit or stash them before approving`,
-              )
-            // The reviewed commit itself, not the branch name: nothing that lands can be newer than the review.
-            const merged = yield* git(project, [
-              "merge",
-              "--no-ff",
-              "--no-edit",
-              "-m",
-              `Merge task: ${task.title}`,
-              head,
-            ])
-            if (merged.code !== 0) {
-              yield* git(project, ["merge", "--abort"])
-              return yield* conflict(`The merge failed and was aborted: ${merged.out || merged.err}`)
-            }
-            // The branch is merged; its worktree and branch are no longer needed.
-            const worktree = task.worktree.path
-            yield* store.provide({ directory: project }, worktrees.remove({ directory: worktree })).pipe(Effect.ignore)
-          }
-          const done = yield* save({
-            ...task,
-            status: "done",
-            worktree: undefined,
-            reason: undefined,
-            updatedAt: Date.now(),
-          })
-          yield* settle()
-          return done
+          if (!task.worktree) return yield* finish(task, undefined)
+          const worktree = task.worktree
+          const agent = yield* registry
+            .get(task.assignee)
+            .pipe(Effect.mapError(() => conflict("The assignee no longer exists")))
+          const project = agent.projectDirectory
+          yield* snapshot(task)
+          if (!head || (yield* tip(project, worktree.branch)) !== head) return yield* conflict(CHANGED)
+          const dirty = (yield* git(project, ["status", "--porcelain", "--untracked-files=no"])).raw
+          if (dirty.trim())
+            return yield* conflict(
+              `The project has uncommitted changes (${names(dirty).join(", ")}); commit or stash them before approving`,
+            )
+          // From here on nothing stops halfway: a client that goes away no longer leaves the merge on the base with
+          // the task in review. The intent is recorded first, so a crash in between is finished, or undone, by
+          // `reconcile` on the next start.
+          return yield* Effect.uninterruptible(
+            Effect.gen(function* () {
+              const merging = yield* save({ ...task, merging: head, updatedAt: Date.now() })
+              // The reviewed commit itself, not the branch name: nothing that lands can be newer than the review.
+              const merged = yield* git(project, [
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                "-m",
+                `Merge task: ${task.title}`,
+                head,
+              ])
+              if (merged.code !== 0) {
+                yield* git(project, ["merge", "--abort"])
+                yield* save({ ...merging, merging: undefined, updatedAt: Date.now() })
+                return yield* conflict(`The merge failed and was aborted: ${merged.out || merged.err}`)
+              }
+              return yield* finish(merging, project)
+            }),
+          )
         }),
       )
     })
@@ -734,9 +827,15 @@ const layer = Layer.effect(
       Effect.forkIn(scope),
     )
 
-    // After a restart: map task sessions again and fail tasks whose session did not survive.
+    // After a restart: finish or undo approvals a crash cut off, map task sessions again, and fail tasks whose session
+    // did not survive.
     const ready = yield* Effect.cached(
       Effect.gen(function* () {
+        yield* lock.withPermit(
+          Effect.gen(function* () {
+            yield* Effect.forEach(yield* list(), reconcile, { discard: true })
+          }),
+        )
         const all = yield* list()
         yield* Effect.forEach(
           all,
@@ -770,6 +869,7 @@ const layer = Layer.effect(
       start,
       cancel: withReady(cancel),
       review: withReady(review),
+      reviewDiff: withReady(reviewDiff),
       approve: withReady(approve),
       messages: withReady(messages),
       send: withReady(send),

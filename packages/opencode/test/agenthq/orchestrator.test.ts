@@ -8,12 +8,13 @@ import { AppProcess } from "@opencode-ai/core/process"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { $ } from "bun"
-import { Effect, Layer } from "effect"
+import { Effect, Exit, Fiber, Layer, Scope } from "effect"
 import fs from "fs/promises"
 import path from "path"
 import { AgentOrchestrator } from "../../src/agenthq/orchestrator"
 import { AgentRegistry } from "../../src/agenthq/registry"
 import { AgentSessions } from "../../src/agenthq/session"
+import { AgentStore } from "../../src/agenthq/store"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
@@ -25,26 +26,39 @@ import { testProviderConfig } from "../lib/test-provider"
 
 const noopBootstrap = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void }))
 
-const app = AppNodeBuilder.build(
-  LayerNode.group([
-    AgentRegistry.node,
-    AgentSessions.node,
-    AgentOrchestrator.node,
-    SessionProjector.node,
-    InstanceStore.node,
-    Storage.node,
-    Database.node,
-    EventV2.node,
-    AppProcess.node,
-    CrossSpawnSpawner.node,
-  ]),
-  [
-    [InstanceStore.bootstrapNode, noopBootstrap],
-    [RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })],
-  ],
-)
+const nodes = LayerNode.group([
+  AgentStore.node,
+  AgentRegistry.node,
+  AgentSessions.node,
+  AgentOrchestrator.node,
+  SessionProjector.node,
+  InstanceStore.node,
+  Storage.node,
+  Database.node,
+  EventV2.node,
+  AppProcess.node,
+  CrossSpawnSpawner.node,
+])
+const replacements = [
+  [InstanceStore.bootstrapNode, noopBootstrap],
+  [RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })],
+] as const
+const app = AppNodeBuilder.build(nodes, [...replacements])
 
 const it = testEffect(Layer.mergeAll(app, TestLLMServer.layer))
+
+/** A new server lifetime over the same records and database: its orchestrator starts over (`ready`). */
+const restart = Effect.gen(function* () {
+  const database = yield* Database.Service
+  const scope = yield* Scope.make()
+  yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+  const layer = AppNodeBuilder.build(nodes, [
+    ...replacements,
+    [Database.node, Layer.succeed(Database.Service, database)],
+  ])
+  const context = yield* Layer.buildWithMemoMap(layer, Layer.makeMemoMapUnsafe(), scope)
+  return <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(context))
+})
 
 /** A git project whose model is the fake server; `shared.txt` is committed. */
 const project = Effect.gen(function* () {
@@ -99,6 +113,45 @@ const allowNext = (sessionID: AgentHQ.AgentSessionID) =>
   })
 
 const read = (file: string) => Effect.promise(() => fs.readFile(file, "utf8"))
+const exists = (file: string) =>
+  Effect.promise(() =>
+    fs.stat(file).then(
+      () => true,
+      () => false,
+    ),
+  )
+
+/**
+ * A task in review with its own worktree and branch, made the way the orchestrator makes them but without an agent:
+ * `files` are committed on the branch (none: a branch with no commits of its own).
+ */
+const inReview = (dir: string, assignee: AgentHQ.AgentID, title: string, files: Record<string, string>) =>
+  Effect.gen(function* () {
+    const id = AgentHQ.TaskID.create()
+    const branch = `task-${id}`
+    const worktree = path.join(yield* tmpdirScoped(), "worktree")
+    yield* git(dir, `git worktree add -q -b ${branch} '${worktree}'`)
+    if (Object.keys(files).length) {
+      yield* Effect.promise(() =>
+        Promise.all(Object.entries(files).map(([name, text]) => fs.writeFile(path.join(worktree, name), text))),
+      )
+      yield* git(worktree, `git add -A && git commit -q -m '${title}'`)
+    }
+    const now = Date.now()
+    const task: AgentHQ.Task = {
+      id,
+      title,
+      assignee,
+      dependsOn: [],
+      status: "review",
+      isolated: true,
+      worktree: { path: worktree, branch },
+      createdAt: now,
+      updatedAt: now,
+    }
+    yield* AgentStore.Service.use((records) => records.write(["agenthq", "task", id], task))
+    return { task, worktree, branch, head: yield* git(dir, `git rev-parse ${branch}`) }
+  })
 const git = (dir: string, command: string) =>
   Effect.promise(() => $`sh -c ${command}`.cwd(dir).quiet().text()).pipe(Effect.map((text) => text.trim()))
 
@@ -382,5 +435,170 @@ describe("agenthq orchestration", () => {
       yield* Effect.sleep("300 millis")
       expect((yield* orchestrator.get(task.id)).status).toBe("cancelled")
     }),
+  )
+
+  it.live("the merge gate diff: base...head for all files or one, of the task's own commits only", () =>
+    Effect.gen(function* () {
+      const { dir } = yield* project
+      const orchestrator = yield* AgentOrchestrator.Service
+      const editor = yield* agent(dir, "Editor")
+      const made = yield* inReview(dir, editor.id, "Two files", { "a.txt": "alpha\n" })
+      const first = made.head
+      yield* Effect.promise(() => fs.writeFile(path.join(made.worktree, "b.txt"), "beta\n"))
+      yield* git(made.worktree, "git add -A && git commit -q -m second")
+      const head = yield* git(dir, `git rev-parse ${made.branch}`)
+
+      const all = yield* orchestrator.reviewDiff(made.task.id, {})
+      expect(all).toMatchObject({
+        taskID: made.task.id,
+        head,
+        base: yield* git(dir, "git rev-parse --abbrev-ref HEAD"),
+      })
+      expect(all.diff).toContain("+++ b/a.txt")
+      expect(all.diff).toContain("+++ b/b.txt")
+      expect(all.truncated).toBeUndefined()
+      const one = yield* orchestrator.reviewDiff(made.task.id, { path: "b.txt" })
+      expect(one).toMatchObject({ path: "b.txt", head })
+      expect(one.diff).toContain("+beta")
+      expect(one.diff).not.toContain("a.txt")
+      // The reviewed head, not the tip: what that review saw.
+      const earlier = yield* orchestrator.reviewDiff(made.task.id, { head: first })
+      expect(earlier.diff).toContain("+alpha")
+      expect(earlier.diff).not.toContain("b.txt")
+
+      // Not a commit of the task's branch, or not a commit id at all.
+      yield* Effect.promise(() => fs.writeFile(path.join(dir, "main.txt"), "main\n"))
+      yield* git(dir, "git add main.txt && git commit -q -m main")
+      const elsewhere = yield* git(dir, "git rev-parse HEAD")
+      expect(yield* orchestrator.reviewDiff(made.task.id, { head: elsewhere }).pipe(Effect.flip)).toMatchObject({
+        _tag: "AgentHQ.ConflictError",
+      })
+      expect(yield* orchestrator.reviewDiff(made.task.id, { head: "--output=x" }).pipe(Effect.flip)).toMatchObject({
+        _tag: "AgentHQ.InvalidInputError",
+      })
+      // A task without a branch has nothing to merge.
+      const plain = yield* orchestrator.create({ title: "Plain", assignee: editor.id })
+      expect(yield* orchestrator.reviewDiff(plain.id, {})).toEqual({ taskID: plain.id, diff: "" })
+    }),
+  )
+
+  it.live("opencode writes nothing of its own into a task's worktree: the review lists only the agent's file", () =>
+    Effect.gen(function* () {
+      const { llm, dir } = yield* project
+      // A project config without $schema, which opencode adds to configs it loads elsewhere.
+      const config = JSON.parse(yield* read(path.join(dir, "opencode.json")))
+      delete config.$schema
+      yield* Effect.promise(() => fs.writeFile(path.join(dir, "opencode.json"), JSON.stringify(config, null, 2) + "\n"))
+      yield* git(dir, "git commit -q -am 'config without schema'")
+      const orchestrator = yield* AgentOrchestrator.Service
+      const editor = yield* agent(dir, "Editor")
+      const task = yield* orchestrator.create({ title: "Edit", assignee: editor.id, isolated: true })
+      yield* llm.push(reply().tool("write", { filePath: "shared.txt", content: "one\n" }))
+      yield* llm.push(reply().text("wrote one").stop())
+      const running = yield* orchestrator.start(task.id)
+      yield* allowNext(running.result!.sessionID!)
+      yield* waitTask(task.id, "review")
+      const review = yield* orchestrator.review(task.id)
+      expect(review.files.map((file) => file.path)).toEqual(["shared.txt"])
+      expect(JSON.parse(yield* read(path.join(running.worktree!.path, "opencode.json"))).$schema).toBeUndefined()
+    }),
+  )
+
+  it.live("an approval whose client goes away mid-merge still finishes: done, merged, worktree and branch gone", () =>
+    Effect.gen(function* () {
+      const { dir } = yield* project
+      const orchestrator = yield* AgentOrchestrator.Service
+      const editor = yield* agent(dir, "Editor")
+      const made = yield* inReview(dir, editor.id, "Write the note", { "note.txt": "note\n" })
+      // A slow merge (a post-merge hook), so the client is gone while the merge is under way.
+      yield* Effect.promise(async () => {
+        await fs.writeFile(path.join(dir, ".git/hooks/post-merge"), "#!/bin/sh\nsleep 1\n")
+        await fs.chmod(path.join(dir, ".git/hooks/post-merge"), 0o755)
+      })
+      const approving = yield* orchestrator.approve(made.task.id, made.head).pipe(Effect.forkChild)
+      yield* pollWithTimeout(
+        orchestrator.get(made.task.id).pipe(Effect.map((task) => (task.merging ? true : undefined))),
+        "the approval never recorded its merge",
+        "10 seconds",
+      )
+      yield* Fiber.interrupt(approving)
+
+      const task = yield* orchestrator.get(made.task.id)
+      expect(task).toMatchObject({ status: "done" })
+      expect(task.worktree).toBeUndefined()
+      expect(task.merging).toBeUndefined()
+      expect(yield* git(dir, "git log -1 --format=%s")).toBe("Merge task: Write the note")
+      expect(yield* git(dir, "git rev-parse HEAD^2")).toBe(made.head)
+      expect(yield* exists(made.worktree)).toBe(false)
+      expect(yield* git(dir, `git branch --list ${made.branch}`)).toBe("")
+      // Approving it again is refused: it is done.
+      expect(yield* orchestrator.approve(made.task.id, made.head).pipe(Effect.flip)).toMatchObject({
+        message: "Task is done; only a task in review can be approved",
+      })
+    }),
+  )
+
+  it.live(
+    "after a crash mid-approval, the next start finishes or undoes each merge; a task with nothing of its own waits",
+    () =>
+      Effect.gen(function* () {
+        const { dir } = yield* project
+        const editor = yield* agent(dir, "Editor")
+        const records = yield* AgentStore.Service
+        const mark = (task: AgentHQ.Task, merging: string) =>
+          records.write(["agenthq", "task", task.id], { ...task, merging })
+        const merge = (made: { head: string; task: AgentHQ.Task }) =>
+          git(dir, `git merge -q --no-ff --no-edit -m 'Merge task: ${made.task.title}' ${made.head}`)
+
+        // Merged, then the crash: worktree and branch still there.
+        const landed = yield* inReview(dir, editor.id, "One", { "one.txt": "one\n" })
+        yield* mark(landed.task, landed.head)
+        yield* merge(landed)
+        // Merged and its worktree removed, then the crash: the branch is left.
+        const half = yield* inReview(dir, editor.id, "Two", { "two.txt": "two\n" })
+        yield* mark(half.task, half.head)
+        yield* merge(half)
+        yield* git(dir, `git worktree remove --force '${half.worktree}'`)
+        // The crash before the merge.
+        const before = yield* inReview(dir, editor.id, "Three", { "three.txt": "three\n" })
+        yield* mark(before.task, before.head)
+        // Merged by an approval from before the record existed; its worktree gone, its branch left.
+        const legacy = yield* inReview(dir, editor.id, "Four", { "four.txt": "four\n" })
+        yield* merge(legacy)
+        yield* git(dir, `git worktree remove --force '${legacy.worktree}'`)
+        // Nothing of its own (its branch is the base): only the human closes it.
+        const empty = yield* inReview(dir, editor.id, "Five", {})
+
+        const run = yield* restart
+        const after = yield* run(
+          AgentOrchestrator.Service.use((orchestrator) =>
+            Effect.forEach([landed, half, before, legacy, empty], (made) => orchestrator.get(made.task.id)),
+          ),
+        )
+        expect(
+          after.map((task) => [task.title, task.status, task.merging ?? null, task.worktree ? "worktree" : null]),
+        ).toEqual([
+          ["One", "done", null, null],
+          ["Two", "done", null, null],
+          ["Three", "review", null, "worktree"],
+          ["Four", "done", null, null],
+          ["Five", "review", null, "worktree"],
+        ])
+        for (const made of [landed, half, legacy]) {
+          expect(yield* exists(made.worktree)).toBe(false)
+          expect(yield* git(dir, `git branch --list ${made.branch}`)).toBe("")
+        }
+        expect(yield* exists(before.worktree)).toBe(true)
+        expect(yield* git(dir, `git branch --list ${before.branch}`)).toContain(before.branch)
+        expect(yield* exists(path.join(dir, "three.txt"))).toBe(false)
+        expect(yield* exists(empty.worktree)).toBe(true)
+
+        // The undone one can be approved as usual.
+        const approved = yield* run(
+          AgentOrchestrator.Service.use((orchestrator) => orchestrator.approve(before.task.id, before.head)),
+        )
+        expect(approved.status).toBe("done")
+        expect(yield* read(path.join(dir, "three.txt"))).toBe("three\n")
+      }),
   )
 })

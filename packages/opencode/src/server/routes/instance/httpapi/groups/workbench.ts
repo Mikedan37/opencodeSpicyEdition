@@ -63,6 +63,15 @@ export const FileWritePayload = Schema.Struct({
 
 export const BridgeSession = Schema.Struct({ id: SessionID }).annotate({ identifier: "WorkbenchBridgeSession" })
 
+// The IDE editor's code intelligence (src/workbench/editor-lsp.ts): a 0-based position, UTF-16 columns as in LSP.
+const Count = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))
+export const LspQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  path: Schema.String.annotate({ description: "A file inside the project: absolute, or relative to the directory" }),
+  line: Count.annotate({ description: "0-based line" }),
+  character: Count.annotate({ description: "0-based UTF-16 column" }),
+})
+
 export const FileWritten = Schema.Struct({
   hash: Schema.String.annotate({ description: "sha256 of the bytes written" }),
 }).annotate({ identifier: "WorkbenchFileWritten" })
@@ -139,6 +148,42 @@ export const WorkbenchApi = HttpApi.make("workbench")
             summary: "Save a file from the editor",
             description:
               "Replaces a file inside the project (symlinks resolved) through a temporary file and a rename, only when its bytes still hash to baseHash; otherwise answers 409 and writes nothing. Language servers are told about the change, so its problems refresh.",
+          }),
+        ),
+        HttpApiEndpoint.get("lspHover", `${root}/lsp/hover`, {
+          query: LspQuery,
+          success: described(Schema.NullOr(Workbench.LspHover), "The hover text as markdown, or null"),
+          error: [ApiNotFoundError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.lsp.hover",
+            summary: "Hover",
+            description:
+              "What the file's language servers say about the symbol at a position, as markdown. Null when no server answers, there is none for the file, or language servers are off.",
+          }),
+        ),
+        HttpApiEndpoint.get("lspDefinition", `${root}/lsp/definition`, {
+          query: LspQuery,
+          success: described(Schema.Array(Workbench.LspLocation), "Where the symbol is defined"),
+          error: [ApiNotFoundError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.lsp.definition",
+            summary: "Go to definition",
+            description:
+              "The definitions of the symbol at a position. Files outside the project directory are marked outside; empty when no server answers.",
+          }),
+        ),
+        HttpApiEndpoint.get("lspReferences", `${root}/lsp/references`, {
+          query: LspQuery,
+          success: described(Schema.Array(Workbench.LspLocation), "Every reference, the declaration included"),
+          error: [ApiNotFoundError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workbench.lsp.references",
+            summary: "Find references",
+            description:
+              "The references to the symbol at a position, sorted by file and line, each with its line's text. Empty when no server answers.",
           }),
         ),
         HttpApiEndpoint.post("session", `${root}/session`, {

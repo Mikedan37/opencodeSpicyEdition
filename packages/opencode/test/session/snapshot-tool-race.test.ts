@@ -75,6 +75,7 @@ const lsp = Layer.succeed(
     incomingCalls: () => Effect.succeed([]),
     outgoingCalls: () => Effect.succeed([]),
     diagnosticEvents: () => Stream.empty, // spicy: LSP diagnostics hook
+    forFile: () => Effect.succeed([]), // spicy: the IDE editor's LSP requests
   }),
 )
 

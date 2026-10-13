@@ -16,6 +16,9 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk"
 import { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { Cause, Effect, Exit, Queue, Scope, Stream } from "effect"
+import { readFileSync, statSync } from "fs"
+import path from "path"
+import { AgentPreview } from "../preview"
 import { AgentProvider } from "../provider"
 
 const PREVIEW_LIMIT = 2_000
@@ -67,7 +70,7 @@ export const make = Effect.fn("AgentHQ.claudeCode.make")(function* (input: {
     const scope = yield* Scope.fork(parent)
     const inbox = yield* Queue.unbounded<SDKUserMessage, Cause.Done>()
     const stderr: string[] = []
-    const state = new ClaudeState(emit, sessionID)
+    const state = new ClaudeState(emit, sessionID, agent.workingDirectory ?? agent.projectDirectory)
     const query = run({
       prompt: Stream.toAsyncIterable(Stream.fromQueue(inbox)),
       options: {
@@ -210,6 +213,7 @@ class ClaudeState {
   constructor(
     readonly emit: AgentProvider.Emit,
     readonly sessionID: string,
+    readonly cwd: string,
   ) {}
 
   map(message: SDKMessage) {
@@ -300,6 +304,7 @@ class ClaudeState {
         title: options.title ?? (subject ? `${tool}: ${subject}` : tool),
         tool,
         ...(details && details !== "{}" ? { details: details.slice(0, PREVIEW_LIMIT) } : {}),
+        preview: preview(tool, toolInput, this.cwd, options.title ?? (subject ? `${tool}: ${subject}` : tool)),
         options: [
           { id: "allow", label: "Allow once", kind: "allow_once" },
           ...(always.length > 0
@@ -371,6 +376,50 @@ function decision(optionID: string, always: PermissionUpdate[]): PermissionResul
   if (optionID === "always" && always.length > 0) return { behavior: "allow", updatedPermissions: always }
   if (optionID === "deny") return { behavior: "deny", message: "The user rejected this action." }
   return undefined
+}
+
+/**
+ * What a Claude Code tool call would do: Edit, MultiEdit and Write as the file's diff (from the file as it is now, or
+ * the strings alone when the file cannot be read or the text is not found), Bash as its command, the rest as a line.
+ */
+function preview(tool: string, input: Record<string, unknown>, cwd: string, title: string) {
+  const text = (value: unknown) => (typeof value === "string" ? value : undefined)
+  const file = text(input.file_path)
+  if (tool === "Bash" && text(input.command)) return AgentPreview.command(text(input.command)!, cwd)
+  if (!file || !["Edit", "MultiEdit", "Write"].includes(tool)) return AgentPreview.other(title)
+  const shown = AgentPreview.relative(cwd, file)
+  const before = (() => {
+    try {
+      const stat = statSync(path.resolve(cwd, file))
+      return stat.size > 2_000_000 ? undefined : readFileSync(path.resolve(cwd, file), "utf8")
+    } catch {
+      return tool === "Write" ? "" : undefined
+    }
+  })()
+  if (tool === "Write") return AgentPreview.change(shown, before ?? "", text(input.content) ?? "")
+  const edits =
+    tool === "Edit"
+      ? [input]
+      : Array.isArray(input.edits)
+        ? input.edits.filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+        : []
+  let after = before
+  for (const edit of edits) {
+    const old = text(edit.old_string) ?? ""
+    const next = text(edit.new_string) ?? ""
+    if (after === undefined || !after.includes(old)) {
+      after = undefined
+      break
+    }
+    after = edit.replace_all === true ? after.replaceAll(old, () => next) : after.replace(old, () => next)
+  }
+  if (before !== undefined && after !== undefined) return AgentPreview.change(shown, before, after)
+  // The strings alone, as whole lines.
+  const lines = (key: string) => {
+    const joined = edits.map((edit) => text(edit[key]) ?? "").join("\n")
+    return joined.endsWith("\n") ? joined : joined + "\n"
+  }
+  return AgentPreview.change(shown, lines("old_string"), lines("new_string"))
 }
 
 function describe(input: Record<string, unknown>) {

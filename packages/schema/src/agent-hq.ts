@@ -121,6 +121,23 @@ export const PermissionOption = Schema.Struct({
   kind: Schema.Literals(["allow_once", "allow_always", "reject_once", "reject_always"]),
 })
 
+/**
+ * What a permission request is about, for the human to read before answering: an edit as a unified diff of one file
+ * (relative to the project; several files are listed comma-separated), a command and where it runs, or one line.
+ * Diffs are capped; `truncated` says one was cut.
+ */
+export const PermissionPreview = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("edit"),
+    path: Schema.String,
+    diff: Schema.String,
+    truncated: optional(Schema.Boolean),
+  }),
+  Schema.Struct({ kind: Schema.Literal("command"), command: Schema.String, cwd: optional(Schema.String) }),
+  Schema.Struct({ kind: Schema.Literal("other"), summary: Schema.String }),
+]).annotate({ identifier: "AgentHQPermissionPreview" })
+export type PermissionPreview = typeof PermissionPreview.Type
+
 // Normalized events every adapter emits. Provider-specific detail goes in
 // optional fields rather than new event types.
 export const AgentEvent = Schema.Union([
@@ -146,7 +163,8 @@ export const AgentEvent = Schema.Union([
     requestID: Schema.String,
     title: Schema.String,
     tool: optional(Schema.String),
-    details: optional(Schema.String),
+    details: optional(Schema.String), // the provider's own request data as JSON, capped; `preview` is what to show
+    preview: optional(PermissionPreview),
     options: Schema.Array(PermissionOption),
   }),
   Schema.Struct({
@@ -211,6 +229,9 @@ export const Task = Schema.Struct({
   status: TaskStatus,
   isolated: Schema.Boolean, // runs in its own git worktree and branch
   worktree: optional(Schema.Struct({ path: Schema.String, branch: Schema.String })),
+  // The reviewed head an approval is merging. Set just before the merge and gone once the task is done, so a merge that
+  // a crash interrupted is finished (or undone) on the next start.
+  merging: optional(Schema.String),
   result: optional(
     Schema.Struct({
       summary: optional(Schema.String),
@@ -240,6 +261,20 @@ export const TaskReview = Schema.Struct({
   reason: optional(Schema.String),
 }).annotate({ identifier: "AgentHQTaskReview" })
 export interface TaskReview extends Schema.Schema.Type<typeof TaskReview> {}
+
+/**
+ * The unified diff approving would merge (`base...head`, as `git diff`), for one file of the review or all of them. A
+ * task without a branch of its own has nothing to merge and an empty diff.
+ */
+export const TaskReviewDiff = Schema.Struct({
+  taskID: TaskID,
+  head: optional(Schema.String), // the branch commit diffed: the one asked for, else the branch tip
+  base: optional(Schema.String), // the project's current branch
+  path: optional(Schema.String), // the one file asked for
+  diff: Schema.String,
+  truncated: optional(Schema.Boolean), // cut at 1,000,000 characters
+}).annotate({ identifier: "AgentHQTaskReviewDiff" })
+export interface TaskReviewDiff extends Schema.Schema.Type<typeof TaskReviewDiff> {}
 
 export const AgentMessage = Schema.Struct({
   id: AgentMessageID,

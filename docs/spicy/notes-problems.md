@@ -29,9 +29,8 @@ Implemented:
 
 Design choices:
 
-- DIAG-01 "both sources listed": the contract has one `source` per problem, so push and pull of the same error
-  become one problem from the server's producer. The LSP client already merges both channels; the store never sees
-  two copies.
+- DIAG-01 "both sources listed" (until wave 4): the contract had one `source` per problem, so push and pull of the
+  same error became one problem from the server's producer. Wave 4 adds `sources` (see below).
 - Stale uses mtime, not a content hash: one `stat` per file at read time, no reads.
 - Runs that time out or have no tool keep the previous slice (it turns stale when the file changes) and set the
   producer state and reason instead.
@@ -166,8 +165,8 @@ Commands (from `packages/opencode`):
   replayed on subscription.
 - Merge notes for `spicy-lsp`: keep the `onDiagnostics` property in the `LSPClient.create({...})` call inside
   `getClients` and the three `emitDiagnostics` calls in `client.ts`. Any new `LSP.Service.of({...})` stub needs
-  `diagnosticEvents: () => Stream.empty`. DIAG-07: since spicy-lsp, a dead server's files are cleared through the
-  client's update functions, so its problems leave the store (tested in wave 2).
+  `diagnosticEvents: () => Stream.empty`. DIAG-07: since wave 4 a dead server's clearing events carry `exited`, and
+  the store keeps that server's problems marked stale until the restarted server reports them again.
 - `compile_commands.json` `command` strings are split on whitespace (quoted arguments need `arguments`). mypy needs
   1.11+ for `-O json`. go `-o /dev/null`, bun `--reporter-outfile=/dev/stdout` and the clang link output are
   Unix-only paths.
@@ -374,3 +373,85 @@ Wave 3 results (from `packages/opencode`):
   fe1c8528b, ours) were deleted after `git worktree prune` released their stale temp worktrees; the stray
   `packages/opencode/config.json` was removed.
 - `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 52 before the runs, 52 after.
+
+## Wave 4: validation gaps (DIAG-01, DIAG-07, DIAG-12, DIAG-13, schema baseline)
+
+Branch fast-forwarded to `spicy-ide` 23ab5a476. `bun install --frozen-lockfile --offline --ignore-scripts` linked 33
+packages from the cache; `bun.lock` and `package.json` did not change.
+
+Contract additions (`packages/schema/src/workbench.ts`; additive, the new fields are optional on the wire):
+
+```ts
+// new named schema (identifier "WorkbenchProblemSource"); Problem.source had the same fields inline, minus channel
+export const ProblemSource = Schema.Struct({
+  kind: SourceKind,
+  tool: Schema.String,
+  producer: Schema.String,
+  runID: optional(RunID),
+  channel: optional(Schema.Literals(["push", "pull"])), // language servers: how the server reported it
+})
+Problem.source: ProblemSource // unchanged meaning; always sources[0]
+Problem.sources?: ReadonlyArray<ProblemSource> // new; every producer and LSP channel that reported it; always set here
+Problem.observedAt // now the latest observation among `sources`
+Problem.stale // also true while the file's language server has crashed and not reported again
+ProblemsSnapshot.lsp?: "on" | "off" // new; "off" when the project config has no "lsp" key or "lsp": false
+```
+
+- DIAG-01: the LSP client's event carries the push and pull lists separately (`DiagnosticsEvent.push` / `pull`
+  replace the merged `diagnostics`), `lsp-source` tags each draft with its channel, and the store folds one
+  producer's equal problems (same id) into one that lists every channel. Snapshots, and the counts in
+  `workbench.problems.updated`, also merge across producers: same file, start line, severity and first message line,
+  ignoring case (clangd capitalizes what clang does not). The first problem in producer order stands for the group
+  (id, code, range, `source`); `sources` lists all of them; it is stale only when every report is; counts are over
+  the merged problems. Filters apply before the merge, so `source=lsp` lists only language-server sources.
+- DIAG-07: once the server died, the client's clearing events carry `exited` (the reason). The store keeps that
+  file's last report, marked stale, and sets the producer `failed` with the reason; the restarted server's next report
+  for the file replaces it (fresh, producer `idle` again). The LSP service's replay entry keeps the last report with
+  the reason, so a store that subscribes later gets the same stale problems.
+- DIAG-12: the snapshot (`GET /workbench/problems`, MCP `workbench_problems`) carries `lsp`. Per language was not
+  cheap (it needs the doctor's probes), so it is per project; the doctor keeps the per-language detail. MCP
+  `workbench_problems` adds the line `Language servers are off: set "lsp": true in opencode.json`.
+- MCP: `workbench_check` finds a run's problems through any entry of `sources` (a merged problem can have an LSP
+  `source`); problem lines name every tool (`[clangd, clang]`).
+- DIAG-13 (Rust): `test/lsp/rust-analyzer.test.ts`, real rust-analyzer 1.84.0 through the LSP service with
+  `"lsp": true` and downloads off. It skips when `rust-analyzer --version` fails (a rustup proxy without the
+  component). The crate's `let count: i32 = "one";` comes back as `E0308` (error, line 1, plus rustc's hint).
+- Schema baseline: upstream's `packages/schema/test/event-manifest.test.ts` already failed on the fork base (58 vs
+  55: the three `session.next.revert.*` events landed without a test update), so it checked none of the fork's
+  events. It now expects upstream's actual 58 / 88 / 88 / 35 plus the fork's events, checks that every fork event is
+  the latest definition of its type, and the `PartDelta, Diff, Error` slice moves from 40 to 43. Removing
+  `Review.Event.Definitions` from the manifest makes it fail (74 vs 76).
+
+UI notes: `source.kind` is the first source's kind; a kind filter that should also catch merged problems can look
+at `sources`. A stale problem whose producer is `failed` has a crashed language server (`reason` says why).
+
+Upstream-owned edits this wave: `packages/opencode/src/lsp/client.ts` (the `DiagnosticsEvent` shape and
+`emitDiagnostics`), `packages/opencode/src/lsp/lsp.ts` (replay entry on exit), `packages/schema/test/event-manifest.test.ts`
+(expectations); all marked `spicy:` and listed in SPICY.md. Fork files: `schema/src/workbench.ts`,
+`workbench/problems/{store,lsp-source}.ts`, `workbench/mcp/bridge.ts`, tests.
+
+Found, not changed (spicy-lsp area): a touch that makes the server crash still waits the full 5 s document wait. The
+waiter checks `exitReason` only between iterations; `exited` is not part of its race.
+
+Wave 4 tests:
+
+| ID | Case | Where |
+|---|---|---|
+| DIAG-01 | fake server reports one error by push and by pull: one problem, `sources` [push, pull]; a checker's same error (other column, code, capitalization) joins it as a third source; its error on another line stays separate; counts 2 | `test/workbench/problems.test.ts` |
+| DIAG-07 | the fake server exits on a change; with the file backdated, its problem stays with `stale: true`, producer `failed` with the exit reason, LSP status `error`; after the backoff a touch restarts it and the problem is fresh, producer `idle`, status `connected` | `test/workbench/problems.test.ts` |
+| DIAG-07 | a store first used after the crash gets the replayed last report, stale, producer `failed` (fails without the replay change) | `test/workbench/problems.test.ts` |
+| DIAG-12 | `GET /workbench/problems`: `lsp` is `"off"` without config and `"on"` with `"lsp": true`; MCP `workbench_problems` prints the "Language servers are off" line | `test/workbench/routes.test.ts`, `mcp.test.ts` |
+| DIAG-13 | real rust-analyzer: `E0308` on line 1 | `test/lsp/rust-analyzer.test.ts` |
+| schema | upstream counts plus fork events; every fork event registered | `packages/schema/test/event-manifest.test.ts` |
+
+Wave 4 results:
+
+- `packages/opencode`: `bun test --timeout 30000`: 3877 pass, 28 skip, 1 todo, 0 fail (298 files, 313 s); the replay
+  test was added after that run and passes with `test/workbench/problems.test.ts` (6 pass).
+- `packages/schema`: `bun test`: 15 pass, 0 fail (the two event-manifest tests failed before).
+- `bun run typecheck` in opencode, schema, core and app: clean. `bun run test:httpapi`: 269/269 in coverage, auth
+  and effect modes.
+- After `test:httpapi`: its leftover branches `opencode/curious-circuit` and `opencode/mighty-mountain` (tips
+  23ab5a476, ours) were deleted after `git worktree prune`; the stray `packages/opencode/config.json` was removed. No
+  rust-analyzer or fake server processes left running.
+- `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 35 before the runs, 35 after.

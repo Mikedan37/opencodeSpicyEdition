@@ -235,6 +235,12 @@ export function AgentDialog(props: { agent?: Agent; draft: ReturnType<typeof cre
                           {item.reason ?? language.t("agenthq.dialog.provider.unavailable")}
                         </span>
                       </Show>
+                      {/* A binary the provider found on its own (AgentKit's bridge): the human sees what will run. */}
+                      <Show
+                        when={item.available && item.capabilities.notes?.find((note) => note.startsWith("Bridge: "))}
+                      >
+                        {(bridge) => <span class="break-all text-[11px] text-v2-text-text-muted">{bridge()}</span>}
+                      </Show>
                     </span>
                   </label>
                 )}

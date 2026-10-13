@@ -58,6 +58,7 @@ export const HIGHLIGHT = HighlightStyle.define([
 ])
 
 const PAUSED = "rgb(from var(--v2-state-fg-warning) r g b / 0.18)"
+const EXCEPTION = "rgb(from var(--v2-state-fg-danger) r g b / 0.16)"
 const SELECTED = "rgb(from var(--v2-border-border-focus) r g b / 0.12)"
 const GLYPH_COLOR: Record<GlyphKind, string> = {
   line: "var(--v2-state-fg-danger)",
@@ -114,6 +115,26 @@ export const THEME = EditorView.theme({
     color: "var(--v2-state-fg-warning)",
   },
   ".cm-lineNumbers .cm-gutterElement.cm-spicy-exec-gutter": { boxShadow: "inset 3px 0 0 var(--v2-state-fg-warning)" },
+  // An exception stop is red, with the exception in a banner under the line (UX #13).
+  ".cm-spicy-exec.cm-spicy-exec-exception": { backgroundColor: EXCEPTION },
+  ".cm-gutterElement.cm-spicy-exec-gutter.cm-spicy-exec-exception": {
+    backgroundColor: EXCEPTION,
+    color: "var(--v2-state-fg-danger)",
+  },
+  ".cm-lineNumbers .cm-gutterElement.cm-spicy-exec-gutter.cm-spicy-exec-exception": {
+    boxShadow: "inset 3px 0 0 var(--v2-state-fg-danger)",
+  },
+  ".cm-spicy-exception": {
+    margin: "2px 12px",
+    padding: "2px 8px",
+    borderRadius: "4px",
+    fontSize: "11px",
+    lineHeight: "18px",
+    backgroundColor: "var(--v2-state-bg-danger)",
+    color: "var(--v2-state-fg-danger)",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+  },
   ".cm-spicy-selected": { backgroundColor: SELECTED },
   ".cm-spicy-commented": { boxShadow: "inset 2px 0 0 var(--v2-border-border-focus)" },
   ".cm-spicy-values": {

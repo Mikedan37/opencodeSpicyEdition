@@ -36,7 +36,7 @@ import { Persist, persisted } from "@/utils/persist"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { showToast } from "@/utils/toast"
 import { createWorkbenchClient, errorText, WorkbenchRequestError } from "./client"
-import { DebugProvider } from "./debug-context"
+import { DebugProvider, useDebug } from "./debug-context"
 import { EditorProvider } from "./editor-context"
 import { createHandoff, type HandoffPayload } from "./handoff"
 import { createProblemsState, type ProblemFilter } from "./problems"
@@ -352,7 +352,11 @@ export function WorkbenchProviders(props: ParentProps) {
 // Tab triggers rendered inside the terminal panel's tab list, pinned to its trailing edge.
 export function WorkbenchTabTriggers() {
   const workbench = useWorkbench()
+  const debug = useDebug()
   const language = useLanguage()
+  // UX #13: Run is a debugged program's terminal, so its tab shows once a debug session has one (and while it is open).
+  const shown = (tab: WorkbenchTab) =>
+    tab !== "run" || workbench.tab() === "run" || debug.state.sessions.some((item) => item.ptyID)
   const problemCounts = createMemo(() => workbench.problems.state.snapshot?.counts)
   const attention = workbench.needsYou
   const running = createMemo(() => workbench.runs.state.runs.filter((entry) => !isFinished(entry.info.status)).length)
@@ -377,7 +381,7 @@ export function WorkbenchTabTriggers() {
       data-component="workbench-tabs"
       class="sticky right-0 z-10 ml-auto flex h-full shrink-0 items-center gap-1 pl-2 pr-3"
     >
-      <For each={WORKBENCH_TABS}>
+      <For each={WORKBENCH_TABS.filter(shown)}>
         {(tab) => (
           <Tabs.Trigger
             value={PREFIX + tab}

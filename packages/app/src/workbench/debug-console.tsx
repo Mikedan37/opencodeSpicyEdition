@@ -92,8 +92,11 @@ export default function DebugConsolePanel() {
         fallback={
           <>
             <div class="flex h-10 shrink-0 items-center gap-2 px-2">
-              <DebugToolbar />
-              <span class="mx-1 h-4 w-px shrink-0 bg-v2-border-border-muted" />
+              {/* One set of debug controls on screen: the side Debug tab has them while open */}
+              <Show when={!debug.sideShown()}>
+                <DebugToolbar />
+                <span class="mx-1 h-4 w-px shrink-0 bg-v2-border-border-muted" />
+              </Show>
               <SessionPicker />
               <div class="ml-2 flex shrink-0 items-center gap-1" role="group">
                 <For each={FILTERS}>
@@ -122,7 +125,9 @@ export default function DebugConsolePanel() {
                   {language.t("workbench.debug.console.loadFailed")}
                 </span>
               </Show>
-              <Show when={debug.selected()}>{(session) => <OwnerChip session={session()} />}</Show>
+              <Show when={!debug.sideShown() && debug.selected()}>
+                {(session) => <OwnerChip session={session()} />}
+              </Show>
             </div>
             <VirtualList
               items={items()}

@@ -3,6 +3,7 @@ import { createStore } from "solid-js/store"
 import { useParams } from "@solidjs/router"
 import type { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { Icon } from "@opencode-ai/ui/icon"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogBody, DialogHeader, DialogTitleGroup, DialogV2 } from "@opencode-ai/ui/v2/dialog-v2"
 import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
@@ -178,13 +179,25 @@ function TargetLabel(props: { target: HandoffTarget; last: boolean }) {
 // The picker behind the actions: this session or an Agent HQ identity, the last used first. `build` makes the
 // snapshot when a target is picked, so it describes the state at that moment. `row`: a small text button that a
 // list row shows on hover and focus (Problems); otherwise a toolbar button.
-export function HandoffMenu(props: { label: string; title?: string; build: Build; row?: boolean; class?: string }) {
+export function HandoffMenu(props: {
+  label: string
+  title?: string
+  // Without it the menu has no targets, only `children` (the Debug tab's Ask an agent while not stopped).
+  build?: Build
+  row?: boolean
+  class?: string
+  // The targets' heading; "Send to" by default.
+  heading?: string
+  // More items after the targets, e.g. Hand to the agent.
+  children?: JSX.Element
+  action?: string
+}) {
   const workbench = useWorkbench()
   const language = useLanguage()
   const [busy, setBusy] = createSignal(false)
-  const pick = (target: HandoffTarget) => {
+  const pick = (target: HandoffTarget, build: Build) => {
     setBusy(true)
-    void workbench.handoff.send(target, props.build).finally(() => setBusy(false))
+    void workbench.handoff.send(target, build).finally(() => setBusy(false))
   }
   return (
     <MenuV2 gutter={4} modal={false} placement="bottom-end">
@@ -192,33 +205,44 @@ export function HandoffMenu(props: { label: string; title?: string; build: Build
         as={ButtonV2}
         size="small"
         variant={props.row ? "ghost" : "neutral"}
-        data-action="handoff"
+        data-action={props.action ?? "handoff"}
         class={props.class}
         aria-label={props.title}
         title={props.title}
         disabled={busy()}
       >
         {props.label}
+        <Show when={!props.row}>
+          <Icon name="chevron-down" size="small" />
+        </Show>
       </MenuV2.Trigger>
       <MenuV2.Portal>
         <MenuV2.Content data-handoff-menu="">
-          <MenuV2.Group>
-            <MenuV2.GroupLabel>{language.t("workbench.handoff.to")}</MenuV2.GroupLabel>
-            <For
-              each={workbench.handoff.targets()}
-              fallback={<MenuV2.Item disabled>{language.t("workbench.handoff.none")}</MenuV2.Item>}
-            >
-              {(target) => (
-                <MenuV2.Item
-                  data-target={target.key}
-                  badge={target.key === workbench.handoff.last() ? language.t("workbench.handoff.last") : undefined}
-                  onSelect={() => pick(target)}
+          <Show when={props.build}>
+            {(build) => (
+              <MenuV2.Group>
+                <MenuV2.GroupLabel>{props.heading ?? language.t("workbench.handoff.to")}</MenuV2.GroupLabel>
+                <For
+                  each={workbench.handoff.targets()}
+                  fallback={<MenuV2.Item disabled>{language.t("workbench.handoff.none")}</MenuV2.Item>}
                 >
-                  {(<TargetLabel target={target} last={false} />) as JSX.Element}
-                </MenuV2.Item>
-              )}
-            </For>
-          </MenuV2.Group>
+                  {(target) => (
+                    <MenuV2.Item
+                      data-target={target.key}
+                      badge={target.key === workbench.handoff.last() ? language.t("workbench.handoff.last") : undefined}
+                      onSelect={() => pick(target, build())}
+                    >
+                      {(<TargetLabel target={target} last={false} />) as JSX.Element}
+                    </MenuV2.Item>
+                  )}
+                </For>
+              </MenuV2.Group>
+            )}
+          </Show>
+          <Show when={props.build && props.children}>
+            <MenuV2.Separator />
+          </Show>
+          {props.children}
         </MenuV2.Content>
       </MenuV2.Portal>
     </MenuV2>

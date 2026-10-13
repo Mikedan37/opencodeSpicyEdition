@@ -110,15 +110,19 @@ test("debug side panel: start errors verbatim, stack, lazy variables, watches, o
   await expect(debug.locator('[data-frame="1"] [data-slot="frame"]')).toHaveAttribute("aria-current", "true")
   await expect(debug).toBeVisible()
 
-  // The agent drives: controls are disabled with a reason; Take over posts owner = human
+  // The agent drives: controls are disabled with a reason; "Controlled by: Agent ▾" → Take over posts owner = human
   mock.emit(updated({ state: "stopped", owner: "agent", stop: stopAt(2) }))
-  await expect(debug.locator('[data-slot="debug-owner"]')).toHaveAttribute("data-owner", "agent")
+  const owner = debug.locator('[data-slot="debug-owner"]')
+  await expect(owner).toHaveAttribute("data-owner", "agent")
+  await expect(owner).toHaveText("Controlled by: Agent")
   await expect(debug.locator('[data-debug-action="next"]')).toBeDisabled()
   await expect(debug.locator('[data-debug-action="next"]')).toHaveAttribute("title", /take over to drive it/)
   await expect(debug.locator('[data-debug-action="stop"]')).toBeEnabled()
-  await debug.locator('[data-action="debug-take-over"]').click()
+  await owner.click()
+  await page.locator('[data-action="debug-take-over"]').click()
   await expect.poll(() => mock.owners).toEqual(["human"])
-  await expect(debug.locator('[data-slot="debug-owner"]')).toHaveAttribute("data-owner", "human")
+  await expect(owner).toHaveAttribute("data-owner", "human")
+  await expect(owner).toHaveText("Controlled by: You")
 
   // F9 toggles a breakpoint on the selected line of the open file and syncs it as an absolute path
   await expect(debug.locator('[data-debug-section="breakpoints"]')).toContainText("No breakpoints")
@@ -357,6 +361,37 @@ test("run tab after the program ended: replays the debugger's copy of its output
   await expect(replay).toContainText("Output is no longer available")
   await expect(terminal).toHaveCount(0)
   expect(state.sockets).toBeGreaterThan(1)
+})
+
+test("UX #13: one debug toolbar on screen; the Run tab once a program has a terminal", async ({ page }) => {
+  const mock = await setup(page)
+  mock.sessions = [session()]
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+  await expectSessionTitle(page, title)
+  await page.keyboard.press("Control+Backquote")
+  await expect(page.locator('[data-workbench-tab="debug"]')).toBeVisible()
+  // debugpy's internal console: no terminal, no Run tab
+  await expect(page.locator('[data-workbench-tab="run"]')).toHaveCount(0)
+
+  // The Debug Console has the toolbar while the side Debug tab is closed, and gives it up while it is open
+  await page.locator('[data-workbench-tab="debug"]').click()
+  const console = page.locator('[data-component="workbench-debug-console"]')
+  await expect(console.locator('[data-debug-action="next"]')).toBeVisible()
+  mock.emit(updated({ state: "stopped", stop: stopAt(1) }))
+  const panel = page.locator("#review-panel")
+  await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
+  await panel.locator('[data-workbench-side-tab="debug"]').click()
+  await expect(panel.locator('[data-component="workbench-debug"] [data-debug-action="next"]')).toBeVisible()
+  await expect(page.locator('[data-debug-action="next"]')).toHaveCount(1)
+  await expect(console.locator("[data-debug-action]")).toHaveCount(0)
+  await expect(page.locator('[data-slot="debug-owner"]')).toHaveCount(1)
+  await page.screenshot({ path: test.info().outputPath("ux13-one-toolbar.png") })
+  await panel.getByRole("tab", { name: "app.py" }).click()
+  await expect(console.locator('[data-debug-action="next"]')).toBeVisible()
+
+  // A program run in a terminal brings the Run tab
+  mock.emit(updated({ id: "dbg_two", startedAt: 1_700_000_000_500, ptyID: "pty_program" }))
+  await expect(page.locator('[data-workbench-tab="run"]')).toBeVisible()
 })
 
 test("editor gutter: paused line with values, breakpoint dots, F9, frame selection", async ({ page }) => {
@@ -834,7 +869,7 @@ test("CON-07 a raw LLDB command waits for its ask under the command; a rejection
   ])
 })
 
-test("UI-07 Investigate with agent sends the stop's snapshot", async ({ page }) => {
+test("UI-07 Ask an agent sends the stop's snapshot; an exception stop is red at its line", async ({ page }) => {
   const mock = await setup(page)
   mock.sessions = [session()]
   await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
@@ -848,13 +883,22 @@ test("UI-07 Investigate with agent sends the stop's snapshot", async ({ page }) 
   mock.emit(updated({ state: "stopped", stop, investigationID: "inv_debug" }))
   const panel = page.locator("#review-panel")
   await expect(panel.getByRole("tab", { name: "app.py" })).toHaveAttribute("data-selected", "")
+  // UX #13: the exception, not a breakpoint: the paused line is red with the exception under it
+  const editor = panel.locator('[data-component="workbench-editor"][data-path="app.py"]')
+  await expect(editor.locator('.cm-line[data-spicy-exec][data-line="4"]')).toHaveClass(/cm-spicy-exec-exception/)
+  await expect(editor.locator("[data-debug-exception]")).toHaveText("ZeroDivisionError: division by zero")
+  await expect(editor.locator("[data-debug-values]")).toHaveText("x = 1")
+  await page.screenshot({ path: test.info().outputPath("ux13-exception-line.png") })
   await panel.locator('[data-workbench-side-tab="debug"]').click()
   const debug = panel.locator('[data-component="workbench-debug"]')
-  const investigate = debug.locator('[data-action="handoff"]')
-  await expect(investigate).toHaveText("Investigate with agent")
-  await investigate.click()
+  // One menu for agents: investigate this stop, or let an agent drive
+  const ask = debug.locator('[data-action="ask-agent"]')
+  await expect(ask).toHaveText("Ask an agent")
+  await ask.click()
   const menu = page.locator("[data-handoff-menu]")
   await expect(menu.locator("[data-target]")).toHaveText(["This session", "Ada"])
+  await expect(menu.locator('[data-action="debug-hand-to-agent"]')).toContainText("Let the agent drive")
+  await expect(menu).toHaveCSS("opacity", "1")
   await page.screenshot({ path: test.info().outputPath("ui07-investigate.png") })
   await menu.locator('[data-target="agent:agt_ada"]').click()
   await expect.poll(() => mock.messages.length).toBe(1)
@@ -879,9 +923,24 @@ test("UI-07 Investigate with agent sends the stop's snapshot", async ({ page }) 
   })
   await expect(page.getByText("Sent to Ada", { exact: true })).toBeVisible()
 
-  // Only a stop can be investigated.
+  // A caller's frame keeps the paused look: the exception was raised in the top frame
+  await debug.locator('[data-frame="2"] [data-slot="frame"]').click()
+  await expect(editor.locator('.cm-line[data-spicy-exec][data-line="12"]')).not.toHaveClass(/cm-spicy-exec-exception/)
+  await expect(editor.locator("[data-debug-exception]")).toHaveCount(0)
+
+  // Only a stop can be investigated; a running program the user drives can still be handed to an agent
   mock.emit(updated({ state: "running" }))
-  await expect(investigate).toHaveCount(0)
+  await expect(editor.locator("[data-spicy-exec]")).toHaveCount(0)
+  await ask.click()
+  await expect(menu.locator("[data-target]")).toHaveCount(0)
+  await menu.locator('[data-action="debug-hand-to-agent"]').click()
+  await expect.poll(() => mock.owners).toEqual(["agent"])
+  // (the mock answers with the session paused again) The agent drives: nothing left to hand over
+  await expect(debug.locator('[data-slot="debug-owner"]')).toHaveAttribute("data-owner", "agent")
+  await ask.click()
+  await expect(menu.locator("[data-target]")).toHaveCount(2)
+  await expect(menu.locator('[data-action="debug-hand-to-agent"]')).toHaveCount(0)
+  await page.keyboard.press("Escape")
 })
 
 // The reply the page sends for a permission ask, within 10 s.

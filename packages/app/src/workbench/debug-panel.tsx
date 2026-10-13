@@ -4,13 +4,14 @@ import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
+import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import { useSettingsDialog } from "@/components/settings-dialog"
 import { useLanguage } from "@/context/language"
 import { showToast } from "@/utils/toast"
 import { errorText } from "./client"
-import { EXCEPTION_FILTERS, isLive, type Breakpoint } from "./debug"
+import { EXCEPTION_FILTERS, humanDrives, isLive, type Breakpoint } from "./debug"
 import { useDebug } from "./debug-context"
 import { DebugToolbar, OwnerChip, SessionPicker, VariableNode } from "./debug-ui"
 import { HandoffMenu } from "./handoff"
@@ -31,6 +32,11 @@ export default function DebugPanel() {
   const language = useLanguage()
   const [ui, setUi] = createStore({ closed: {} as Partial<Record<(typeof SECTIONS)[number], boolean>> })
   const session = () => debug.selected()
+  debug.showingSide()
+  const canHand = () => {
+    const current = session()
+    return !!current && isLive(current) && humanDrives(current)
+  }
 
   return (
     <div data-component="workbench-debug" class="flex min-h-0 flex-1 flex-col">
@@ -39,16 +45,38 @@ export default function DebugPanel() {
         <span class="mx-1 h-4 w-px shrink-0 bg-v2-border-border-muted" />
         <SessionPicker />
         <span class="flex-1" />
-        {/* UI-07: the stop as it is when a target is picked. */}
-        <Show when={session()?.state === "stopped" && session()?.stop}>
+        {/* UX #13: one menu for an agent: investigate this stop (UI-07, the stop as it is when a target is picked),
+            or let the agent drive */}
+        <Show when={session()?.state === "stopped" || canHand()}>
           <HandoffMenu
-            label={language.t("workbench.handoff.investigate")}
+            action="ask-agent"
+            label={language.t("workbench.debug.askAgent")}
+            heading={language.t("workbench.debug.investigateWith")}
             class="shrink-0"
-            build={() => {
-              const input = { root: workbench.directory, session: debug.selected()! }
-              return { summary: stopSummary(input), context: stopSnapshot(input), name: STOP_CONTEXT }
-            }}
-          />
+            build={
+              session()?.state === "stopped" && session()?.stop
+                ? () => {
+                    const input = { root: workbench.directory, session: debug.selected()! }
+                    return { summary: stopSummary(input), context: stopSnapshot(input), name: STOP_CONTEXT }
+                  }
+                : undefined
+            }
+          >
+            <Show when={canHand()}>
+              <MenuV2.Item
+                data-action="debug-hand-to-agent"
+                class="h-auto! py-1!"
+                onSelect={() => void debug.setOwner("agent", session()!.id)}
+              >
+                <span class="flex flex-col gap-1">
+                  {language.t("workbench.debug.handToAgent")}
+                  <span class="text-[11px] text-v2-text-text-muted">
+                    {language.t("workbench.debug.handToAgent.description")}
+                  </span>
+                </span>
+              </MenuV2.Item>
+            </Show>
+          </HandoffMenu>
         </Show>
         <Show when={session()}>{(current) => <OwnerChip session={current()} />}</Show>
       </div>

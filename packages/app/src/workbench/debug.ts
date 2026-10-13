@@ -38,6 +38,13 @@ export const isLive = (session: DebugSession) =>
 // Control commands from the human fail with 409 while the agent owns the session (an idle session is claimed).
 export const humanDrives = (session: DebugSession) => session.owner === "human" || session.owner === "idle"
 
+// What the paused line's red banner says when the stop is on an exception ("ValueError: bad order"); undefined when it
+// is not (UX #13: an exception stop no longer looks like a breakpoint).
+export const stopException = (stop: NonNullable<DebugSession["stop"]>, fallback: string) =>
+  stop.exception || stop.reason === "exception"
+    ? [stop.exception?.id, stop.exception?.description].filter(Boolean).join(": ") || stop.description || fallback
+    : undefined
+
 export type DebugConsole = {
   rows: ConsoleRow[]
   bytes: number

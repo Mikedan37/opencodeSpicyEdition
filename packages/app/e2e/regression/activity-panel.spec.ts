@@ -45,17 +45,24 @@ test("activity: investigation timeline and evidence link to Output, Debug and Ag
   await expect(page.locator('section[data-run="run_1"] [role="region"]')).toBeVisible()
   await expect(page.locator('section[data-run="run_1"]')).toContainText("AssertionError")
 
-  // A debug session opens in the side panel's Debug tab; its owner can hand it to the agent or release it
+  // A debug session opens in the side panel's Debug tab; its owner can release it ("Controlled by" menu) or let the
+  // agent drive (Ask an agent menu)
   await page.locator('[data-workbench-tab="activity"]').click()
   await evidence.nth(1).locator('[data-link="debug"]').click()
   const debug = page.locator('#review-panel [data-component="workbench-debug"]')
   await expect(debug).toBeVisible()
-  await expect(debug.locator('[data-slot="debug-owner"]')).toHaveAttribute("data-owner", "human")
-  await debug.locator('[data-action="debug-release"]').click()
-  await expect(debug.locator('[data-slot="debug-owner"]')).toHaveAttribute("data-owner", "idle")
-  await debug.locator('[data-action="debug-hand-to-agent"]').click()
-  await expect(debug.locator('[data-slot="debug-owner"]')).toHaveAttribute("data-owner", "agent")
-  await expect(debug.locator('[data-action="debug-take-over"]')).toBeVisible()
+  const owner = debug.locator('[data-slot="debug-owner"]')
+  await expect(owner).toHaveAttribute("data-owner", "human")
+  await owner.click()
+  await page.locator('[data-action="debug-release"]').click()
+  await expect(owner).toHaveAttribute("data-owner", "idle")
+  await expect(owner).toHaveText("Controlled by: Nobody")
+  await debug.locator('[data-action="ask-agent"]').click()
+  await page.locator('[data-action="debug-hand-to-agent"]').click()
+  await expect(owner).toHaveAttribute("data-owner", "agent")
+  await owner.click()
+  await expect(page.locator('[data-action="debug-take-over"]')).toBeVisible()
+  await page.keyboard.press("Escape")
   expect(mock.owners).toEqual(["idle", "agent"])
 
   // The agent's session opens in Agent HQ

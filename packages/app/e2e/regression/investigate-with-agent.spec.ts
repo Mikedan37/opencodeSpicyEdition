@@ -8,7 +8,7 @@ import { stopSnapshot, stopSummary } from "../../src/workbench/snapshot"
 import { createProject, fakeModel, startServer } from "../utils/opencode-server"
 
 // UI-07 on a real opencode server (isolated XDG dirs) with real debugpy: the program stops on its uncaught exception,
-// "Investigate with agent" → This session sends the stop's snapshot, and the session stores exactly that text as the
+// "Ask an agent" → This session sends the stop's snapshot, and the session stores exactly that text as the
 // user's message, which the scripted model then answers. Run with PLAYWRIGHT_SERVER_PORT set to a free port.
 
 const AVG = [
@@ -61,7 +61,7 @@ test("UI-07 Investigate with agent sends the real stop to this session", async (
     const debug = panel.locator('[data-component="workbench-debug"]')
     await expect(debug.locator('[data-slot="debug-status"]')).toContainText("ZeroDivisionError")
 
-    await debug.locator('[data-action="handoff"]').click()
+    await debug.locator('[data-action="ask-agent"]').click()
     await page.locator('[data-handoff-menu] [data-target="session"]').click()
     await expect(page.getByText("Sent to this session", { exact: true })).toBeVisible()
 

@@ -58,7 +58,9 @@ test("run tab: typing in the program's terminal reaches the program", async ({ p
     await page.goto(`/server/${base64Encode(server.url)}/session/${session.id}`)
     await expect(page.getByRole("textbox", { name: "Prompt" })).toBeVisible({ timeout: 30_000 })
     await page.keyboard.press("Control+Backquote")
-    await page.locator('[data-workbench-tab="run"]').click()
+    // No program has a terminal yet, so there is no Run tab (UX #13)
+    await expect(page.locator('[data-workbench-tab="debug"]')).toBeVisible()
+    await expect(page.locator('[data-workbench-tab="run"]')).toHaveCount(0)
 
     const started = await api("/workbench/debug/sessions", {
       method: "POST",
@@ -67,6 +69,7 @@ test("run tab: typing in the program's terminal reaches the program", async ({ p
     })
     expect(started.status).toBe(200)
     debugID = ((await started.json()) as { id: string }).id
+    await page.locator('[data-workbench-tab="run"]').click({ timeout: 30_000 })
     await expect.poll(printed, { timeout: 30_000 }).toContain("ready for input")
 
     // The Run tab shows the program's terminal; typing there goes over the PTY WebSocket to the program's stdin.

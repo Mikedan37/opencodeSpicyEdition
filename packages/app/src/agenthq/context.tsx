@@ -48,8 +48,8 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
     // Tasks and agent messages are process-global like agents; their routes may be missing on older servers, so they
     // load on their own and a failure stays inside the Tasks view.
     const tasks = createTasksState(client)
+    // Which Agents view is open lives in the Workbench panel (workbench/panel.tsx), with the other tabs.
     const [ui, setUi] = createStore({
-      view: "agents" as "agents" | "tasks",
       // The task shown in the Tasks view; kept here so opening a task's session and coming back keeps it.
       taskID: undefined as string | undefined,
       status: "loading" as "loading" | "ready" | "error",
@@ -82,13 +82,13 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
       )
 
     // UX #6: an agent's permission ask and a task ready for review reach the user like the main session's asks do
-    // (the same sound and OS notification settings); the notification opens it in the Agents tab.
-    const alertUser = (title: string, description: string, open: () => void) => {
+    // (the same sound and OS notification settings); the notification opens its Agents view (the command), then it.
+    const alertUser = (title: string, description: string, view: "agents" | "tasks", open: () => void) => {
       if (settings.sounds.permissionsEnabled()) void playSoundById(settings.sounds.permissions())
       if (settings.notifications.permissions())
         void platform.notify(title, description, () => {
+          command.trigger(`workbench.${view}`)
           open()
-          command.trigger("workbench.agents")
         })
     }
     const agentName = (agentID: string | undefined) =>
@@ -106,7 +106,8 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
             alertUser(
               language.t("notification.permission.title"),
               language.t("agenthq.notify.permission", { agent: agentName(agentID), title: asked.title }),
-              () => setUi({ view: "agents", agentID, sessionID: data.envelope.sessionID }),
+              "agents",
+              () => setUi({ agentID, sessionID: data.envelope.sessionID }),
             )
           }
           if (store.receive(data.envelope) === "gap") void resync(data.envelope.sessionID)
@@ -126,7 +127,8 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
             alertUser(
               language.t("agenthq.notify.review.title"),
               language.t("agenthq.notify.review", { task: data.task.title, agent: agentName(data.task.assignee) }),
-              () => setUi({ view: "tasks", taskID: data.task.id, agentID: undefined, sessionID: undefined }),
+              "tasks",
+              () => setUi("taskID", data.task.id),
             )
           tasks.upsert(data.task)
         })
@@ -151,7 +153,6 @@ export const { use: useAgentHQ, provider: AgentHQProvider } = createSimpleContex
         void tasks.load()
         return load()
       },
-      setView: (view: "agents" | "tasks") => setUi({ view, agentID: undefined, sessionID: undefined }),
       selectTask: (taskID?: string) => setUi("taskID", taskID),
       // Opens an agent's workspace on one of its sessions (a task's session, a message's delivery).
       openSession: (agentID: string, sessionID?: string) => setUi({ agentID, sessionID }),

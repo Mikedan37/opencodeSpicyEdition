@@ -42,9 +42,12 @@ export async function mockWorkbench(
   const mock = {
     directory,
     sessionID,
-    // GET /workbench/problems, /workbench/runs, /workbench/file?path=, /workbench/debug/sessions, /workbench/doctor
+    // GET /workbench/problems, /workbench/runs, /workbench/file?path=, /workbench/debug/sessions, /workbench/doctor,
+    // /workbench/investigations, /workbench/tools
     snapshot: problemsSnapshot([]),
     runs: [] as unknown[],
+    investigations: [] as unknown[],
+    tools: [] as unknown[],
     files: {} as Record<string, string>,
     debugSessions: [] as unknown[],
     doctor: undefined as unknown,
@@ -146,7 +149,8 @@ export async function mockWorkbench(
       }
       if (file in mock.files) return json(route, { content: mock.files[file], hash: "h1" })
     }
-    if (path === "/workbench/investigations" || path === "/workbench/tools") return json(route, [])
+    if (path === "/workbench/investigations") return json(route, mock.investigations)
+    if (path === "/workbench/tools") return json(route, mock.tools)
     return json(route, { message: path }, 404)
   })
   // This session's prompt, whichever protocol the app speaks.
@@ -218,6 +222,13 @@ export async function mockWorkbench(
   await page.route("**/api/pty*", (route) => json(route, { location, data: pty }))
   await page.route(`**/api/pty/${ptyID}*`, (route) => json(route, { location, data: pty }))
   await page.routeWebSocket(new RegExp(`/api/pty/${ptyID}/connect`), () => undefined)
+  // v1 terminals: the panel opens with one, like a real server's
+  await page.route(`${server}/pty`, (route) => json(route, pty))
+  await page.route(`${server}/pty/${ptyID}*`, (route) => json(route, pty))
+  await page.route(`${server}/pty/${ptyID}/connect-token*`, (route) =>
+    json(route, { ticket: "e2e-ticket", expires_in: 60 }),
+  )
+  await page.routeWebSocket(new RegExp(`/pty/${ptyID}/connect`), () => undefined)
   await page.addInitScript(
     (input) => {
       if (sessionStorage.getItem("workbench-mock.seeded")) return

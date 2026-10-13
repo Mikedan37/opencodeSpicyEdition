@@ -8,7 +8,7 @@ import { useLanguage } from "@/context/language"
 import { type DebugCompletion } from "./client"
 import { completionRange, type ConsoleRow } from "./debug"
 import { useDebug } from "./debug-context"
-import { DebugToolbar, OwnerChip, SessionPicker, VariableNode } from "./debug-ui"
+import { DebugToolbar, DebugViewSwitch, OwnerChip, SessionPicker, VariableNode } from "./debug-ui"
 import { useFileLineOpener } from "./open-file"
 import { useWorkbench } from "./panel"
 import { BUG_GLYPH, Glyph, PanelState, TONE_CLASS } from "./ui"
@@ -92,6 +92,7 @@ export default function DebugConsolePanel() {
         fallback={
           <>
             <div class="flex h-10 shrink-0 items-center gap-2 px-2">
+              <DebugViewSwitch />
               {/* One set of debug controls on screen: the side Debug tab has them while open */}
               <Show when={!debug.sideShown()}>
                 <DebugToolbar />

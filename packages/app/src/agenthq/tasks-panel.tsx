@@ -1,6 +1,7 @@
-import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, Show, Switch, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { IconButton } from "@opencode-ai/ui/icon-button"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { Dialog, DialogBody, DialogFooter, DialogHeader, DialogTitle } from "@opencode-ai/ui/v2/dialog-v2"
 import { DividerV2 } from "@opencode-ai/ui/v2/divider-v2"
@@ -15,6 +16,8 @@ import { showToast } from "@/utils/toast"
 import { errorText } from "@/workbench/client"
 import { useRelativeTime } from "@/workbench/clock"
 import { PatchView } from "@/workbench/patch-view"
+import { useWorkbench } from "@/workbench/panel"
+import { AGENT_VIEWS, type AgentView } from "@/workbench/tabs"
 import { PanelState, TONE_CLASS } from "@/workbench/ui"
 import { AgentAvatar } from "./avatar"
 import { useAgentHQ } from "./context"
@@ -52,38 +55,73 @@ export function TaskStatusPill(props: { status: AgentHQ.TaskStatus }) {
   )
 }
 
-// Agents | Tasks switch at the top of the Agents tab; Tasks counts the tasks waiting for review.
+// Agents | Tasks | Activity | Tools at the top of the Agents tab (UX #7), each with how many wait for the user.
+// Activity and Tools keep their old tab ids as `data-workbench-tab`.
 export function ViewSwitch() {
   const agenthq = useAgentHQ()
+  const workbench = useWorkbench()
   const language = useLanguage()
-  const review = () => agenthq.tasks.state.tasks.filter((task) => task.status === "review").length
+  const total = (view: AgentView) =>
+    view === "agents" ? agenthq.state.agents.length : view === "tasks" ? agenthq.tasks.state.tasks.length : undefined
   return (
-    <div role="tablist" aria-label={language.t("agenthq.view")} class="flex items-center gap-1">
-      <For each={["agents", "tasks"] as const}>
+    <div
+      role="tablist"
+      aria-label={language.t("agenthq.view")}
+      class="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto"
+    >
+      <For each={AGENT_VIEWS}>
         {(view) => (
           <button
             type="button"
             role="tab"
             data-agenthq-view={view}
-            aria-selected={agenthq.ui.view === view}
-            class="flex h-7 items-center gap-1.5 rounded-[6px] px-2 text-[13px] font-[530] text-v2-text-text-muted outline-none hover:bg-v2-overlay-simple-overlay-hover focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)] aria-selected:bg-v2-background-bg-layer-02 aria-selected:text-v2-text-text-base"
-            onClick={() => agenthq.setView(view)}
+            data-workbench-tab={view === "activity" || view === "tools" ? view : undefined}
+            aria-selected={workbench.agentsView() === view}
+            class="flex h-7 shrink-0 items-center gap-1.5 rounded-[6px] px-2 text-[13px] font-[530] text-v2-text-text-muted outline-none hover:bg-v2-overlay-simple-overlay-hover focus-visible:shadow-[inset_0_0_0_1px_var(--v2-border-border-focus)] aria-selected:bg-v2-background-bg-layer-02 aria-selected:text-v2-text-text-base"
+            onClick={() => workbench.open(view === "agents" ? "agentList" : view)}
           >
             {language.t(`agenthq.view.${view}`)}
-            <span class="text-[12px] font-normal tabular-nums text-v2-text-text-muted">
-              {view === "agents" ? agenthq.state.agents.length : agenthq.tasks.state.tasks.length}
-            </span>
-            <Show when={view === "tasks" && review()}>
-              <span
-                title={language.plural("agenthq.task.waitingReview", review())}
-                class={`min-w-4 rounded-full px-1 text-center text-[10px] leading-4 tabular-nums ${TONE_CLASS.warning}`}
-              >
-                {review()}
-              </span>
+            <Show when={total(view) !== undefined}>
+              <span class="text-[12px] font-normal tabular-nums text-v2-text-text-muted">{total(view)}</span>
+            </Show>
+            <Show when={workbench.attention[view]()}>
+              {(count) => (
+                <span
+                  title={
+                    view === "tasks"
+                      ? language.plural("agenthq.task.waitingReview", count())
+                      : language.plural("workbench.status.needsYou", count())
+                  }
+                  class={`min-w-4 rounded-full px-1 text-center text-[10px] leading-4 tabular-nums ${TONE_CLASS.warning}`}
+                >
+                  {count()}
+                </span>
+              )}
             </Show>
           </button>
         )}
       </For>
+    </div>
+  )
+}
+
+// The Agents tab's top row: its views, what the open view adds (New agent, New task), and Expand / Collapse for
+// the whole tab.
+export function SurfaceHeader(props: { children?: JSX.Element }) {
+  const agenthq = useAgentHQ()
+  const language = useLanguage()
+  return (
+    <div class="flex h-10 shrink-0 items-center gap-2 px-3">
+      <ViewSwitch />
+      <span class="flex-1" />
+      {props.children}
+      <IconButton
+        icon={agenthq.ui.expanded ? "collapse" : "expand"}
+        variant="ghost"
+        data-action="agenthq-expand"
+        aria-label={agenthq.ui.expanded ? language.t("agenthq.collapse") : language.t("agenthq.expand")}
+        onClick={() => agenthq.setExpanded(!agenthq.ui.expanded)}
+      />
     </div>
   )
 }
@@ -101,21 +139,6 @@ export function TasksView() {
 
   return (
     <div data-component="agenthq-tasks" class="flex min-h-0 flex-1 flex-col">
-      <div class="flex h-10 shrink-0 items-center gap-2 px-3">
-        <ViewSwitch />
-        <span class="flex-1" />
-        <ButtonV2
-          size="small"
-          variant="neutral"
-          icon="plus"
-          data-action="task-new"
-          disabled={agenthq.state.agents.length === 0 || tasks.state.list === "unavailable"}
-          title={agenthq.state.agents.length === 0 ? language.t("agenthq.task.needsAgent") : undefined}
-          onClick={() => openDialog()}
-        >
-          {language.t("agenthq.task.new")}
-        </ButtonV2>
-      </div>
       <Switch
         fallback={
           <div class="flex min-h-0 flex-1">

@@ -876,3 +876,81 @@ Upstream-owned files changed (each marked `// spicy:`):
 - Screenshots: scratchpad `ux1/shots-before/` and `ux1/shots-after/` (strip, card, first run, IDE setup, review, Fix
   chip, permission preview, merge gate, debug menus, exception line, one toolbar, agent dialog, activity reasons, tab
   focus, and each tab in light and dark).
+
+## UX wave 2: the IDE's tabs regrouped (audit #7)
+
+From `spicy-ide` 663aee1f9 (fast-forward); merged `spicy-ide` again at cbb16b78d (the git panel's layout fix).
+
+### What changed
+
+- **Terminal · Problems · Checks · Debug · Agents.** After the terminals' tabs the bottom panel has four IDE tabs
+  (`workbench/tabs.ts`, `WorkbenchTabTriggers` in `panel.tsx`):
+  - **Checks** is Output, renamed in the UI ("Show checks", "Checks: pytest test" links, "Check runs appear here").
+  - **Debug** holds the Debug Console and the Run tab as two views, with a Console | Program switch at the start of
+    the toolbar row (`DebugViewSwitch` in `debug-ui.tsx`). Program shows once a debug session runs in a terminal (or
+    while it is open), as the Run tab did. The Program view hides its toolbar while the side Debug tab is open, like
+    the console.
+  - **Agents** has Agents | Tasks | Activity | Tools views in one header row (`ViewSwitch` / `SurfaceHeader` in
+    `tasks-panel.tsx`, `Surface` in `agents-panel.tsx`), with New agent / New task on the right. Each view's badge
+    says what waits for the user (agents with an ask, a failure or an unseen result; tasks in review; investigations
+    needing a human; drafted tools); the Agents tab and the status strip show their sum (`workbench.needsYou`). An
+    agent's workspace opens over the view it was opened from, and Back returns there. Expand (the old workspace
+    maximize button, now in the header) opens the whole Agents tab, views included, full height; the panel then says
+    so, so each session has one view.
+- **"»" menu.** The tabs that do not fit go to a menu at the end of the bar (`fitTabs`); the open one always stays.
+  The bar keeps room for the terminals (their tabs and "+", up to 160 px), measured from where they end, so at 800 px
+  it shows "Terminal 1 × + Problems »" and nothing slides under anything.
+- **Old ids.** `open(id)` takes the ids from before the regroup (`output`, `run`, `activity`, `tools`, …; `PLACES`).
+  Checks keeps `data-workbench-tab="output"`, Program `"run"`, Activity and Tools theirs, and the Agents views keep
+  `data-agenthq-view`. The panel's `data-tab` is the old id of what it shows (`legacyTab`), and `data-surface` the new
+  one. A sub-tab's trigger is in the DOM only while its tab is open.
+- **Commands.** Palette and View menu entries keep their ids and land on the new places: "Show activity" opens Agents
+  › Activity, "Show program terminal" Debug › Program, "Show agents" Agents › Agents; "Show tasks" is new. Agent HQ's
+  notifications run "Show agents" or "Show tasks" before opening the ask or the task.
+- **Persistence.** The panel's saved state per workspace is `{ tab, debug, agents }`: the open tab and the last Debug
+  and Agents views. A panel saved before the regroup (`{ tab: "run" }`) opens where its tab went (`migratePanel`, the
+  `persisted` target's `migrate`). Agent HQ no longer keeps a view of its own (`ui.view` and `setView` are gone).
+
+### Files
+
+Fork: `workbench/{tabs,tabs.test,panel,debug-ui,debug-console,debug-run,debug-start,status-strip,activity-panel,en}`,
+`agenthq/{agents-panel,tasks-panel,context}`; e2e `ide-tabs.spec.ts` (new), `utils/workbench-mock.ts` (v1 terminals,
+investigations and tools), and the specs that open Activity, Tools or Program through their parent tab now.
+
+Upstream-owned files changed (each marked `// spicy:`): `packages/app/src/desktop-menu.ts` (+ its test: the IDE
+entries in the panel's order, "Show tasks") and `packages/app/src/pages/session/terminal-panel-v2.tsx` (the comment
+naming the tabs).
+
+### UX wave 2 tests and verification
+
+- Unit: app `test:unit` 852 pass, 0 fail (new `tabs.test.ts`: old ids to places, the panels' `data-tab`, the saved
+  panel's migration, and `fitTabs`; the View menu test); `test-browser` 44/44; typecheck clean.
+- E2E, the whole `e2e/regression` folder (`--workers=2`, under `env -u TERM_SESSION_ID -u TERM_PROGRAM
+SHELL_SESSIONS_DISABLE=1` so real-server terminals leave the shell's session files alone): 155 tests, 154 passed;
+  `tools.spec.ts` (real server) still opened the Agents tab expecting the roster, which now reopens on Tools. It picks
+  the Agents view first now and passes. New `ide-tabs.spec.ts`: at 800×900 the IDE tabs that do not fit are in »,
+  the bar does not overflow and the terminal's tab and "+" stay uncovered, the menu opens a tab and brings it into
+  the bar, all four show at 1440; the Agents views' badges and their sum on the tab and the strip, views switching
+  in place, Expand with views; Debug's Console | Program (Program only with a terminal, "Show console" back); a panel
+  saved as `{ tab: "run" }` opens on Debug › Program and the last Agents view comes back. `ide-discoverability`'s
+  palette test checks every command's place (surface, view and old `data-tab`).
+- axe-core 4.11.4, the same scan as wave 1 (every place by its palette command, the tab bar and the side Debug tab,
+  light and dark, real server): 2 nodes, as after wave 1: the upstream side-panel tablist (`aria-required-children`).
+- Benchmarks (app AGENTS.md: `e2e/performance`, production build, serial, `timeline/`): 21 scenarios before (663aee1f9) and
+  after, 19 passed both times; the same 2 fail at the baseline too (`home-tab-navigation` "stages the review body"
+  looks for upstream's `session-review` component; `session-parent-hydration` times out at 180 s). No metric moved
+  beyond run-to-run noise: navigation and tab-switch timings within a few ms (15–45 ms ranges), review-pane scaling
+  within ±12% except one 24 → 63 ms first tree row at 10 000 lines (single sample, the review pane is not touched
+  here), and the four streaming runs finished faster after (69–77 s vs 77–91 s, RAF gap p50 17–25 ms vs 25–42 ms),
+  which is machine load, not this change. The scenarios open no bottom panel; the regroup only changes what the panel
+  renders. `e2e/performance/unit` 43/43. (`bun run test:bench` as written stops at Playwright loading
+  `timeline-stability/fixture.test.ts`, a `bun:test` file, so the Playwright half ran as `playwright test --config
+e2e/performance/playwright.config.ts timeline/`.)
+- `~/Library/Logs/DiagnosticReports` without `intelligencetasksd`: 42 at the start and at the end. No Electron, no
+  lldb; no server, debugpy or temp project left behind.
+- The desktop smoke (`packages/desktop/scripts/spicy-smoke.ts`, not edited here) needs three selector changes: New
+  task's button is in the Agents tab's header row (outside `agenthq-tasks`), Activity needs the Agents tab opened
+  first, and `openAgentsTab` should wait for `data-surface="agents"` (the panel's `data-tab` is "activity"/"tools"
+  when the tab reopens on those views).
+- Screenshots: scratchpad `ux2/` (the bar at 800 px before; `shots-after/`: the 800 px bar and its menu, the Agents
+  views, Expand, the Debug switch, and each place in light and dark).

@@ -89,7 +89,7 @@ export function WorkbenchStatusStrip() {
       </Show>
       <Show when={running()}>
         {(count) => (
-          <button type="button" data-status="checks" class={ITEM} onClick={() => workbench.show("output")}>
+          <button type="button" data-status="checks" class={ITEM} onClick={() => workbench.show("checks")}>
             <LoaderV2 width={10} height={10} />
             {language.plural("workbench.status.checks", count())}
           </button>

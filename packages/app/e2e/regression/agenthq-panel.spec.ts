@@ -174,7 +174,7 @@ test("output tab streams check runs with colors and file links, and loads earlie
   mock.emit({ type: "workbench.run.updated", properties: { run: runInfo("run_live", "running") } })
   const live = output.locator('section[data-run="run_live"]')
   await expect(live).toHaveAttribute("data-status", "running")
-  await expect(page.locator('[data-workbench-tab="output"]')).toHaveText("Output1")
+  await expect(page.locator('[data-workbench-tab="output"]')).toHaveText("Checks1")
   mock.emit(
     {
       type: "workbench.run.output",
@@ -194,7 +194,7 @@ test("output tab streams check runs with colors and file links, and loads earlie
   })
   await expect(live).toHaveAttribute("data-status", "failed")
   await expect(live.locator("button[aria-expanded]")).toContainText("exit 2")
-  await expect(page.locator('[data-workbench-tab="output"]')).toHaveText("Output")
+  await expect(page.locator('[data-workbench-tab="output"]')).toHaveText("Checks")
 
   // Starting checks needs POST /workbench/check; without it the user is told, nothing breaks
   await output.getByRole("button", { name: "Run checks" }).click()

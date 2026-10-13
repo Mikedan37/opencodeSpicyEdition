@@ -195,13 +195,14 @@ export const DESKTOP_MENU: DesktopMenu[] = [
         accelerator: { macos: "Ctrl+`" },
       },
       { type: "item", labelKey: "desktop.menu.toggleFileTree", command: "fileTree.toggle" },
-      // spicy: the IDE's tabs and actions (the commands workbench/panel.tsx registers)
+      // spicy: the IDE's tabs and actions (the commands workbench/panel.tsx registers), in the panel's order
       { type: "separator" },
-      { type: "item", labelKey: "workbench.command.agents", command: "workbench.agents" },
       { type: "item", labelKey: "workbench.command.problems", command: "workbench.problems" },
       { type: "item", labelKey: "workbench.command.output", command: "workbench.output" },
       { type: "item", labelKey: "workbench.command.debug", command: "workbench.debug" },
       { type: "item", labelKey: "workbench.command.run", command: "workbench.run" },
+      { type: "item", labelKey: "workbench.command.agents", command: "workbench.agents" },
+      { type: "item", labelKey: "workbench.command.tasks", command: "workbench.tasks" },
       { type: "item", labelKey: "workbench.command.activity", command: "workbench.activity" },
       { type: "item", labelKey: "workbench.command.tools", command: "workbench.tools" },
       { type: "item", labelKey: "workbench.command.check", command: "workbench.check" },

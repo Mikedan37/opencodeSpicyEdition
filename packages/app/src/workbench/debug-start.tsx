@@ -65,7 +65,7 @@ export function DebugStartDialog(props: { file?: string }) {
       .then(
         () => {
           dialog.close()
-          workbench.show("debug")
+          workbench.show("console")
         },
         (error: unknown) => setDraft({ starting: false, error: errorText(error) }),
       )

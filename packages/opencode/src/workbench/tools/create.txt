@@ -1,0 +1,23 @@
+Draft a new tool for this project. The user reviews the draft in the IDE; only after they approve it does it become a tool you can call, named custom_<name>. Nothing in the draft runs before that.
+
+`source` is the whole TypeScript file, in opencode's custom tool format:
+
+import { tool } from "@opencode-ai/plugin"
+
+export default tool({
+  description: "What the tool does, for the model that calls it",
+  args: {
+    query: tool.schema.string().describe("What to look up"),
+    limit: tool.schema.number().optional().describe("How many results"),
+  },
+  async execute(args, context) {
+    // context.directory is the project folder. Return a string, or { output, title?, metadata? }.
+    return `...`
+  },
+})
+
+Rules:
+- `name`: lowercase letters, digits and _ (max 40), not already used by a created tool. `description` tells the user what the tool is for.
+- One tool per file, as the default export; args are zod schemas from tool.schema.
+- The draft is only checked statically: it must compile and default-export tool(...). An invalid draft is still saved, with the reason; fix it and call tool_create again with the same name (that replaces the draft).
+- Every call of an approved tool asks the user for permission (custom_<name>) unless they allowed it always.

@@ -196,7 +196,7 @@ describe("workbench MCP bridge: debug tools", () => {
 
         // The asks live in the bridge's own opencode session, which also owns the investigation.
         const owner = yield* user.request(`/session/${asked.sessionID}`)
-        expect(owner.body.title).toBe("Workbench MCP: debugging")
+        expect(owner.body.title).toBe("Workbench MCP")
         const investigations = yield* user.request("/workbench/investigations")
         expect(investigations.body).toEqual([
           expect.objectContaining({

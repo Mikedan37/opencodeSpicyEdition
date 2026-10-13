@@ -6,7 +6,7 @@ import { cmd } from "./cmd"
 const McpCommand = cmd({
   command: "mcp",
   describe:
-    "serve the workbench tools (problems, check, doctor, debug_*) over MCP on stdio, backed by a running opencode server",
+    "serve the workbench tools (problems, check, doctor, debug_*, tool_create, custom_*) over MCP on stdio, backed by a running opencode server",
   builder: (yargs) =>
     yargs
       .option("url", {
@@ -27,13 +27,18 @@ const McpCommand = cmd({
     }
     const { WorkbenchBridge } = await import("@/workbench/mcp/bridge")
     const { WorkbenchDebugBridge } = await import("@/workbench/mcp/debug") // spicy: debug_* tools (dap)
+    const { WorkbenchToolsBridge } = await import("@/workbench/mcp/tools") // spicy: tool creator (dap)
+    const { WorkbenchBridgeSession } = await import("@/workbench/mcp/session") // spicy: one session for both (dap)
+    const session = WorkbenchBridgeSession.agentSession() // spicy: one session for both (dap)
+    const debug = WorkbenchDebugBridge.tools(session) // spicy: debug_* tools (dap)
+    const created = WorkbenchToolsBridge.tools(session) // spicy: tool creator (dap)
     // Credentials come from OPENCODE_SERVER_USERNAME / OPENCODE_SERVER_PASSWORD, never from arguments.
     await WorkbenchBridge.serve(
       {
         url,
         directory: path.resolve(args.directory ?? process.env.OPENCODE_DIRECTORY ?? process.cwd()),
       },
-      WorkbenchDebugBridge.tools(), // spicy: debug_* tools (dap)
+      async (api) => [...debug, ...(await created(api))], // spicy: debug_* and tool creator tools (dap)
     )
   },
 })

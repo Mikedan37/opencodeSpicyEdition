@@ -56,6 +56,8 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 import { WorkbenchCheckTool } from "@/workbench/tool/check" // spicy: Workbench check tool
 import { DebugTool, DebugToolNode } from "@/workbench/tool/debug" // spicy: Workbench debugger tool
+import { ToolCreateTool } from "@/workbench/tools/create" // spicy: tool creator
+import { WorkbenchTools } from "@/workbench/tools/tools" // spicy: tool creator
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
@@ -86,6 +88,8 @@ export interface Interface {
     agent: Agent.Info
     permission?: PermissionV1.Ruleset
   }) => Effect.Effect<Tool.Def[]>
+  /** Reloads this instance's tools, e.g. after a created tool was approved. */
+  readonly refresh: () => Effect.Effect<void> // spicy: tool creator
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
@@ -118,6 +122,7 @@ const layer = Layer.effect(
     const skilltool = yield* SkillTool
     const checktool = yield* WorkbenchCheckTool.CheckTool // spicy: Workbench check tool
     const debugtool = yield* DebugTool // spicy: Workbench debugger tool
+    const toolcreate = yield* ToolCreateTool // spicy: tool creator
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
@@ -146,6 +151,9 @@ const layer = Layer.effect(
             description: def.description,
             execute: (args, toolCtx) =>
               Effect.gen(function* () {
+                // spicy: created tools (custom_*, "ask" by default) ask before every call, like MCP tools
+                if (id.startsWith("custom_"))
+                  yield* toolCtx.ask({ permission: id, patterns: ["*"], always: ["*"], metadata: { args } })
                 // Bridge the host's Effect-based `ask` into a Promise-returning
                 // function for the plugin to make sure context persists
                 const bridge = yield* EffectBridge.make()
@@ -184,7 +192,8 @@ const layer = Layer.effect(
           }
         }
 
-        const dirs = yield* config.directories()
+        // spicy: plus the instance's .opencode, where the tool creator puts approved tools (it may be new)
+        const dirs = [...new Set([...(yield* config.directories()), WorkbenchTools.folder(ctx.directory)])]
         const matches = dirs.flatMap((dir) =>
           Glob.scanSync("{tool,tools}/*.{js,ts}", { cwd: dir, absolute: true, dot: true, symlink: true }),
         )
@@ -193,7 +202,14 @@ const layer = Layer.effect(
           const namespace = path.basename(match, path.extname(match))
           // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
           // Import it as `file://` so Node on Windows accepts the dynamic import.
-          const mod = yield* Effect.promise(() => import(pathToFileURL(match).href))
+          // spicy: a created tool loads from a URL that changes with its file, and can never break the registry
+          const mod = namespace.startsWith("custom_")
+            ? yield* Effect.promise(async () => import(await WorkbenchTools.url(match))).pipe(
+                Effect.catchDefect((error) =>
+                  Effect.logWarning("custom tool failed to load", { file: match, error }).pipe(Effect.as({})),
+                ),
+              )
+            : yield* Effect.promise(() => import(pathToFileURL(match).href))
           for (const [id, def] of Object.entries(mod)) {
             if (!isPluginTool(def)) continue
             custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))
@@ -249,6 +265,7 @@ const layer = Layer.effect(
             tool.patch,
             yield* Tool.init(checktool), // spicy: Workbench check tool
             yield* Tool.init(debugtool), // spicy: Workbench debugger tool
+            yield* Tool.init(toolcreate), // spicy: tool creator
             ...(tool.execute ? [tool.execute] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
@@ -350,7 +367,7 @@ const layer = Layer.effect(
       return { task: s.task, read: s.read }
     })
 
-    return Service.of({ ids, all, named, tools })
+    return Service.of({ ids, all, named, tools, refresh: () => InstanceState.invalidate(state) }) // spicy: refresh
   }),
 )
 
@@ -457,6 +474,7 @@ export const node = LayerNode.make({
     Ripgrep.node,
     WorkbenchCheckTool.node, // spicy: Workbench check tool
     DebugToolNode, // spicy: Workbench debugger tool
+    WorkbenchTools.node, // spicy: tool creator
   ],
 })
 

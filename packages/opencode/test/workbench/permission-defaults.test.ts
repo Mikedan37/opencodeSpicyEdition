@@ -12,6 +12,7 @@ import { Provider } from "@/provider/provider"
 import { SessionID } from "@/session/schema"
 import { Skill } from "@/skill"
 import { SessionAutoApprove } from "@/workbench/auto-approve"
+import { OpenCodeProvider } from "@/agenthq/providers/opencode"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -125,10 +126,13 @@ describe("the main chat asks before it changes anything", () => {
 })
 
 describe("per-session auto-approve", () => {
+  const BOTH = { edits: true, commands: true }
+  const edit = (file: string) => ({ permission: "edit", patterns: [file], metadata: {} })
+
   it.instance("turns asks for edit and bash into allows in that session only, and never lifts a deny", () =>
     Effect.gen(function* () {
       const agent = yield* agents
-      const on = SessionAutoApprove.apply([], true)
+      const on = SessionAutoApprove.apply([], BOTH)
       const build = SessionAutoApprove.ruleset(agent("build").permission, on)
       expect(action(build, "edit")).toBe("allow")
       expect(action(build, "bash", "rm -rf build")).toBe("allow")
@@ -146,8 +150,38 @@ describe("per-session auto-approve", () => {
       const tools = ["edit", "write", "apply_patch", "bash", "read"]
       expect(Permission.disabled(tools, plan)).toEqual(Permission.disabled(tools, agent("plan").permission))
       // A session's own deny wins over its switch.
-      const denied = SessionAutoApprove.apply([{ permission: "bash", pattern: "*", action: "deny" }], true)
+      const denied = SessionAutoApprove.apply([{ permission: "bash", pattern: "*", action: "deny" }], BOTH)
       expect(action(SessionAutoApprove.ruleset(agent("build").permission, denied), "bash")).toBe("deny")
+    }),
+  )
+
+  it.instance("each switch lifts its own asks", () =>
+    Effect.gen(function* () {
+      const build = (yield* agents)("build").permission
+      const edits = SessionAutoApprove.ruleset(build, SessionAutoApprove.apply([], { edits: true, commands: false }))
+      expect([action(edits, "edit"), action(edits, "bash", "ls")]).toEqual(["allow", "ask"])
+      const commands = SessionAutoApprove.ruleset(build, SessionAutoApprove.apply([], { edits: false, commands: true }))
+      expect([action(commands, "edit"), action(commands, "bash", "ls")]).toEqual(["ask", "allow"])
+    }),
+  )
+
+  it.instance("edits under .git keep asking with edits on, in any case and at any depth", () =>
+    Effect.gen(function* () {
+      const build = (yield* agents)("build").permission
+      const on = SessionAutoApprove.apply([], BOTH)
+      for (const file of [".git/config", ".GIT/hooks/pre-commit", "sub/.git/config", ".git", "vendor/lib/.Git"])
+        expect([file, action(SessionAutoApprove.ruleset(build, on, edit(file)), "edit", file)]).toEqual([file, "ask"])
+      for (const file of ["src/app.ts", ".github/workflows/ci.yml", ".gitignore", "notes.git/x"])
+        expect([file, action(SessionAutoApprove.ruleset(build, on, edit(file)), "edit", file)]).toEqual([file, "allow"])
+    }),
+  )
+
+  it.instance("an Agent HQ session's guard keeps asking with the switches on", () =>
+    Effect.gen(function* () {
+      const build = (yield* agents)("build").permission
+      const guarded = SessionAutoApprove.apply(OpenCodeProvider.guard(build), BOTH)
+      const rules = SessionAutoApprove.ruleset(build, guarded, edit("src/app.ts"))
+      expect([action(rules, "edit"), action(rules, "bash", "ls")]).toEqual(["ask", "ask"])
     }),
   )
 
@@ -157,7 +191,7 @@ describe("per-session auto-approve", () => {
       Effect.gen(function* () {
         const build = SessionAutoApprove.ruleset(
           (yield* agents)("build").permission,
-          SessionAutoApprove.apply([], true),
+          SessionAutoApprove.apply([], BOTH),
         )
         expect(action(build, "edit", "bun.lock")).toBe("deny")
         expect(action(build, "edit", "src/app.ts")).toBe("allow")
@@ -167,18 +201,20 @@ describe("per-session auto-approve", () => {
     { config: { permission: { edit: { "*.lock": "deny" }, bash: { "git push*": "ask" } } } },
   )
 
-  it.instance("turning it off removes only the switch", () =>
+  it.instance("switching removes only the switches, and the old single switch counts as both", () =>
     Effect.gen(function* () {
       const other: PermissionV1.Rule[] = [
         { permission: "todowrite", pattern: "*", action: "deny" },
         { permission: "external_directory", pattern: "/tmp/*", action: "allow" },
       ]
-      const on = SessionAutoApprove.apply(other, true)
-      expect(SessionAutoApprove.enabled(on)).toBe(true)
-      expect(SessionAutoApprove.enabled(other)).toBe(false)
-      expect(SessionAutoApprove.apply(on, true)).toEqual(on)
-      expect(SessionAutoApprove.apply(on, false)).toEqual(other)
-      // Without the switch the ruleset is exactly upstream's merge, so ordinary session rules keep their meaning.
+      const on = SessionAutoApprove.apply(other, BOTH)
+      expect(SessionAutoApprove.state(on)).toEqual(BOTH)
+      expect(SessionAutoApprove.state(other)).toEqual({ edits: false, commands: false })
+      expect(SessionAutoApprove.apply(on, BOTH)).toEqual(on)
+      expect(SessionAutoApprove.apply(on, { edits: false, commands: false })).toEqual(other)
+      const old: PermissionV1.Rule = { permission: "session.auto_approve", pattern: "*", action: "allow" }
+      expect(SessionAutoApprove.state([old])).toEqual(BOTH)
+      // Without a switch the ruleset is exactly upstream's merge, so ordinary session rules keep their meaning.
       expect(SessionAutoApprove.ruleset(other, other)).toEqual(Permission.merge(other, other))
     }),
   )

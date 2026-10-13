@@ -48,8 +48,14 @@ test("main chat: an edit asks in the dock; with auto-approve on, edits and bash 
         return status[sessionID]?.type ?? "idle"
       })
       .toBe("idle")
-  const switchOn = async (sessionID: string) =>
-    ((await (await api(`/workbench/sessions/${sessionID}/auto-approve`)).json()) as { enabled: boolean }).enabled
+  // The composer's chip turns both switches on and off together.
+  const switchOn = async (sessionID: string) => {
+    const value = (await (await api(`/workbench/sessions/${sessionID}/auto-approve`)).json()) as {
+      edits: boolean
+      commands: boolean
+    }
+    return value.edits && value.commands
+  }
   try {
     const session = (await (await send("POST", "/session", {})).json()) as { id: string }
     await page.goto(`/server/${base64Encode(server.url)}/session/${session.id}`)

@@ -79,11 +79,12 @@ describe("main chat permissions", () => {
           }),
         )
       const create = call<{ id: string }>("/session", json("POST", {})).pipe(Effect.map((result) => result.body.id))
+      // Both switches together, as the composer turns them on.
       const autoApprove = (sessionID: string, enabled?: boolean) =>
-        call<{ enabled: boolean }>(
+        call<{ edits: boolean; commands: boolean }>(
           `/workbench/sessions/${sessionID}/auto-approve`,
-          enabled === undefined ? undefined : json("PUT", { enabled }),
-        ).pipe(Effect.map((result) => result.body.enabled))
+          enabled === undefined ? undefined : json("PUT", { edits: enabled, commands: enabled }),
+        ).pipe(Effect.map((result) => result.body.edits && result.body.commands))
 
       // The build agent asks before an edit, and nothing is written until the human answers.
       const session = yield* create

@@ -77,6 +77,28 @@ export type DebugAction = "continue" | "pause" | "next" | "stepIn" | "stepOut"
 const FileText = Schema.Struct({ content: Schema.String, hash: Schema.String })
 const FileWritten = Schema.Struct({ hash: Schema.String })
 
+// GET /workbench/doctor (workbench/doctor.ts `Report`): per language, LSP and the tools found and whether they run.
+const DoctorProbe = Schema.Struct({
+  area: Schema.Literals(["runtime", "lsp", "check", "test", "debug"]),
+  tool: Schema.String,
+  status: Schema.Literals(["ok", "missing", "broken", "blocked"]),
+  path: Schema.optional(Schema.String),
+  version: Schema.optional(Schema.String),
+  reason: Schema.optional(Schema.String),
+})
+const DoctorReport = Schema.Struct({
+  languages: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      name: Schema.String,
+      lsp: Schema.Struct({ server: Schema.String, enabled: Schema.Boolean, reason: Schema.optional(Schema.String) }),
+      probes: Schema.Array(DoctorProbe),
+    }),
+  ),
+})
+export type DoctorReport = typeof DoctorReport.Type
+export type DoctorProbe = typeof DoctorProbe.Type
+
 // Agent HQ orchestration (groups/agenthq.ts; docs/spicy/notes-agenthq.md "Routes (wave 2)"). `description: null`
 // clears it on edit.
 export type TaskDraft = {
@@ -123,6 +145,7 @@ const decoders = {
   tool: Schema.decodeUnknownOption(Workbench.CustomTool),
   toolResult: Schema.decodeUnknownOption(Workbench.CustomToolResult),
   fileWritten: Schema.decodeUnknownOption(FileWritten),
+  doctor: Schema.decodeUnknownOption(DoctorReport),
 }
 
 export type WorkbenchClient = ReturnType<typeof createWorkbenchClient>
@@ -194,6 +217,7 @@ export function createWorkbenchClient(input: {
     respond: (id: string, requestID: string, optionID: string) =>
       call("POST", `${session(id)}/permissions/${encodeURIComponent(requestID)}`, { optionID }),
     problems: () => decoded(decoders.problems, "GET", "/workbench/problems"),
+    doctor: () => decoded(decoders.doctor, "GET", "/workbench/doctor"),
     // 409 when the file no longer hashes to baseHash (null: it must not exist); 403 outside the project.
     readFile: (path: string) => decoded(decoders.fileText, "GET", `/workbench/file?path=${encodeURIComponent(path)}`),
     writeFile: (body: { path: string; content: string; baseHash: string | null }) =>

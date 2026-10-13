@@ -6,6 +6,7 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
+import { useSettingsDialog } from "@/components/settings-dialog"
 import { useLanguage } from "@/context/language"
 import { showToast } from "@/utils/toast"
 import { errorText } from "./client"
@@ -86,6 +87,7 @@ export default function DebugPanel() {
 function Status() {
   const debug = useDebug()
   const language = useLanguage()
+  const openSetup = useSettingsDialog("workbench")
   const text = () => {
     const current = debug.selected()
     if (debug.state.list === "unavailable") return language.t("workbench.debug.unavailable")
@@ -104,11 +106,14 @@ function Status() {
       <Show
         when={debug.selected() || debug.state.list === "unavailable"}
         fallback={
-          <div class="flex items-center gap-2 text-[12px] text-v2-text-text-muted">
+          <div class="flex flex-wrap items-center gap-2 text-[12px] text-v2-text-text-muted">
             <span class="text-v2-icon-icon-muted">
               <Glyph path={BUG_GLYPH} size={16} />
             </span>
-            {text()}
+            <span class="min-w-0 flex-1">{text()}</span>
+            <ButtonV2 size="small" variant="ghost" data-action="open-setup" onClick={openSetup}>
+              {language.t("workbench.setup.open")}
+            </ButtonV2>
           </div>
         }
       >

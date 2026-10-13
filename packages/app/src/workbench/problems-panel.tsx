@@ -9,6 +9,7 @@ import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import type { Workbench } from "@opencode-ai/schema/workbench"
 import { useLanguage } from "@/context/language"
 import { useServerSDK } from "@/context/server-sdk"
+import { useSettingsDialog } from "@/components/settings-dialog"
 import { showToast } from "@/utils/toast"
 import { useRelativeTime } from "./clock"
 import { errorText } from "./client"
@@ -132,6 +133,7 @@ export default function ProblemsPanel() {
       {language.t("workbench.output.run")}
     </ButtonV2>
   )
+  const openSetup = useSettingsDialog("workbench")
   const turnOnLsp = () => (
     <ButtonV2
       size="small"
@@ -273,6 +275,9 @@ export default function ProblemsPanel() {
           >
             {runChecks()}
             <Show when={lspOff()}>{turnOnLsp()}</Show>
+            <ButtonV2 size="small" variant="ghost" data-action="open-setup" onClick={openSetup}>
+              {language.t("workbench.setup.open")}
+            </ButtonV2>
           </PanelState>
         </Match>
         <Match when={rows().length === 0}>

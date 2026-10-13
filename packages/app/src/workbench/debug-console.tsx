@@ -3,6 +3,7 @@ import { createStore } from "solid-js/store"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { getFilename } from "@opencode-ai/core/util/path"
+import { useSettingsDialog } from "@/components/settings-dialog"
 import { useLanguage } from "@/context/language"
 import { type DebugCompletion } from "./client"
 import { completionRange, type ConsoleRow } from "./debug"
@@ -32,6 +33,7 @@ const KIND_CLASS: Record<ConsoleRow["kind"], string> = {
 export default function DebugConsolePanel() {
   const debug = useDebug()
   const language = useLanguage()
+  const openSetup = useSettingsDialog("workbench")
   const filter = debug.consoleFilter
   const console = () => (debug.state.selected ? debug.state.consoles[debug.state.selected] : undefined)
 
@@ -153,6 +155,9 @@ export default function DebugConsolePanel() {
           >
             <ButtonV2 size="small" variant="neutral" onClick={() => debug.openStart()}>
               {language.t("workbench.debug.action.start")}
+            </ButtonV2>
+            <ButtonV2 size="small" variant="ghost" data-action="open-setup" onClick={openSetup}>
+              {language.t("workbench.setup.open")}
             </ButtonV2>
           </PanelState>
         </Match>

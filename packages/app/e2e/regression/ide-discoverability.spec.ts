@@ -224,6 +224,74 @@ test("an agent's ask and a task ready for review raise OS notifications that ope
   expect(await sent()).toHaveLength(2)
 })
 
+test("IDE setup: the doctor's languages × tools grid, with fix commands to copy and Recheck", async ({ page }) => {
+  await page.addInitScript(() => {
+    const copied: string[] = []
+    ;(window as unknown as { __copied: string[] }).__copied = copied
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: async (text: string) => void copied.push(text) },
+    })
+  })
+  const { mock, open } = await mockWorkbench(page, { directory, title })
+  let requests = 0
+  mock.doctor = {
+    languages: [
+      {
+        id: "python",
+        name: "Python",
+        lsp: { server: "pyright", enabled: false, reason: 'LSP is off; set "lsp": true in opencode.json' },
+        probes: [
+          { area: "runtime", tool: "python3", status: "ok", version: "Python 3.13.1" },
+          { area: "lsp", tool: "pyright", status: "missing" },
+          { area: "check", tool: "ruff", status: "ok", version: "ruff 0.6.2" },
+          { area: "test", tool: "pytest", status: "broken", reason: "pytest is not installed for /usr/bin/python3" },
+          { area: "debug", tool: "debugpy", status: "ok", version: "1.8.11" },
+        ],
+      },
+      {
+        id: "swift",
+        name: "Swift",
+        lsp: { server: "sourcekit-lsp", enabled: false },
+        probes: [
+          {
+            area: "debug",
+            tool: "lldb-dap",
+            status: "blocked",
+            reason:
+              "Developer Mode is off: launching under lldb asks for an admin password (sudo DevToolsSecurity -enable)",
+          },
+        ],
+      },
+    ],
+  }
+  await page.route(`**/workbench/doctor*`, async (route) => {
+    requests++
+    await route.fallback()
+  })
+  await open()
+  await page.locator('[data-status="problems"]').click()
+  await page.locator('[data-component="workbench-problems"] [data-action="open-setup"]').click()
+  const setup = page.locator('[data-component="workbench-setup"]')
+  await expect(setup.locator('tr[data-language="python"]')).toBeVisible()
+  const python = setup.locator('tr[data-language="python"]')
+  await expect(python.locator('td[data-area="check"]')).toHaveText(/^✓\s*Ready:\s*ruff 0\.6\.2$/)
+  await expect(python.locator('td[data-area="lsp"]')).toContainText("pyright: language servers are off")
+  await expect(python.locator('td[data-area="lsp"] [data-probe="pyright"]')).toContainText("npm install -g pyright")
+  await expect(python.locator('td[data-area="test"]')).toContainText(
+    "Does not run: pytest is not installed for /usr/bin/python3",
+  )
+  const swift = setup.locator('tr[data-language="swift"] td[data-area="debug"]')
+  await expect(swift).toContainText("Blocked: Developer Mode is off")
+  await swift.locator('[data-action="setup-copy"]').click()
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __copied: string[] }).__copied))
+    .toEqual(["sudo DevToolsSecurity -enable"])
+  await page.screenshot({ path: test.info().outputPath("ide-setup.png") })
+  const before = requests
+  await page.locator('[data-action="setup-recheck"]').click()
+  await expect.poll(() => requests).toBe(before + 1)
+})
+
 async function palette(page: Page, command: string) {
   await openPalette(page)
   await page.getByPlaceholder("Search files, commands, and sessions").fill(command)

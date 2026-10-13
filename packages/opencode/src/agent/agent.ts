@@ -196,6 +196,7 @@ const layer = Layer.effect(
               Permission.fromConfig({
                 question: "allow",
                 plan_exit: "allow",
+                bash: "ask", // spicy: plan mode asks before shell commands too; reads stay allowed
                 task: {
                   general: "deny",
                 },
@@ -236,7 +237,7 @@ const layer = Layer.effect(
                 grep: "allow",
                 glob: "allow",
                 list: "allow",
-                bash: "allow",
+                bash: "ask", // spicy: plan mode starts explore without asking, so its commands ask
                 webfetch: "allow",
                 websearch: "allow",
                 read: "allow",

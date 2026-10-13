@@ -88,18 +88,24 @@ describe("the main chat asks before it changes anything", () => {
     }),
   )
 
-  it.instance("plan and explore keep their rules", () =>
+  it.instance("plan mode and explore ask before shell commands; reads and their denies are unchanged", () =>
     Effect.gen(function* () {
       const agent = yield* agents
       const plan = agent("plan").permission
+      expect(action(plan, "bash", "rm -rf build")).toBe("ask")
       expect(action(plan, "edit", "src/app.ts")).toBe("deny")
       expect(action(plan, "edit", ".opencode/plans/next.md")).toBe("allow")
-      expect(action(plan, "bash")).toBe("allow")
+      expect(action(plan, "task", "general")).toBe("deny")
       expect(action(plan, MCP_TOOL)).toBe("allow")
+      // Plan mode starts explore without asking, so explore's commands ask too.
+      expect(action(plan, "task", "explore")).toBe("allow")
       const explore = agent("explore").permission
+      expect(action(explore, "bash", "git log")).toBe("ask")
       expect(action(explore, "edit")).toBe("deny")
-      expect(action(explore, "bash")).toBe("allow")
       expect(action(explore, MCP_TOOL)).toBe("deny")
+      // Read-only investigation runs without asking.
+      for (const rules of [plan, explore])
+        for (const key of ["read", "glob", "grep", "list"]) expect([key, action(rules, key)]).toEqual([key, "allow"])
     }),
   )
 

@@ -149,8 +149,9 @@ Error bodies (exact):
   names the line before the change). `patch` has the `@@` header and `-`/`+` lines without context, with
   `\ No newline at end of file` where it applies; it is `""` for binary files and for empty added/deleted
   files. Context lines come from the file itself (existing file routes).
-- `state`: `pending` (hunks, nothing decided yet), `partial` (hunks left, some decided), `accepted`
-  (nothing pending, at least one hunk accepted), `rejected` (nothing pending, only rejects).
+- `state`: `pending` (hunks, nothing decided yet), `partial` (hunks left and some decided, or nothing pending and
+  decided both ways: show `accepted` kept · `rejected` reverted), `accepted` (nothing pending, only accepts),
+  `rejected` (nothing pending, only rejects). (dap, UX wave 1: a file decided both ways used to say `accepted`.)
 - `undoable`: `POST …/undo` with this path can restore the content before this file's last reject.
 - `accepted`/`rejected`: hunks of this file decided so far. `decided`: the latest decided hunks (at most 50,
   oldest first), each the hunk as it was when decided plus `state` (`accepted`/`rejected`) and `at`; an undo

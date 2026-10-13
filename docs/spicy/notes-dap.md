@@ -299,8 +299,10 @@ Delivered on the instance stream `GET /event` (SSE; each item `{ id, type, prope
   also mirrored into console rows (`stdout`, ANSI stripped). Without `ptyID` (debugpy's default internal console),
   the `stdout`/`stderr` rows are the program's output.
 - **Investigations**: `status` follows `created → reproducing → debugging → diagnosing → patching → verifying →
-resolved`, plus `blocked`, `needs_human`, `interrupted`, `failed`, `cancelled`. `reason` on the summary is the
-  latest checkpoint reason; supervisor stops start with the rule (`S1:` … `S8:`). Evidence `class` is `observed` or
+resolved`, plus `blocked`, `needs_human`, `interrupted`, `failed`, `cancelled`. The summary's `reason`, `rule`,
+  `runIDs` and `evidenceID` come from the latest checkpoint with a reason: `reason` is a sentence, `rule` the
+  supervisor rule (`S1` … `S8`) when one decided, `runIDs` the check runs it refers to (since UX wave 1; older
+  records are read the same way). Evidence `class` is `observed` or
   `verified` (set by the server); notes in the record are the agent's inferences. Offer "Resume" on
   `interrupted`/`needs_human`/`blocked` and "Cancel" on anything not ended.
 
@@ -732,3 +734,31 @@ For drafts, `description` and `args` are read from the source; once enabled they
 - Runs: `test/workbench` + debug HTTP test 178 pass / 2 skip / 0 fail; `test/tool test/server test/session
 test/agenthq` 1115 pass / 13 skip / 1 todo / 0 fail; `packages/core` PTY tests 18 pass; typecheck clean in
   `packages/opencode` and `packages/core`.
+
+## UX wave 1 (audit #9 and #15)
+
+### Review: a file decided both ways is `partial`
+
+- `Review.FileState` already had `partial`, for a file with hunks left and some decided. A file with nothing left
+  whose hunks were decided both ways used to say `accepted` (`review/changes.ts`); it is now `partial` too. The
+  counts were already there: `File.accepted` (kept hunks) and `File.rejected` (reverted hunks); `hunks` is empty
+  once everything is decided, so "Partly kept (1 kept · 1 reverted)" is `state: "partial"`, `hunks: []`,
+  `accepted: 1`, `rejected: 1`. No new literal or field; the contract comment says so.
+- Test: REV-01 in `test/review/review.test.ts` (accept one hunk, reject the other) now expects `partial` with
+  `accepted: 1`, `rejected: 1`.
+
+### Investigations: rule, sentence and runs apart
+
+- Contract (`packages/schema/src/workbench.ts`, additive): `SupervisorRule` = `"S1" | … | "S8"`;
+  `InvestigationCheckpoint` gains `rule?: SupervisorRule` and `runIDs?: RunID[]`; `InvestigationSummary` gains
+  `rule?`, `runIDs?` and `evidenceID?` (from the same checkpoint as `reason`). `reason` is now the sentence alone:
+  "no progress: same error after 2 patches", not "S2: … (checks run_1, run_2)". S1 and S2 name their runs in
+  `runIDs`; other rules have none.
+- Old records keep the prefix in storage; `WorkbenchInvestigation.checkpoint()` reads "S#: sentence (checks run\_…)"
+  apart whenever records are read (`get`, `full`, `list`) and in every summary, events included.
+- Text for agents and the report is unchanged (`WorkbenchInvestigation.explain`: "S2: no progress: … (checks
+  run_1, run_2)"), so the gate's and the debug tool's messages still name the rule and runs.
+- Tests: `rules.test.ts` checks the rule, sentence and runs of S1–S8 apart, the summary fields with the evidence
+  id, the agent text, and old-format checkpoints; `investigation.test.ts` stores an old-format record and reads it
+  through `full` (checkpoint and report) and `list`; the S2/S5/S7 assertions in `verification.test.ts`,
+  `tool/debug.test.ts` and `mcp-debug.test.ts` now check the fields.

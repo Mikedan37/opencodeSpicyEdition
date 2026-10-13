@@ -267,7 +267,7 @@ describe("workbench MCP bridge: debug tools", () => {
         expect(sessions.body).toEqual([])
         const investigations = yield* user.request("/workbench/investigations")
         expect(investigations.body).toEqual([
-          expect.objectContaining({ status: "needs_human", reason: "S7: permission denied: debug.launch" }),
+          expect.objectContaining({ status: "needs_human", rule: "S7", reason: "permission denied: debug.launch" }),
         ])
       }),
     60_000,

@@ -568,7 +568,8 @@ const layer = Layer.effect(
     const halted = Effect.fn("WorkbenchInvestigation.halted")(function* (sessionID: string) {
       const open = yield* current(sessionID)
       if (!open || (open.status !== "blocked" && open.status !== "needs_human")) return undefined
-      return `investigation ${open.id} is ${open.status}${open.checkpoints.at(-1)?.reason ? `: ${open.checkpoints.at(-1)?.reason}` : ""}`
+      const why = explain(open.checkpoints.at(-1))
+      return `investigation ${open.id} is ${open.status}${why ? `: ${why}` : ""}`
     })
 
     return Service.of({
@@ -639,7 +640,10 @@ export function apply(draft: Draft, event: Event, now: number): Workbench.Eviden
     event.type === "permission.denied" ? event.permission : undefined,
   )
   if (decision && allowed(draft.status, decision.status)) {
-    transition(draft, decision.status, now, `${decision.rule}: ${decision.reason}`, evidence?.id)
+    transition(draft, decision.status, now, decision.reason, evidence?.id, {
+      rule: decision.rule,
+      ...(decision.runIDs?.length ? { runIDs: [...decision.runIDs] } : {}),
+    })
     return evidence
   }
   for (const to of derive(draft, event))
@@ -809,15 +813,45 @@ function reason(event: Event, to: Status) {
   return event.type
 }
 
-function transition(draft: Draft, to: Status, now: number, why?: string, evidenceID?: Workbench.EvidenceID) {
+function transition(
+  draft: Draft,
+  to: Status,
+  now: number,
+  why?: string,
+  evidenceID?: Workbench.EvidenceID,
+  refs: { rule?: Workbench.SupervisorRule; runIDs?: Workbench.RunID[] } = {},
+) {
   draft.status = to
   draft.updatedAt = now
   draft.checkpoints.push({
     status: to,
     at: now,
     ...(why ? { reason: why } : {}),
+    ...refs,
     ...(evidenceID ? { evidenceID } : {}),
   })
+}
+
+// Records from before rule and runIDs existed keep them in the reason: "S2: … (checks run_1, run_2)".
+const LEGACY = /^(S[1-8]): ([\s\S]*?)(?: \(checks (run_[^,()]*(?:, run_[^,()]*)*)\))?$/
+
+/** A checkpoint with its rule and run ids apart from the sentence, also for records written the old way. */
+export function checkpoint<C extends Workbench.Investigation["checkpoints"][number]>(item: C): C {
+  const found = !item.rule && item.reason ? LEGACY.exec(item.reason) : null
+  if (!found) return item
+  return {
+    ...item,
+    rule: found[1] as Workbench.SupervisorRule,
+    reason: found[2],
+    ...(found[3] ? { runIDs: found[3].split(", ").map((id) => Workbench.RunID.make(id)) } : {}),
+  }
+}
+
+/** A checkpoint's reason as text for agents and reports: "S2: no progress: … (checks run_1, run_2)". */
+export function explain(item: Workbench.Investigation["checkpoints"][number] | undefined) {
+  const found = item && checkpoint(item)
+  if (!found?.reason) return undefined
+  return `${found.rule ? `${found.rule}: ` : ""}${found.reason}${found.runIDs?.length ? ` (checks ${found.runIDs.join(", ")})` : ""}`
 }
 
 function bounded(data: unknown) {
@@ -830,7 +864,9 @@ function bounded(data: unknown) {
 function validate(raw: unknown) {
   if (typeof raw !== "object" || raw === null) return Option.none<Info>()
   const policy = decodePolicy((raw as { policy?: unknown }).policy)
-  return decodeRecord({ ...raw, policy: Option.getOrElse(policy, () => DEFAULT_POLICY) })
+  return decodeRecord({ ...raw, policy: Option.getOrElse(policy, () => DEFAULT_POLICY) }).pipe(
+    Option.map((record) => ({ ...record, checkpoints: record.checkpoints.map(checkpoint) })),
+  )
 }
 
 function invalidPolicy(raw: unknown) {
@@ -838,7 +874,8 @@ function invalidPolicy(raw: unknown) {
 }
 
 export function summary(record: Info): Workbench.InvestigationSummary {
-  const reason = record.checkpoints.findLast((item) => item.reason)?.reason
+  const latest = record.checkpoints.findLast((item) => item.reason)
+  const why = latest && checkpoint(latest)
   return {
     id: record.id,
     title: record.title,
@@ -847,7 +884,10 @@ export function summary(record: Info): Workbench.InvestigationSummary {
     ...(record.agentID ? { agentID: record.agentID } : {}),
     attempts: record.attempts.length,
     evidenceCount: record.evidence.length,
-    ...(reason ? { reason } : {}),
+    ...(why?.reason ? { reason: why.reason } : {}),
+    ...(why?.rule ? { rule: why.rule } : {}),
+    ...(why?.runIDs?.length ? { runIDs: why.runIDs } : {}),
+    ...(why?.evidenceID ? { evidenceID: why.evidenceID } : {}),
     updatedAt: record.updatedAt,
   }
 }
@@ -862,7 +902,7 @@ export function report(record: Info, evidence: readonly Workbench.Evidence[]) {
   const section = (title: string, items: string[]) => [title, ...(items.length ? items : ["  (none)"])]
   return [
     `Investigation ${record.id}: ${record.title}`,
-    `Status: ${record.status}${latest?.reason ? ` (${latest.reason})` : ""}`,
+    `Status: ${record.status}${explain(latest) ? ` (${explain(latest)})` : ""}`,
     `Attempts: ${record.attempts.length} · debug steps: ${record.steps} · evidence: ${evidence.length}`,
     "",
     ...section("Observed", evidence.filter((item) => item.class === "observed").map(line)),

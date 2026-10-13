@@ -25,9 +25,10 @@ export type Input = {
 export type Trigger = "patch" | "check" | "crash" | "permission" | "steps" | "other"
 
 export type Decision = {
-  readonly rule: "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7" | "S8"
+  readonly rule: Workbench.SupervisorRule
   readonly status: "blocked" | "needs_human" | "failed"
-  readonly reason: string
+  readonly reason: string // a sentence, without the rule or run ids
+  readonly runIDs?: readonly Workbench.RunID[] // the check runs it refers to
 }
 
 export function supervise(input: Input, trigger: Trigger, now: number, detail?: string): Decision | undefined {
@@ -61,7 +62,8 @@ export function supervise(input: Input, trigger: Trigger, now: number, detail?: 
     return {
       rule: "S2",
       status: "blocked",
-      reason: `no progress: same error after 2 patches (checks ${[...previous.checkIDs, ...last.checkIDs].join(", ")})`,
+      reason: "no progress: same error after 2 patches",
+      runIDs: [...previous.checkIDs, ...last.checkIDs] as Workbench.RunID[],
     }
   if (previous && last.errorCount > previous.errorCount)
     return {
@@ -73,7 +75,8 @@ export function supervise(input: Input, trigger: Trigger, now: number, detail?: 
     return {
       rule: "S1",
       status: "blocked",
-      reason: `repair attempts used up (checks ${closed.flatMap((item) => item.checkIDs).join(", ")})`,
+      reason: "repair attempts used up",
+      runIDs: closed.flatMap((item) => item.checkIDs) as Workbench.RunID[],
     }
   return undefined
 }

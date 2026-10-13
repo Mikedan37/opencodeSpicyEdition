@@ -29,6 +29,7 @@
 // - The app skips registering itself as the opencode:// handler when CFFIXED_USER_HOME is set (src/main/index.ts).
 // - A window with unsaved editor edits asks with a native dialog before it unloads (src/main/unsaved.ts);
 //   OPENCODE_SPICY_UNSAVED_ANSWER answers it instead ("cancel" unless the caller says "discard"), so none ever shows.
+// - OPENCODE_AGENTKIT_BRIDGE names a bridge that does not exist, so AgentKit discovery never looks outside the root.
 // - The main process gets a Node inspector (`inspect` port, loopback) so a script can quit the app the way the menu
 //   does (app.quit()), which a renderer cannot.
 // Not isolated: AppKit still writes its own defaults for the bundle id (~/Library/Preferences/com.github.Electron).
@@ -108,6 +109,10 @@ export async function launch(options: LaunchOptions = {}) {
     npm_config_offline: "true",
     npm_config_cache: path.join(root, "npm-cache"),
     OPENCODE_SPICY_UNSAVED_ANSWER: "cancel",
+    // AgentKit discovery otherwise asks Spotlight for every OpenCode Native copy and inspects each one, some under
+    // ~/Documents, a folder macOS guards with a consent dialog; a set bridge path is used alone, and this one does not
+    // exist, so the provider is plainly unavailable and nothing outside the root is touched.
+    OPENCODE_AGENTKIT_BRIDGE: path.join(root, "no-agentkit-bridge"),
     ...options.env,
   }
   const switches = [`--remote-debugging-port=${port}`, `--inspect=127.0.0.1:${inspect}`, ...SWITCHES]

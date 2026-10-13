@@ -344,3 +344,13 @@ compiled package, approve and run passed. Users get the compiled package from np
 
 Everything else passes as in the 64/64 run. Keychain unchanged, crash reports 92 → 92, no process left, no dialog.
 Screenshots: `docs/spicy/desktop-smoke/20261013T005724/` (31, `27-tools-new` … `30-tools-delete`).
+
+## Final run on `spicy-ide` bf006d58e: 68/68
+
+- **New check:** the new-agent dialog's AgentKit row renders: unavailable, "AgentKit bridge not found".
+- **Why it is unavailable:** `spicy-launch.ts` now points `OPENCODE_AGENTKIT_BRIDGE` at a path that does not exist.
+  - The hardened discovery would otherwise ask Spotlight for every OpenCode Native copy and stat each one from the
+    sidecar.
+  - On this machine some of those copies sit under `~/Documents`, which macOS guards with a consent dialog.
+  - A set bridge path is used alone, so discovery never leaves the root.
+- **Result:** keychain unchanged, crash reports 92 → 92, no process left, no dialog.

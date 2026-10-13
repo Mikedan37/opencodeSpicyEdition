@@ -247,6 +247,19 @@ try {
     async () => {
       await renderer!.click('[data-action="agenthq-new"]')
       await renderer!.type('[data-component="agenthq-dialog"] input[name="name"]', "Felix")
+      await step(
+        "the new-agent dialog lists AgentKit (available with its Bridge note, or a reason)",
+        async () => {
+          const row = '[data-component="agenthq-dialog"] label[data-provider="agentkit"]'
+          await renderer!.waitFor(exists(row), "the AgentKit row")
+          const available = await renderer!.evaluate<boolean>(`!${query(`${row} input`)}?.disabled`)
+          const text = (await renderer!.evaluate<string>(textOf(row))).replace(/\s+/g, " ").trim()
+          if (available ? !text.includes("Bridge: ") : text === "AgentKit") throw new Error(`row: "${text}"`)
+          if (available) await renderer!.click(`${row} input[type="radio"]`) // picked, then OpenCode below
+          return `${available ? "available" : "unavailable"}: ${text}`
+        },
+        (value) => value,
+      ).catch(() => {})
       await renderer!.click('[data-component="agenthq-dialog"] label[data-provider="opencode"] input[type="radio"]')
       await shot("create-dialog")
       await renderer!.click('[data-component="agenthq-dialog"] button[type="submit"]')

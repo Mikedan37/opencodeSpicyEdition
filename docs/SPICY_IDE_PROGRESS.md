@@ -60,8 +60,9 @@ Merged tree (`deb25c286`, waves 1–4): `bun test` in packages/opencode 3839 pas
 Independent test-plan validation (`docs/spicy/VALIDATION.md`, merged `1ed4cb1cb`): 135 IDs, 111 pass, 13 partial,
 7 blocked (Developer Mode off; js-debug/Delve not installed), 3 not built (SEC-06 adapter checksums, UI-07 "fix with
 agent", CON-10 PTY stdin e2e). The one failure, REG-07 (plugin tool progress dropped), is fixed in `0d73bfa46`.
-Real AgentKit 0.14.3 (`--local-only`): 20/20 original checks; open on AgentKit's side: cleanup on SIGTERM and SwiftPM
-lock files in $TMPDIR. AgentKit discovery runs a found bridge only if it isn't quarantined or on /Volumes, is the
+Real AgentKit 0.15.1 (`--local-only`, found in ~/Applications with no setup): all 42 checks pass, including no
+`.blaze`, no SwiftPM locks, the bundled AgentDaemon, and cleanup within 0.12 s after a bridge SIGKILL (watcher) or at
+the next session (sweep). AgentKit discovery runs a found bridge only if it isn't quarantined or on /Volumes, is the
 user's own and not group/world-writable, and lives under home or /Applications (`666f1c4ae`).
 
 ## Environment blockers (owner action)

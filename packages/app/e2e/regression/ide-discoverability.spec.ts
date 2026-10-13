@@ -81,6 +81,20 @@ test("the status strip is always there, and each item opens its tab with the pan
 
 test("the palette has every IDE tab and the IDE's actions", async ({ page }) => {
   const { mock, open } = await mockWorkbench(page, { directory, title })
+  mock.runs = [
+    {
+      id: "run_1",
+      kind: "check",
+      unit: directory,
+      checker: "tsc",
+      command: ["tsc", "--noEmit"],
+      execClass: "inert",
+      status: "failed",
+      startedAt: 1,
+      finishedAt: 2,
+    },
+  ]
+  mock.checkSummary = { passed: 2, failed: 1, skipped: 0, unavailable: 0, timedOut: 0 }
   await open()
   const panel = page.locator('[data-component="workbench-panel"]')
   for (const [command, tab] of [
@@ -100,6 +114,10 @@ test("the palette has every IDE tab and the IDE's actions", async ({ page }) => 
   await palette(page, "Run checks")
   await expect.poll(() => mock.checks).toEqual([{ unit: directory }])
   await expect(panel).toHaveAttribute("data-tab", "output")
+  // UX #15: the counts that are not zero; the project's own unit by its folder name
+  await expect(panel.locator('[data-slot="report"]')).toHaveText("Last check: 2 passed, 1 failed")
+  await expect(panel.locator('section[data-run="run_1"]')).toContainText(directory.split("/").pop()!)
+  await expect(panel.locator('section[data-run="run_1"]')).not.toContainText(directory)
 
   // New tool opens the Tools tab on the form; New agent opens the agent dialog.
   await palette(page, "New tool")

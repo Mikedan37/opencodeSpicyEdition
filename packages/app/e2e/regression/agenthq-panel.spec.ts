@@ -77,7 +77,8 @@ test("agent hq streams, asks for permission, resyncs on a seq gap; problems open
   await expect(workspace.locator('[data-row="message"][data-role="assistant"]')).toContainText(
     "Looking at it, found the bug",
   )
-  await expect(workspace.locator('[data-row="turn"]')).toContainText("end_turn")
+  // UX #15: a normal end is just "Turn completed", without the provider's stop reason
+  await expect(workspace.locator('[data-row="turn"]')).toHaveText("Turn completed")
 
   // The complete message replaces the streamed text and renders as Markdown (code highlighted, unsafe links dropped)
   mock.emit(
@@ -94,6 +95,13 @@ test("agent hq streams, asks for permission, resyncs on a seq gap; problems open
   await expect(reply.locator('a[href="https://example.com"]')).toHaveAttribute("target", "_blank")
   await expect(reply.locator("a", { hasText: "bad" })).not.toHaveAttribute("href", /.*/)
 
+  // A cancelled turn ends with a divider, not half a sentence
+  mock.emit(
+    envelope(11, { type: "message.delta", messageID: "a2", text: "Let me also chec" }),
+    envelope(12, { type: "status", status: "cancelled" }),
+  )
+  await expect(workspace.locator('[data-row="turn"][data-reason="cancelled"]')).toHaveText("Cancelled by you")
+
   // Attention: a session waiting for approval badges the card and the tab
   await workspace.getByRole("button", { name: "Back to agents" }).click()
   mock.emit({
@@ -108,6 +116,9 @@ test("agent hq streams, asks for permission, resyncs on a seq gap; problems open
   await page.locator('[data-workbench-tab="problems"]').click()
   const problems = page.locator('[data-component="workbench-problems"]')
   await expect(problems.locator('[data-row="file"]')).toContainText("parser.ts")
+  // UX #15: the folder is project-relative
+  await expect(problems.locator('[data-row="file"]')).toContainText("src/")
+  await expect(problems.locator('[data-row="file"]')).not.toContainText(directory)
   await expect(problems.locator('[data-row="problem"]')).toHaveCount(2)
   await expect(problems.locator('[data-problem="p_stale"]')).toContainText("Stale")
   await problems.locator('[data-severity="warning"]').click()
@@ -303,9 +314,9 @@ test("UX #3 permission cards show what they approve: a diff, a command with its 
     envelope(2, {
       type: "permission.requested",
       requestID: "perm_bash",
-      title: "Run the tests",
+      title: `Run the tests in ${directory}/packages/parser`,
       tool: "bash",
-      preview: { kind: "command", command: "bun test parser", cwd: "packages/parser" },
+      preview: { kind: "command", command: "bun test parser", cwd: `${directory}/packages/parser` },
       options,
     }),
     envelope(3, {
@@ -333,7 +344,10 @@ test("UX #3 permission cards show what they approve: a diff, a command with its 
   await expect(edit.locator('[data-option="always"]')).not.toHaveAttribute("data-variant", "contrast")
   const bash = workspace.locator('[data-row="permission"][data-request="perm_bash"]')
   await expect(bash.locator('[data-slot="permission-command"]')).toContainText("$ bun test parser")
+  // UX #15: paths relative to where the agent works
   await expect(bash.locator('[data-slot="permission-command"]')).toContainText("in packages/parser")
+  await expect(bash).toContainText("Run the tests in packages/parser")
+  await expect(bash).not.toContainText(directory)
   await expect(bash.locator('[data-option="always"]')).toHaveText("Always allow this command in this session")
   await expect(workspace.locator('[data-request="perm_other"] [data-slot="permission-other"]')).toHaveText(
     "GET https://example.com/docs",

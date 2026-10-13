@@ -29,6 +29,7 @@ import {
   type ProblemRow,
   withLsp,
 } from "./problems"
+import { shortPath } from "./snapshot"
 import { PanelState, RequestErrorState } from "./ui"
 import { VirtualList } from "./virtual-list"
 import { useFileLineOpener } from "./open-file"
@@ -287,6 +288,12 @@ function Row(props: {
   onFixFile: (file: string | undefined) => Promise<HandoffPayload>
 }) {
   const language = useLanguage()
+  const workbench = useWorkbench()
+  // The file's folder, project-relative (UX #15): "src/lib/" for <project>/src/lib/a.ts, nothing at the root.
+  const folder = (file: string | undefined) => {
+    const path = file ? shortPath(workbench.directory, file) : ""
+    return path.includes("/") ? getDirectory(path) : ""
+  }
   return (
     <Switch>
       <Match when={props.row.type === "file" ? props.row : undefined}>
@@ -304,7 +311,7 @@ function Row(props: {
               <span class="shrink-0 font-[530] text-v2-text-text-base">
                 {row().file ? getFilename(row().file) : language.t("workbench.problems.noFile")}
               </span>
-              <span class="min-w-0 truncate text-v2-text-text-faint">{row().file ? getDirectory(row().file) : ""}</span>
+              <span class="min-w-0 truncate text-v2-text-text-faint">{folder(row().file)}</span>
               <span class="ml-auto shrink-0 rounded-full bg-v2-background-bg-layer-02 px-1.5 text-[11px] tabular-nums text-v2-text-text-muted">
                 {row().count}
               </span>

@@ -63,6 +63,8 @@ export async function mockWorkbench(
     replies: [] as { id: string; reply: unknown }[],
     // POST /instance/dispose (the project reloads on the server)
     disposed: 0,
+    // POST /workbench/check answers with this summary
+    checkSummary: { passed: 0, failed: 0, skipped: 0, unavailable: 0, timedOut: 0 },
     emit(...items: Record<string, unknown>[]) {
       pending.push(...items.map((item) => ({ directory, payload: { id: `evt_${Math.random()}`, ...item } })))
     },
@@ -129,7 +131,7 @@ export async function mockWorkbench(
         trigger: "user",
         changedFiles: [],
         checks: [],
-        summary: { passed: 0, failed: 0, skipped: 0, unavailable: 0, timedOut: 0 },
+        summary: mock.checkSummary,
         unverifiedFiles: [],
         completedAt: 1_700_000_000_000,
       })

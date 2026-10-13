@@ -12,10 +12,10 @@ import { Markdown } from "@opencode-ai/session-ui/markdown"
 import { getFilename } from "@opencode-ai/core/util/path"
 import type { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { useLanguage } from "@/context/language"
-import { getRelativeTime } from "@/utils/time"
 import { showToast } from "@/utils/toast"
 import { VirtualList } from "@/workbench/virtual-list"
 import { errorText } from "@/workbench/client"
+import { useRelativeTime } from "@/workbench/clock"
 import { InlineCode, PanelState, RequestErrorState, TONE_CLASS } from "@/workbench/ui"
 import { useWorkbench } from "@/workbench/panel"
 import { draftedTool } from "@/workbench/tools"
@@ -233,6 +233,7 @@ function StatusPill(props: { status?: AgentHQ.AgentSessionStatus }) {
 function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () => void }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
+  const ago = useRelativeTime()
   const sessions = createMemo(() => agentSessions(agenthq.state.sessions, props.agent.id))
   const sessionID = createMemo(() => agenthq.ui.sessionID ?? sessions()[0]?.id)
   const session = createMemo(() => {
@@ -327,13 +328,11 @@ function AgentWorkspace(props: { agent: Agent; expanded?: boolean; onEdit: () =>
                   </span>
                   <span class="flex items-center gap-1.5">
                     <StatusPill status={item.status} />
-                    <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-faint">
-                      {getRelativeTime(new Date(item.updatedAt).toISOString(), language.t)}
-                    </span>
+                    <span class="ml-auto shrink-0 text-[11px] text-v2-text-text-faint">{ago(item.updatedAt)}</span>
                   </span>
                   <Show when={item.pendingPermissions > 0}>
                     <span class="text-[11px] text-v2-state-fg-warning">
-                      {language.t("agenthq.session.pending", { count: item.pendingPermissions })}
+                      {language.plural("agenthq.session.pending", item.pendingPermissions)}
                     </span>
                   </Show>
                 </button>
@@ -581,6 +580,18 @@ function ToolRow(props: { tool: ToolItem }) {
 function PermissionCard(props: { permission: PermissionItem; sessionID: string }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
+  // Paths in what the provider wrote, relative to where the agent works (UX #15): its session's folder (a task's
+  // worktree) or the agent's.
+  const root = () => {
+    const session = agenthq.state.sessions[props.sessionID]
+    const agent = agenthq.state.agents.find((item) => item.id === session?.agentID)
+    return (session?.workingDirectory ?? agent?.workingDirectory ?? agent?.projectDirectory)?.replace(/\/+$/, "")
+  }
+  const rel = (text: string) => {
+    const base = root()
+    return base ? text.replaceAll(`${base}/`, "") : text
+  }
+  const place = (cwd: string) => (cwd === root() ? getFilename(cwd) : rel(cwd))
   const always = (permission: PermissionItem) =>
     language.t(
       permission.preview?.kind === "edit"
@@ -606,7 +617,7 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
         <Icon name="shield" size="small" />
         {language.t("agenthq.permission")}
       </div>
-      <div class="mt-1 text-[13px] text-v2-text-text-base">{props.permission.title}</div>
+      <div class="mt-1 text-[13px] text-v2-text-text-base">{rel(props.permission.title)}</div>
       <Show when={props.permission.tool}>
         <div class="font-mono text-[11px] text-v2-text-text-muted">{props.permission.tool}</div>
       </Show>
@@ -615,7 +626,7 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
         fallback={
           <Show when={props.permission.details}>
             <pre class="mt-1 max-h-40 select-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[16px] text-v2-text-text-muted">
-              {props.permission.details}
+              {rel(props.permission.details ?? "")}
             </pre>
           </Show>
         }
@@ -626,7 +637,7 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
               data-slot="permission-edit"
               class="mt-1.5 max-h-80 overflow-auto rounded-[6px] bg-v2-background-bg-base"
             >
-              <PatchView diff={edit().diff} />
+              <PatchView diff={edit().diff} root={root()} />
               <Show when={edit().truncated}>
                 <p class="px-2 py-1 text-[11px] text-v2-text-text-muted">
                   {language.t("agenthq.permission.truncated")}
@@ -644,7 +655,7 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
               <Show when={command().cwd}>
                 {(cwd) => (
                   <span class="font-mono text-[11px] text-v2-text-text-muted">
-                    {language.t("agenthq.permission.cwd", { cwd: cwd() })}
+                    {language.t("agenthq.permission.cwd", { cwd: place(cwd()) })}
                   </span>
                 )}
               </Show>
@@ -698,6 +709,21 @@ function PermissionCard(props: { permission: PermissionItem; sessionID: string }
   )
 }
 
+// How a turn ended, from the provider's stop reason (UX #15): a normal end ("stop", "end_turn", …) is just "Turn
+// completed"; the raw reason is not shown.
+const TURN_NOTE: Record<
+  string,
+  "agenthq.note.cancelled" | `agenthq.note.turn.${"length" | "refused" | "requests" | "error"}`
+> = {
+  cancelled: "agenthq.note.cancelled",
+  length: "agenthq.note.turn.length",
+  max_tokens: "agenthq.note.turn.length",
+  "content-filter": "agenthq.note.turn.refused",
+  refusal: "agenthq.note.turn.refused",
+  max_turn_requests: "agenthq.note.turn.requests",
+  error: "agenthq.note.turn.error",
+}
+
 function NoteRow(props: { note: NoteItem }) {
   const language = useLanguage()
   return (
@@ -709,11 +735,13 @@ function NoteRow(props: { note: NoteItem }) {
         </div>
       </Match>
       <Match when={props.note.tone === "turn"}>
-        <div data-row="turn" class="mx-3 my-1 flex items-center gap-2 text-[11px] text-v2-text-text-faint">
+        <div
+          data-row="turn"
+          data-reason={props.note.text || undefined}
+          class="mx-3 my-1 flex items-center gap-2 text-[11px] text-v2-text-text-muted"
+        >
           <span class="h-px flex-1 bg-v2-border-border-muted" />
-          {props.note.text
-            ? language.t("agenthq.note.turnReason", { reason: props.note.text })
-            : language.t("agenthq.note.turn")}
+          {language.t(TURN_NOTE[props.note.text] ?? "agenthq.note.turn")}
           <span class="h-px flex-1 bg-v2-border-border-muted" />
         </div>
       </Match>

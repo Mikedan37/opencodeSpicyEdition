@@ -52,7 +52,7 @@ export default function DebugConsolePanel() {
       at: 0,
       kind: "system",
       by: "system",
-      text: language.t("workbench.debug.console.dropped", { count: current.dropped }),
+      text: language.plural("workbench.debug.console.dropped", current.dropped),
     }
     return [dropped, ...visible]
   })

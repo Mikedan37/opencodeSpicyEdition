@@ -13,6 +13,7 @@ import {
   programOutput,
   splitArgs,
   stopException,
+  stopReason,
   type DebugConsole,
   type DebugSession,
 } from "./debug"
@@ -449,4 +450,7 @@ test("stopException: the exception a stop is on, for the red banner", () => {
     "Paused on exception",
   )
   expect(stopException(stop({ reason: "exception" }), "fallback")).toBe("fallback")
+  // "Paused: exception", not "Paused: Paused on exception"
+  expect(stopReason(stop({ reason: "exception", description: "Paused on exception" }))).toBe("exception")
+  expect(stopReason(stop({ reason: "step" }))).toBe("step")
 })

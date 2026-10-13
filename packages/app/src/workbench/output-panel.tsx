@@ -10,9 +10,11 @@ import { ansiLines, fileRefs, resolvePath, type AnsiStyle } from "./ansi"
 import { useFileLineOpener } from "./open-file"
 import { useWorkbench } from "./panel"
 import { isFinished, needsDetail, type RunEntry } from "./runs"
+import { shortPath } from "./snapshot"
 import { Glyph, OUTPUT_GLYPH, PanelState, TONE_CLASS } from "./ui"
 import { VirtualList } from "./virtual-list"
 
+const REPORT_COUNTS = ["passed", "failed", "skipped", "unavailable", "timedOut"] as const
 const STATUS_TONE: Record<Workbench.RunStatus, keyof typeof TONE_CLASS> = {
   queued: "neutral",
   running: "info",
@@ -43,6 +45,15 @@ export default function OutputPanel() {
   const [ui, setUi] = createStore({ open: {} as Record<string, boolean> })
   const [now, setNow] = createSignal(Date.now())
   const running = createMemo(() => runs.state.runs.some((entry) => !isFinished(entry.info.status)))
+  // "Last check: 2 passed, 1 failed": the counts that are not zero (UX #15).
+  const summaryText = (summary: Workbench.VerificationReport["summary"]) => {
+    const counts = REPORT_COUNTS.filter((key) => summary[key]).map((key) =>
+      language.t(`workbench.output.report.${key}`, { count: summary[key] }),
+    )
+    return counts.length
+      ? language.t("workbench.output.report", { counts: counts.join(", ") })
+      : language.t("workbench.output.report.empty")
+  }
 
   onMount(() => void runs.load())
   createEffect(() => {
@@ -79,7 +90,7 @@ export default function OutputPanel() {
           <Show when={runs.state.report}>
             {(report) => (
               <span class="truncate text-[12px] text-v2-text-text-muted" data-slot="report">
-                {language.t("workbench.output.report", { ...report().summary })}
+                {summaryText(report().summary)}
               </span>
             )}
           </Show>
@@ -127,7 +138,8 @@ function RunSection(props: { entry: RunEntry; now: number; open: boolean; onTogg
     if (start === undefined) return
     return seconds((info().finishedAt ?? props.now) - start)
   }
-  const unit = () => (info().unit.startsWith(`${directory}/`) ? info().unit.slice(directory.length + 1) : info().unit)
+  // Project-relative; the project itself goes by its folder's name (UX #15).
+  const unit = () => (info().unit === directory ? getFilename(directory) : shortPath(directory, info().unit))
   let section!: HTMLElement
   // A run another view pointed at (an investigation's evidence) scrolls into view.
   createEffect(() => {

@@ -141,7 +141,7 @@ function RunReplay(props: { sessionID: string }) {
           <div class="shrink-0 px-[14px] pt-2 text-[11px] text-v2-text-text-faint">
             {language.t("workbench.run.replay")}
             <Show when={output().dropped}>
-              {(count) => <div>{language.t("workbench.debug.console.dropped", { count: count() })}</div>}
+              {(count) => <div>{language.plural("workbench.debug.console.dropped", count())}</div>}
             </Show>
           </div>
           <OutputText

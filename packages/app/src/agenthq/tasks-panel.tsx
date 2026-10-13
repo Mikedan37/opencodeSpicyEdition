@@ -11,9 +11,9 @@ import { TextareaV2 } from "@opencode-ai/ui/v2/textarea-v2"
 import { Markdown } from "@opencode-ai/session-ui/markdown"
 import type { AgentHQ } from "@opencode-ai/schema/agent-hq"
 import { useLanguage } from "@/context/language"
-import { getRelativeTime } from "@/utils/time"
 import { showToast } from "@/utils/toast"
 import { errorText } from "@/workbench/client"
+import { useRelativeTime } from "@/workbench/clock"
 import { PatchView } from "@/workbench/patch-view"
 import { PanelState, TONE_CLASS } from "@/workbench/ui"
 import { AgentAvatar } from "./avatar"
@@ -75,7 +75,7 @@ export function ViewSwitch() {
             </span>
             <Show when={view === "tasks" && review()}>
               <span
-                title={language.t("agenthq.task.waitingReview", { count: review() })}
+                title={language.plural("agenthq.task.waitingReview", review())}
                 class={`min-w-4 rounded-full px-1 text-center text-[10px] leading-4 tabular-nums ${TONE_CLASS.warning}`}
               >
                 {review()}
@@ -233,6 +233,7 @@ const waitsForApproval = (agenthq: ReturnType<typeof useAgentHQ>, task: Task) =>
 function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: string) => void }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
+  const ago = useRelativeTime()
   const tasks = agenthq.tasks
   const [confirm, setConfirm] = createSignal(false)
   const assignee = () => agenthq.state.agents.find((agent) => agent.id === props.task.assignee)
@@ -409,9 +410,7 @@ function TaskDetail(props: { task: Task; onEdit: () => void; onSelect: (id: stri
           </Show>
         </dd>
         <dt class="text-v2-text-text-muted">{language.t("agenthq.task.updated")}</dt>
-        <dd class="text-v2-text-text-muted">
-          {getRelativeTime(new Date(props.task.updatedAt).toISOString(), language.t)}
-        </dd>
+        <dd class="text-v2-text-text-muted">{ago(props.task.updatedAt)}</dd>
       </dl>
       <Show when={props.task.description}>
         <div class="mt-3 select-text whitespace-pre-wrap break-words text-[12px] leading-[18px] text-v2-text-text-base">
@@ -694,6 +693,7 @@ const USER = "user"
 export function MessageThread(props: { filter: MessageFilter; to?: string }) {
   const agenthq = useAgentHQ()
   const language = useLanguage()
+  const ago = useRelativeTime()
   const tasks = agenthq.tasks
   const [draft, setDraft] = createStore({ from: USER, to: props.to ?? "", text: "", relay: false, sending: false })
   const messages = createMemo(() => tasks.thread(props.filter))
@@ -769,9 +769,7 @@ export function MessageThread(props: { filter: MessageFilter; to?: string }) {
                       </button>
                     )}
                   </Show>
-                  <span class="shrink-0 text-v2-text-text-faint">
-                    {getRelativeTime(new Date(message.at).toISOString(), language.t)}
-                  </span>
+                  <span class="shrink-0 text-v2-text-text-faint">{ago(message.at)}</span>
                 </div>
                 <div class="select-text whitespace-pre-wrap break-words text-v2-text-text-base">{message.text}</div>
                 <Show when={message.delivery === "failed" || message.reason}>

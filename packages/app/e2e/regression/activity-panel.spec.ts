@@ -27,9 +27,23 @@ test("activity: investigation timeline and evidence link to Output, Debug and Ag
 
   // The newest investigation: why it waits, its status timeline and its evidence
   const detail = activity.locator('[data-component="workbench-investigation"]')
-  await expect(detail.locator('[data-slot="investigation-reason"]')).toHaveText("S2: the same error came back twice")
+  // UX #15: the rule as words, the sentence, and links to the run and the evidence; no rule ids or run ids
+  const reason = detail.locator('[data-slot="investigation-reason"]')
+  await expect(reason.locator("[data-rule]")).toHaveText("No progress")
+  await expect(reason).toContainText("The same error came back after 2 patches")
+  await expect(reason.locator('[data-link="run"]')).toHaveText("Output: pytest test")
+  await expect(reason.locator('[data-link="evidence"]')).toHaveText("Show evidence")
+  await expect(reason).not.toContainText("S2")
   await expect(detail.locator('[data-slot="investigation-timeline"] [data-checkpoint]')).toHaveCount(4)
-  await expect(detail.locator('[data-checkpoint="needs_human"]')).toContainText("S2: the same error came back twice")
+  await expect(detail.locator('[data-checkpoint="needs_human"]')).toContainText(
+    "No progressThe same error came back after 2 patches",
+  )
+  await expect(activity.locator("button[data-investigation]").nth(0)).toContainText("3 pieces of evidence")
+  await expect(activity.locator("button[data-investigation]").nth(1)).toContainText(
+    "an old record names its rule in the sentence",
+  )
+  await expect(activity.locator("button[data-investigation]").nth(1)).not.toContainText("S7")
+  await page.screenshot({ path: test.info().outputPath("ux15-activity-reason.png") })
   const evidence = detail.locator('[data-slot="investigation-evidence"] [data-evidence]')
   await expect(evidence).toHaveCount(3)
   await expect(evidence.nth(0)).toHaveAttribute("data-class", "observed")
@@ -106,7 +120,11 @@ function summary(id: string, status: string, updatedAt: number) {
     sessionID: "ags_inv",
     attempts: 1,
     evidenceCount: 3,
-    ...(status === "needs_human" ? { reason: "S2: the same error came back twice" } : {}),
+    ...(status === "needs_human"
+      ? { reason: "The same error came back after 2 patches", rule: "S2", runIDs: ["run_1"], evidenceID: "ev_3" }
+      : id === "inv_2"
+        ? { reason: "S7: an old record names its rule in the sentence" }
+        : {}),
     updatedAt,
   }
 }
@@ -149,7 +167,14 @@ function record() {
         { status: "created", at: 1 },
         { status: "reproducing", at: 2, evidenceID: "ev_1" },
         { status: "debugging", at: 3, evidenceID: "ev_2" },
-        { status: "needs_human", at: 5, reason: "S2: the same error came back twice" },
+        {
+          status: "needs_human",
+          at: 5,
+          reason: "The same error came back after 2 patches",
+          rule: "S2",
+          runIDs: ["run_1"],
+          evidenceID: "ev_3",
+        },
       ],
       processes: [],
       debugSessions: ["dbg_one"],

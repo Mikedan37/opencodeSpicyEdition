@@ -6,7 +6,7 @@ import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
 import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
 import { Persist, persisted } from "@/utils/persist"
-import { isLive } from "./debug"
+import { isLive, stopReason } from "./debug"
 import { useDebug } from "./debug-context"
 import { useWorkbench } from "./panel"
 import { isFinished } from "./runs"
@@ -45,7 +45,7 @@ export function WorkbenchStatusStrip() {
     if (!current) return ""
     if (current.state === "stopped" && current.stop)
       return language.t("workbench.debug.status.stopped", {
-        reason: current.stop.exception?.id ?? current.stop.description ?? current.stop.reason,
+        reason: current.stop.exception?.id ?? stopReason(current.stop),
       })
     return language.t(`workbench.debug.state.${current.state}`)
   }

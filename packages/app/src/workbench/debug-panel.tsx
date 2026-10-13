@@ -11,7 +11,7 @@ import { useSettingsDialog } from "@/components/settings-dialog"
 import { useLanguage } from "@/context/language"
 import { showToast } from "@/utils/toast"
 import { errorText } from "./client"
-import { EXCEPTION_FILTERS, humanDrives, isLive, type Breakpoint } from "./debug"
+import { EXCEPTION_FILTERS, humanDrives, isLive, stopReason, type Breakpoint } from "./debug"
 import { useDebug } from "./debug-context"
 import { DebugToolbar, OwnerChip, SessionPicker, VariableNode } from "./debug-ui"
 import { HandoffMenu } from "./handoff"
@@ -123,8 +123,7 @@ function Status() {
     if (debug.state.list === "unavailable") return language.t("workbench.debug.unavailable")
     if (!current) return language.t("workbench.debug.status.none")
     if (current.state === "stopped" && current.stop) {
-      const reason = current.stop.description || current.stop.reason
-      return language.t("workbench.debug.status.stopped", { reason })
+      return language.t("workbench.debug.status.stopped", { reason: stopReason(current.stop) })
     }
     if (current.state === "failed" && current.error)
       return language.t("workbench.debug.status.failed", { error: current.error })
